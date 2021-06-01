@@ -3,10 +3,48 @@ name: CI
 on: [push, pull_request]
 
 jobs:
-    build-kernel:
-        name: Build managarm-kernel
+    build-package:
+        strategy:
+            matrix:
+                include:
+                  - pkg: managarm-kernel
+                    tool_deps: >-
+                        cross-binutils
+                        host-llvm-toolchain
+                        host-managarm-tools
+                        host-protoc
+                        kernel-gcc
+                        system-gcc
+                    pkg_deps: >-
+                        mlibc
+                        mlibc-headers
+                  - pkg: managarm-system
+                    tool_deps: >-
+                        cross-binutils
+                        host-autoconf-v2.69
+                        host-automake-v1.11
+                        host-automake-v1.15
+                        host-libtool
+                        host-llvm-toolchain
+                        host-managarm-tools
+                        host-pkg-config
+                        host-protoc
+                        host-xorg-macros
+                        system-gcc
+                    pkg_deps: >-
+                        boost
+                        eudev
+                        mlibc
+                        mlibc-headers
+                        protobuf
+        name: Build ${{ matrix.pkg }}
         runs-on: ubuntu-20.04
         steps:
+          - name: Install prerequisites
+            run: |
+                set -x
+                pip3 install xbstrap
+                xbstrap prereqs cbuildrt xbps
           - name: Checkout bootstrap-managarm
             uses: actions/checkout@v2
             with:
@@ -17,61 +55,42 @@ jobs:
             with:
                 path: src/managarm/
                 fetch-depth: 0
-          - name: Build container
-            run: docker build -t managarm-build --target base src/docker
-          - name: Prepare src/ and worker/
+          - name: Download rootfs
             run: |
+                set -x
+                curl -o rootfs.tar.gz https://mirrors.managarm.org/cbuildrt/rootfs/managarm-buildenv.tar.gz
+                tar -xzf rootfs.tar.gz
+          - name: Prepare src/ and build/
+            run: |
+                set -x
                 touch src/managarm/checkedout.xbstrap
-                mkdir worker/
-                mkdir worker/tools/
-                echo '{"pkg_management": {"format": "xbps"}}' > worker/bootstrap-site.yml
-                cd worker/tools/
-                for t in cross-binutils host-llvm-toolchain host-managarm-tools host-protoc kernel-gcc system-gcc; do
-                    curl -o $t.tar.gz https://ci.managarm.org/repos/tools/managarm/rolling/$t.tar.gz
-                    mkdir $t
-                    tar -C $t -xzf $t.tar.gz
-                done
-                find
-          - name: Build managarm-kernel package
+                mkdir build/
+                cat << EOF > build/bootstrap-site.yml
+                    define_options:
+                        arch: x86_64
+                        arch-triple: x86_64-managarm
+
+                    pkg_management:
+                        format: xbps
+
+                    container:
+                        runtime: cbuildrt
+                        rootfs:  ../rootfs
+                        uid: 1000
+                        gid: 1000
+                        src_mount: /var/lib/managarm-buildenv/src
+                        build_mount: /var/lib/managarm-buildenv/build
+                        allow_containerless: true
+                EOF
+          - name: Build ${{ matrix.pkg }} package
             run: |
-                docker run --rm -t \
-                    --mount type=bind,source=$GITHUB_WORKSPACE,target=/builder \
-                    -w /builder/worker \
-                    managarm-build \
-                    bash -c 'xbstrap init ../src && xbstrap pull-pack mlibc mlibc-headers && xbstrap pack managarm-kernel'
-    build-system:
-        name: Build managarm-system
-        runs-on: ubuntu-20.04
-        steps:
-          - name: Checkout bootstrap-managarm
-            uses: actions/checkout@v2
-            with:
-                repository: managarm/bootstrap-managarm
-                path: src/
-          - name: Checkout Managarm
-            uses: actions/checkout@v2
-            with:
-                path: src/managarm/
-                fetch-depth: 0
-          - name: Build container
-            run: docker build -t managarm-build --target base src/docker
-          - name: Prepare src/ and worker/
-            run: |
-                touch src/managarm/checkedout.xbstrap
-                mkdir worker/
-                mkdir worker/tools/
-                echo '{"pkg_management": {"format": "xbps"}}' > worker/bootstrap-site.yml
-                cd worker/tools/
-                for t in cross-binutils host-autoconf-v2.69 host-automake-v1.11 host-automake-v1.15 host-libtool host-llvm-toolchain host-managarm-tools host-pkg-config host-protoc host-xorg-macros system-gcc; do
-                    curl -o $t.tar.gz https://ci.managarm.org/repos/tools/managarm/rolling/$t.tar.gz
-                    mkdir $t
-                    tar -C $t -xzf $t.tar.gz
-                done
-                find
-          - name: Build managarm-system package
-            run: |
-                docker run --rm -t \
-                    --mount type=bind,source=$GITHUB_WORKSPACE,target=/builder \
-                    -w /builder/worker \
-                    managarm-build \
-                    bash -c 'xbstrap init ../src && xbstrap pull-pack boost eudev mlibc mlibc-headers protobuf && xbstrap pack managarm-system'
+                set -x
+                xbstrap init ../src
+                xbstrap download-tool-archive $CI_TOOL_DEPS
+                xbstrap pull-pack $CI_PKG_DEPS
+                xbstrap pack $CI_BUILD_PKG
+            env:
+                CI_BUILD_PKG: ${{ matrix.pkg }}
+                CI_TOOL_DEPS: ${{ matrix.tool_deps }}
+                CI_PKG_DEPS: ${{ matrix.pkg_deps }}
+            working-directory: build/
