@@ -43,6 +43,7 @@ jobs:
           - name: Install prerequisites
             run: |
                 set -x
+                sudo apt-get install qemu-system-x86
                 pip3 install xbstrap
                 xbstrap prereqs cbuildrt xbps
           - name: Checkout bootstrap-managarm
@@ -93,4 +94,22 @@ jobs:
                 CI_BUILD_PKG: ${{ matrix.pkg }}
                 CI_TOOL_DEPS: ${{ matrix.tool_deps }}
                 CI_PKG_DEPS: ${{ matrix.pkg_deps }}
+            working-directory: build/
+          - name: Generate image
+            run: |
+                set -x
+                curl -o image.xz https://ci.managarm.org/repos/files/managarm/rolling/image.xz
+                unxz image.xz
+                ../src/scripts/update-image.py -m loopback mount
+                # For now we need root because the mount point is owned by root
+                # and xbps uses access(mountpoint/, W_OK) to test if it can write.
+                sudo --preserve-env=XBPS_ARCH ~/.xbstrap/bin/xbps-install -fy -R xbps-repo/ -r mountpoint/ $CI_BUILD_PKG
+                ../src/scripts/update-image.py unmount
+            env:
+                CI_BUILD_PKG: ${{ matrix.pkg }}
+                XBPS_ARCH: x86_64
+            working-directory: build/
+          - name: Test ${{ matrix.pkg }} package
+            run: |
+                ../src/scripts/test-image.py
             working-directory: build/
