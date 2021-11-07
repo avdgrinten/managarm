@@ -1,6 +1,6 @@
 objcopy = find_program('riscv64-managarm-objcopy')
 
-exe = executable('eir-d1', eir_sources,
+exe = executable('eir-d1', eir_sources, 'early-log.cpp',
 	include_directories : eir_includes,
 	cpp_args : eir_cpp_args,
 	link_args : [eir_link_args, '-Wl,-T,' + meson.current_source_dir() + '/link.x'],

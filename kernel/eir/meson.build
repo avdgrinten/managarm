@@ -4,6 +4,10 @@ eir_generic_sources = files(
 	'generic/main.cpp',
 	'generic/debug.cpp')
 
+eir_generic_main = files(
+	'generic/main-function.cpp'
+)
+
 eir_includes = [include_directories(
 	'../klibc',
 	'../common',
