@@ -9,6 +9,8 @@
 // 2.3.1 Data Types
 using efi_status = size_t;
 using efi_handle = void *;
+using efi_tpl = size_t;
+using efi_event = void *;
 
 struct alignas(8) efi_guid {
 	uint32_t data1;
@@ -489,6 +491,184 @@ struct efi_pxe_base_code_mode {
 	efi_pxe_base_code_tftp_error tftp_error;
 };
 
+// 14.1 EFI Service Binding Protocol
+struct efi_service_binding_protocol {
+	efi_status (*create_child)(struct efi_service_binding_protocol *self, efi_handle *child_handle);
+	efi_status (*destroy_child)(struct efi_service_binding_protocol *self, efi_handle child_handle);
+};
+
+// 26.3 EFI HTTP Service Binding Protocol
+constexpr efi_guid EFI_HTTP_SERVICE_BINDING_PROTOCOL_GUID = {
+    0xbdc8e6af, 0xd9bc, 0x4379, {0xa7, 0x2a, 0xe0, 0xc4, 0xe7, 0x5d, 0xae, 0x1c}
+};
+
+using efi_http_service_binding_protocol = efi_service_binding_protocol;
+
+// 26 EFI Hypertext Transfer Protocol
+
+constexpr efi_guid EFI_HTTP_PROTOCOL_GUID = {
+    0x7A59B29B, 0x910B, 0x4171, {0x82, 0x42, 0xA8, 0x5A, 0x0D, 0xF2, 0x5B, 0x5B}
+};
+
+enum efi_http_method {
+	HttpMethodGet,
+	HttpMethodPost,
+	HttpMethodPatch,
+	HttpMethodOptions,
+	HttpMethodConnect,
+	HttpMethodHead,
+	HttpMethodPut,
+	HttpMethodDelete,
+	HttpMethodTrace,
+	HttpMethodMax
+};
+
+enum efi_http_status_code {
+	HTTP_STATUS_UNSUPPORTED_STATUS = 0,
+	HTTP_STATUS_100_CONTINUE,
+	HTTP_STATUS_101_SWITCHING_PROTOCOLS,
+	HTTP_STATUS_200_OK,
+	HTTP_STATUS_201_CREATED,
+	HTTP_STATUS_202_ACCEPTED,
+	HTTP_STATUS_203_NON_AUTHORITATIVE_INFORMATION,
+	HTTP_STATUS_204_NO_CONTENT,
+	HTTP_STATUS_205_RESET_CONTENT,
+	HTTP_STATUS_206_PARTIAL_CONTENT,
+	HTTP_STATUS_300_MULTIPLE_CHOICES,
+	HTTP_STATUS_301_MOVED_PERMANENTLY,
+	HTTP_STATUS_302_FOUND,
+	HTTP_STATUS_303_SEE_OTHER,
+	HTTP_STATUS_304_NOT_MODIFIED,
+	HTTP_STATUS_305_USE_PROXY,
+	HTTP_STATUS_307_TEMPORARY_REDIRECT,
+	HTTP_STATUS_400_BAD_REQUEST,
+	HTTP_STATUS_401_UNAUTHORIZED,
+	HTTP_STATUS_402_PAYMENT_REQUIRED,
+	HTTP_STATUS_403_FORBIDDEN,
+	HTTP_STATUS_404_NOT_FOUND,
+	HTTP_STATUS_405_METHOD_NOT_ALLOWED,
+	HTTP_STATUS_406_NOT_ACCEPTABLE,
+	HTTP_STATUS_407_PROXY_AUTHENTICATION_REQUIRED,
+	HTTP_STATUS_408_REQUEST_TIME_OUT,
+	HTTP_STATUS_409_CONFLICT,
+	HTTP_STATUS_410_GONE,
+	HTTP_STATUS_411_LENGTH_REQUIRED,
+	HTTP_STATUS_412_PRECONDITION_FAILED,
+	HTTP_STATUS_413_REQUEST_ENTITY_TOO_LARGE,
+	HTTP_STATUS_414_REQUEST_URI_TOO_LARGE,
+	HTTP_STATUS_415_UNSUPPORTED_MEDIA_TYPE,
+	HTTP_STATUS_416_REQUESTED_RANGE_NOT_SATISFIED,
+	HTTP_STATUS_417_EXPECTATION_FAILED,
+	HTTP_STATUS_500_INTERNAL_SERVER_ERROR,
+	HTTP_STATUS_501_NOT_IMPLEMENTED,
+	HTTP_STATUS_502_BAD_GATEWAY,
+	HTTP_STATUS_503_SERVICE_UNAVAILABLE,
+	HTTP_STATUS_504_GATEWAY_TIME_OUT,
+	HTTP_STATUS_505_HTTP_VERSION_NOT_SUPPORTED,
+	HTTP_STATUS_308_PERMANENT_REDIRECT
+};
+
+struct efi_http_header {
+	char *field_name;
+	char *field_value;
+};
+
+struct efi_http_request_data {
+	efi_http_method method;
+	char16_t *url;
+};
+
+struct efi_http_response_data {
+	efi_http_status_code status_code;
+};
+
+struct efi_http_message {
+	union {
+		efi_http_request_data *request;
+		efi_http_response_data *response;
+	};
+	size_t header_count;
+	efi_http_header *headers;
+	size_t body_length;
+	void *body;
+};
+
+enum efi_http_version { HttpVersion10, HttpVersion11, HttpVersionUnsupported };
+
+struct efi_httpv4_access_point {
+	bool use_default_address;
+	efi_ipv4_address local_address;
+	efi_ipv4_address local_subnet;
+	uint16_t local_port;
+};
+
+struct efi_httpv6_access_point {
+	efi_ipv6_address local_address;
+	uint16_t local_port;
+};
+
+struct efi_http_config_data {
+	efi_http_version http_version;
+	uint32_t timeout_millisec;
+	bool local_address_is_ipv6;
+	union {
+		efi_httpv4_access_point *ipv4_node;
+		efi_httpv6_access_point *ipv6_node;
+	};
+};
+
+struct efi_http_mode_data {
+	efi_http_config_data config_data;
+	uint16_t supported_versions;
+};
+
+struct efi_http_token {
+	efi_event event;
+	efi_status status;
+	efi_http_message *message;
+};
+
+struct efi_http_protocol;
+
+typedef efi_status (*efi_http_get_mode_data_t)(
+    struct efi_http_protocol *self, struct efi_http_mode_data *http_mode_data
+);
+
+typedef efi_status (*efi_http_configure_t)(
+    struct efi_http_protocol *self, struct efi_http_config_data *http_config_data
+);
+
+typedef efi_status (*efi_http_request_t)(
+    struct efi_http_protocol *self, struct efi_http_token *token
+);
+
+typedef efi_status (*efi_http_cancel_t)(
+    struct efi_http_protocol *self, struct efi_http_token *token
+);
+
+typedef efi_status (*efi_http_response_t)(
+    struct efi_http_protocol *self, struct efi_http_token *token
+);
+
+typedef efi_status (*efi_http_poll_t)(struct efi_http_protocol *self);
+
+struct efi_http_protocol {
+	efi_http_get_mode_data_t get_mode_data;
+	efi_http_configure_t configure;
+	efi_http_request_t request;
+	efi_http_cancel_t cancel;
+	efi_http_response_t response;
+	efi_http_poll_t poll;
+};
+
+// 7.3 Protocol Handler Services
+constexpr uint32_t EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL = 0x00000001;
+constexpr uint32_t EFI_OPEN_PROTOCOL_GET_PROTOCOL = 0x00000002;
+constexpr uint32_t EFI_OPEN_PROTOCOL_TEST_PROTOCOL = 0x00000004;
+constexpr uint32_t EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER = 0x00000008;
+constexpr uint32_t EFI_OPEN_PROTOCOL_BY_DRIVER = 0x00000010;
+constexpr uint32_t EFI_OPEN_PROTOCOL_EXCLUSIVE = 0x00000020;
+
 // Appendix D
 
 constexpr efi_status EFI_SUCCESS = 0;
@@ -552,6 +732,15 @@ struct riscv_efi_boot_protocol {
 
 // 4.4.1 EFI_BOOT_SERVICES
 
+constexpr uint32_t EVT_NOTIFY_SIGNAL = 0x200;
+
+constexpr efi_tpl TPL_APPLICATION = 4;
+constexpr efi_tpl TPL_CALLBACK = 8;
+constexpr efi_tpl TPL_NOTIFY = 16;
+constexpr efi_tpl TPL_HIGH_LEVEL = 31;
+
+typedef void (*efi_event_notify)(efi_event, void *context);
+
 struct efi_boot_services {
 	efi_table_header hdr;
 	void *raise_tpl;
@@ -569,11 +758,17 @@ struct efi_boot_services {
 	);
 	efi_status (*allocate_pool)(efi_memory_type pool_type, size_t size, void **buffer);
 	efi_status (*free_pool)(void *buffer);
-	void *create_event;
+	efi_status (*create_event)(
+	    uint32_t type,
+	    efi_tpl notify_tpl,
+	    efi_event_notify notify_function,
+	    void *notify_context,
+	    efi_event *event
+	);
 	void *set_timer;
-	void *wait_for_event;
+	efi_status (*wait_for_event)(size_t number_of_events, efi_event *event, size_t *index);
 	void *signal_event;
-	void *close_event;
+	efi_status (*close_event)(efi_event event);
 	void *check_event;
 	void *install_protocol_interface;
 	void *reinstall_protocol_interface;
@@ -590,14 +785,23 @@ struct efi_boot_services {
 	void *unload_image;
 	efi_status (*exit_boot_services)(efi_handle image_handle, size_t map_key);
 	void *get_next_monotonic_count;
-	void *stall;
+	efi_status (*stall)(size_t microseconds);
 	efi_status (*set_watchdog_timer)(
 	    size_t timeout, uint64_t watchdog_code, size_t data_size, char16_t *watchdog_data
 	);
 	void *connect_controller;
 	void *disconnect_controller;
-	void *open_protocol;
-	void *close_protocol;
+	efi_status (*open_protocol)(
+	    efi_handle handle,
+	    efi_guid *protocol,
+	    void **interface,
+	    efi_handle agent_handle,
+	    efi_handle controller_handle,
+	    uint32_t attributes
+	);
+	efi_status (*close_protocol)(
+	    efi_handle handle, efi_guid *protocol, efi_handle agent_handle, efi_handle controller_handle
+	);
 	void *open_protocol_information;
 	void *protocols_per_handle;
 	void *locate_handle_buffer;

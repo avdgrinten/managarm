@@ -43,6 +43,9 @@ efi_loaded_image_protocol *loadedImage = nullptr;
 frg::string_view initrdPath = "managarm\\initrd.cpio";
 size_t initrdSize = 0;
 
+// frg::string_view httpInitrdUrl = "http://berry.mrvn.lan/orion/initrd.cpio";
+frg::string_view httpInitrdUrl = "http://10.0.0.6/orion/initrd.cpio";
+
 size_t memMapSize = 0;
 size_t mapKey = 0;
 size_t descriptorSize = 0;
@@ -142,8 +145,265 @@ uint32_t convertIp(frg::string_view ip) {
 	return res;
 }
 
+bool readHttpData(efi_http_protocol *http, void *buffer, size_t size) {
+	auto set_done_callback = [](efi_event, void *context) { *static_cast<bool *>(context) = true; };
+
+	efi_status status;
+
+	// Prepare the response data structures.
+	bool response_done;
+	efi_event event;
+	status = bs->create_event(
+	    EVT_NOTIFY_SIGNAL, TPL_CALLBACK, set_done_callback, &response_done, &event
+	);
+	if (status != EFI_SUCCESS) {
+		eir::infoLogger() << "eir: failed to create EFI event for HTTP request" << frg::endlog;
+		return false;
+	}
+	frg::scope_exit close_event{[&] { EFI_CHECK(bs->close_event(event)); }};
+
+	size_t progress = 0;
+	while (progress < size) {
+		response_done = false;
+
+		// Note that we must not set response_msg.response, otherwise EDK2 assumes that we're trying
+		// to receive headers.
+		efi_http_message response_msg{};
+		response_msg.body_length = size - progress;
+		response_msg.body = static_cast<char *>(buffer) + progress;
+
+		efi_http_token token{};
+		token.message = &response_msg;
+		token.event = event;
+
+		// Get response
+		// eir::infoLogger() << "eir: Retrieving HTTP response" << frg::endlog;
+		status = http->response(http, &token);
+		if (status != EFI_SUCCESS) {
+			eir::infoLogger() << "eir: EFI HTTP response failed with status: 0x"
+			                  << frg::hex_fmt{status} << frg::endlog;
+			return false;
+		}
+		while (!response_done) {
+			EFI_CHECK(http->poll(http));
+		}
+		EFI_CHECK(token.status);
+
+		progress += response_msg.body_length;
+		// infoLogger() << progress << frg::endlog;
+	}
+
+	// infoLogger() << "Body length is: " << response_msg.body_length << frg::endlog;
+	return true;
+}
+
+initgraph::Task prepareHttp{
+    &globalInitEngine, "uefi.http-setup", initgraph::Entails{getBootservicesDoneStage()}, [] {
+	    if (httpInitrdUrl.size() == 0)
+		    return;
+
+	    eir::infoLogger() << "eir: attempting HTTP boot from " << httpInitrdUrl << frg::endlog;
+
+	    efi_guid http_sb_guid = EFI_HTTP_SERVICE_BINDING_PROTOCOL_GUID;
+	    efi_http_service_binding_protocol *http_sb = nullptr;
+	    auto status =
+	        bs->locate_protocol(&http_sb_guid, nullptr, reinterpret_cast<void **>(&http_sb));
+	    if (status != EFI_SUCCESS) {
+		    eir::infoLogger() << "eir: no EFI_HTTP_SERVICE_BINDING_PROTOCOL available"
+		                      << frg::endlog;
+		    return;
+	    }
+
+	    efi_handle http_child_handle = nullptr;
+	    status = http_sb->create_child(http_sb, &http_child_handle);
+	    if (status != EFI_SUCCESS) {
+		    eir::infoLogger() << "eir: failed to create http child" << frg::endlog;
+		    return;
+	    }
+	    frg::scope_exit destroy_child_handle{[&] {
+		    http_sb->destroy_child(http_sb, http_child_handle);
+	    }};
+
+	    efi_guid http_guid = EFI_HTTP_PROTOCOL_GUID;
+	    efi_http_protocol *http = nullptr;
+	    status = bs->open_protocol(
+	        http_child_handle,
+	        &http_guid,
+	        reinterpret_cast<void **>(&http),
+	        handle,
+	        nullptr,
+	        EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+	    );
+	    frg::scope_exit close_child_handle{[&] {
+		    bs->close_protocol(http_child_handle, &http_guid, handle, nullptr);
+	    }};
+
+	    if (status != EFI_SUCCESS) {
+		    eir::infoLogger() << "eir: no EFI_HTTP_PROTOCOL available on child handle"
+		                      << frg::endlog;
+		    return;
+	    }
+
+	    efi_httpv4_access_point ipv4_node{};
+	    // ipv4_node.use_default_address = 1;
+	    ipv4_node.local_address.addr[0] = 10;
+	    ipv4_node.local_address.addr[1] = 0;
+	    ipv4_node.local_address.addr[2] = 0;
+	    ipv4_node.local_address.addr[3] = 8;
+	    ipv4_node.local_subnet.addr[0] = 255;
+	    ipv4_node.local_subnet.addr[1] = 0;
+	    ipv4_node.local_subnet.addr[2] = 0;
+	    ipv4_node.local_subnet.addr[3] = 0;
+
+	    efi_http_config_data http_config_data = {};
+	    http_config_data.http_version = HttpVersion11;
+	    http_config_data.timeout_millisec = 5000;
+	    http_config_data.local_address_is_ipv6 = false;
+	    http_config_data.ipv4_node = &ipv4_node;
+
+	    eir::infoLogger() << "eir: Configuring EFI HTTP protocol" << frg::endlog;
+	    status = http->configure(http, &http_config_data);
+	    if (status != EFI_SUCCESS) {
+		    eir::infoLogger() << "eir: EFI HTTP configuration failed with status: 0x"
+		                      << frg::hex_fmt{status} << frg::endlog;
+		    return;
+	    }
+
+	    // The URL needs to be UTF-16 for EFI.
+	    char16_t *url_utf16 = nullptr;
+	    EFI_CHECK(bs->allocate_pool(
+	        EfiLoaderData,
+	        (httpInitrdUrl.size() + 1) * sizeof(char16_t),
+	        reinterpret_cast<void **>(&url_utf16)
+	    ));
+	    for (size_t i = 0; i < httpInitrdUrl.size(); ++i) {
+		    url_utf16[i] = httpInitrdUrl[i];
+	    }
+	    url_utf16[httpInitrdUrl.size()] = 0;
+	    frg::scope_exit free_url{[&] { bs->free_pool(url_utf16); }};
+
+	    auto set_done_callback = [](efi_event, void *context) {
+		    *static_cast<bool *>(context) = true;
+	    };
+
+	    // Prepare the request data stuctures.
+	    efi_http_request_data request_data = {};
+	    request_data.method = HttpMethodGet;
+	    request_data.url = url_utf16;
+
+	    std::array<efi_http_header, 2> headers{};
+	    headers[0].field_name = const_cast<char *>("Host");
+	    headers[0].field_value = const_cast<char *>("10.0.0.6");
+	    headers[1].field_name = const_cast<char *>("Accept");
+	    headers[1].field_value = const_cast<char *>("*/*");
+
+	    efi_http_message request_msg = {};
+	    request_msg.request = &request_data;
+	    request_msg.header_count = headers.size();
+	    request_msg.headers = headers.data();
+
+	    bool request_done = false;
+	    efi_event request_event;
+	    status = bs->create_event(
+	        EVT_NOTIFY_SIGNAL, TPL_CALLBACK, set_done_callback, &request_done, &request_event
+	    );
+	    if (status != EFI_SUCCESS) {
+		    eir::infoLogger() << "eir: failed to create EFI event for HTTP request" << frg::endlog;
+		    return;
+	    }
+	    frg::scope_exit close_request_event{[&] { EFI_CHECK(bs->close_event(request_event)); }};
+
+	    efi_http_token request_token = {};
+	    request_token.event = request_event;
+	    request_token.message = &request_msg;
+
+	    // Send the HTTP request.
+	    eir::infoLogger() << "eir: Sending HTTP request" << frg::endlog;
+	    status = http->request(http, &request_token);
+	    if (status != EFI_SUCCESS) {
+		    eir::infoLogger() << "eir: EFI HTTP request failed with status: 0x"
+		                      << frg::hex_fmt{status} << frg::endlog;
+		    return;
+	    }
+
+	    while (!request_done) {
+		    EFI_CHECK(http->poll(http));
+	    }
+	    EFI_CHECK(request_token.status);
+
+	    // Prepare the response data structures.
+	    efi_http_response_data response_data = {};
+
+	    efi_http_message response_msg = {};
+	    response_msg.response = &response_data;
+
+	    bool response_done = false;
+	    efi_event response_event;
+	    status = bs->create_event(
+	        EVT_NOTIFY_SIGNAL, TPL_CALLBACK, set_done_callback, &response_done, &response_event
+	    );
+	    if (status != EFI_SUCCESS) {
+		    eir::infoLogger() << "eir: failed to create EFI event for HTTP request" << frg::endlog;
+		    return;
+	    }
+	    frg::scope_exit close_response_event{[&] { EFI_CHECK(bs->close_event(response_event)); }};
+
+	    efi_http_token response_token = {};
+	    response_token.message = &response_msg;
+	    response_token.event = response_event;
+
+	    // Get response
+	    eir::infoLogger() << "eir: Retrieving HTTP response" << frg::endlog;
+	    status = http->response(http, &response_token);
+	    if (status != EFI_SUCCESS) {
+		    eir::infoLogger() << "eir: EFI HTTP response failed with status: 0x"
+		                      << frg::hex_fmt{status} << frg::endlog;
+		    return;
+	    }
+
+	    while (!response_done) {
+		    EFI_CHECK(http->poll(http));
+	    }
+	    EFI_CHECK(response_token.status);
+
+	    if (response_data.status_code != HTTP_STATUS_200_OK) {
+		    eir::infoLogger() << "eir: HTTP request/response failed with status "
+		                      << (uint64_t)response_data.status_code << frg::endlog;
+		    return;
+	    }
+
+	    frg::optional<size_t> contentLength;
+	    for (size_t i = 0; i < response_msg.header_count; ++i) {
+		    auto name = frg::string_view{response_msg.headers[i].field_name};
+		    auto value = frg::string_view{response_msg.headers[i].field_value};
+		    if (name == "Content-Length")
+			    contentLength = value.to_number<size_t>();
+	    }
+	    if (!contentLength) {
+		    eir::infoLogger() << "eir: No Content-Length header in HTTP response" << frg::endlog;
+	    }
+
+	    initrdSize = *contentLength;
+	    eir::infoLogger() << "eir: initrd size is " << initrdSize << " bytes" << frg::endlog;
+
+	    efi_physical_addr initrd_addr = 0;
+	    EFI_CHECK(bs->allocate_pages(
+	        AllocateAnyPages, EfiLoaderData, (initrdSize >> 12) + 1, &initrd_addr
+	    ));
+
+	    initrd = reinterpret_cast<void *>(initrd_addr);
+	    if (!readHttpData(http, initrd, initrdSize)) {
+		    infoLogger() << "eir: Failed to retrieve HTTP response body" << frg::endlog;
+		    return;
+	    }
+    }
+};
+
 initgraph::Task preparePxe{
     &globalInitEngine, "uefi.pxe-setup", initgraph::Entails{getBootservicesDoneStage()}, [] {
+	    if (initrd)
+		    return;
+
 	    efi_guid pxe_guid = EFI_PXE_BASE_CODE_PROTOCOL_GUID;
 	    efi_guid devpath_guid = EFI_DEVICE_PATH_PROTOCOL_GUID;
 	    efi_guid devpath2text_guid = EFI_DEVICE_PATH_TO_TEXT_PROTOCOL_GUID;
@@ -379,7 +639,7 @@ initgraph::Task setupBootHartId{
 initgraph::Task readInitrd{
     &globalInitEngine,
     "uefi.read-initrd",
-    initgraph::Requires{&preparePxe},
+    initgraph::Requires{&prepareHttp, &preparePxe},
     initgraph::Entails{getBootservicesDoneStage()},
     [] {
 	    if (initrd)
