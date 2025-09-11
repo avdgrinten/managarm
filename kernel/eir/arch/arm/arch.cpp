@@ -40,6 +40,60 @@ void disableMmuEl1(uintptr_t flushStart, uintptr_t flushEnd, size_t dcLineSize) 
 	);
 }
 
+void disableMmuEl2(uintptr_t flushStart, uintptr_t flushEnd, size_t dcLineSize) {
+	uint64_t sctlr;
+	asm volatile("mrs %0, sctlr_el2" : "=r"(sctlr));
+	sctlr &= ~UINT64_C(1);
+
+	asm volatile(
+	    // clang-format off
+		// Clear the dcache in range [x0, x1) to PoC.
+		     "mov x0, %0" "\n"
+		"1:" "\n"
+		"\t" "dc cvac, x0" "\n"
+		"\t" "add x0, x0, %2" "\n"
+		"\t" "cmp x0, %1" "\n"
+		"\t" "b.lo 1b" "\n"
+		// Ensure that the cache flush is finished.
+		"\t" "dsb ish" "\n"
+		"\t" "isb" "\n"
+		// Disable paging.
+		"\t" "msr sctlr_el2, %3" "\n"
+		"\t" "isb"
+	    // clang-format on
+	    :
+	    : "r"(flushStart), // %0
+	      "r"(flushEnd),   // %1
+	      "r"(dcLineSize), // %2
+	      "r"(sctlr)       // %3
+	    : "x0", "memory"
+	);
+}
+
+void enterE2h() {
+	infoLogger() << "eir: Entering VHE mode" << frg::endlog;
+	uint64_t hcr;
+	asm volatile("mrs %0, hcr_el2" : "=r"(hcr) : : "memory");
+	hcr |= UINT64_C(1) << 34;
+
+	asm volatile(
+	    // clang-format off
+		// Set the E2H bit.
+		     "msr hcr_el2, %0" "\n"
+		"\t" "isb" "\n"
+		// Flush the TLB since the E2H bit may be cached.
+		"\t" "tlbi alle2" "\n"
+		"\t" "tlbi alle1" "\n"
+		"\t" "dsb ish" "\n"
+		"\t" "isb"
+	    // clang-format on
+	    :
+	    : "r"(hcr | (UINT64_C(1) << 34))
+	    : "memory"
+	);
+}
+
+// Must only be called in either EL1 or in EL2 with E2H=1.
 void enterKernelPaging() {
 	uint64_t aa64mmfr0;
 	asm volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(aa64mmfr0));
@@ -257,7 +311,11 @@ address_t getSingle4kPage(address_t address) {
 
 int getKernelVirtualBits() { return 49; }
 
-void initProcessorEarly() { eir::infoLogger() << "Starting Eir" << frg::endlog; }
+void initProcessorEarly() {
+	uint64_t currentel;
+	asm volatile("mrs %0, currentel" : "=r"(currentel));
+	eir::infoLogger() << "Starting Eir in EL " << (currentel >> 2) << frg::endlog;
+}
 
 void initProcessorPaging() {
 	setupPaging();
@@ -284,6 +342,12 @@ void initProcessorPaging() {
 bool patchArchSpecificManagarmElfNote(unsigned int, frg::span<char>) { return false; }
 
 [[noreturn]] void enterKernel() {
+	uint64_t aa64mmfr1;
+	asm volatile("mrs %0, id_aa64mmfr1_el1" : "=r"(aa64mmfr1));
+
+	uint64_t currentel;
+	asm volatile("mrs %0, currentel" : "=r"(currentel));
+
 	if (!physOffset) {
 		// Running from identity mapping. Paging may or may not be enabled.
 		// Reconfigure paging.
@@ -296,8 +360,32 @@ bool patchArchSpecificManagarmElfNote(unsigned int, frg::span<char>) { return fa
 		const auto &bootCaps = BootCaps::get();
 		auto flushStart = bootCaps.imageStart & ~(dcLineSize - 1);
 		auto flushEnd = (bootCaps.imageEnd + (dcLineSize - 1)) & ~(dcLineSize - 1);
-		disableMmuEl1(flushStart, flushEnd, dcLineSize);
+
+		if ((currentel >> 2) == 2) {
+			disableMmuEl2(flushStart, flushEnd, dcLineSize);
+
+			// Enter E2H mode if VHE is supported.
+			if (((aa64mmfr1 >> 8) & 0xF) == 1) {
+				enterE2h();
+			} else {
+				// TODO: Instead of dropping to EL1 in early boot, we should drop to EL1 here
+				//       (after doing the VHE detection).
+				if ((currentel >> 2) == 2)
+					panicLogger() << "eir: We are in EL2 but VHE is unsupported" << frg::endlog;
+			}
+		} else {
+			if ((currentel >> 2) != 1)
+				panicLogger() << "eir: Unexpected exception level: in EL" << (currentel >> 2)
+				              << frg::endlog;
+
+			disableMmuEl1(flushStart, flushEnd, dcLineSize);
+		}
 	} else {
+		// TODO: We can continue here if E2H is already set.
+		if ((currentel >> 2) != 1)
+			panicLogger() << "eir: Unexpected exception level: in EL" << (currentel >> 2)
+			              << " with non-identity mapping" << frg::endlog;
+
 		// Running from non-identity mapping with paging enabled.
 		// We cannot reconfigure paging.
 		infoLogger()
