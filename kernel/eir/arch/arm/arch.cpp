@@ -4,6 +4,8 @@
 #include <eir-internal/generic.hpp>
 #include <eir-internal/memory-layout.hpp>
 
+extern "C" void eirExcVectors();
+
 extern "C" [[noreturn]] void eirEnterKernel(uint64_t entry, uint64_t stack);
 
 namespace eir {
@@ -315,6 +317,15 @@ void initProcessorEarly() {
 	uint64_t currentel;
 	asm volatile("mrs %0, currentel" : "=r"(currentel));
 	eir::infoLogger() << "Starting Eir in EL " << (currentel >> 2) << frg::endlog;
+
+	// Install exception handlers (in case the boot protocol did not do that already).
+	auto vbar = reinterpret_cast<void *>(eirExcVectors);
+	if ((currentel >> 2) == 1) {
+		asm volatile("msr vbar_el1, %0" : : "r"(vbar) : "memory");
+	} else {
+		assert((currentel >> 2) == 2);
+		asm volatile("msr vbar_el2, %0" : : "r"(vbar) : "memory");
+	}
 }
 
 void initProcessorPaging() {
