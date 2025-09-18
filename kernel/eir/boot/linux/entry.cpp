@@ -7,10 +7,15 @@
 
 namespace eir {
 
-static BootCaps limineCaps = {
+static constinit BootCaps linuxCaps = {
     .hasMemoryMap = false,
 };
 
-BootCaps *BootCaps::get() { return &limineCaps; };
+[[gnu::constructor]] void initBootCaps() {
+	linuxCaps.imageStart = reinterpret_cast<uintptr_t>(&eirImageFloor);
+	linuxCaps.imageEnd = reinterpret_cast<uintptr_t>(&eirImageCeiling);
+}
+
+const BootCaps &BootCaps::get() { return linuxCaps; };
 
 } // namespace eir

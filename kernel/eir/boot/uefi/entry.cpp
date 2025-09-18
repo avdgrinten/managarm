@@ -689,7 +689,13 @@ initgraph::Task mapEirImage{
     }
 };
 
+constinit BootCaps uefiCaps = {
+    .hasMemoryMap = true,
+};
+
 } // namespace
+
+const BootCaps &BootCaps::get() { return uefiCaps; };
 
 extern "C" efi_status eirUefiMain(const efi_handle h, const efi_system_table *system_table) {
 	initPlatform();
@@ -711,6 +717,9 @@ extern "C" efi_status eirUefiMain(const efi_handle h, const efi_system_table *sy
 	// Get a handle to this binary in order to get the command line.
 	efi_guid protocol = EFI_LOADED_IMAGE_PROTOCOL_GUID;
 	EFI_CHECK(bs->handle_protocol(handle, &protocol, reinterpret_cast<void **>(&loadedImage)));
+	uefiCaps.imageStart = reinterpret_cast<uintptr_t>(loadedImage->image_base);
+	uefiCaps.imageEnd =
+	    reinterpret_cast<uintptr_t>(loadedImage->image_base) + loadedImage->image_size;
 
 	// Convert the command line to ASCII.
 	char *ascii_cmdline = nullptr;

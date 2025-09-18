@@ -116,19 +116,22 @@ initgraph::Task setupMemoryRegions{
     }
 };
 
-} // namespace
-
-static BootCaps limineCaps = {
+constinit BootCaps limineCaps = {
     .hasMemoryMap = true,
 };
 
-BootCaps *BootCaps::get() { return &limineCaps; };
+} // namespace
+
+const BootCaps &BootCaps::get() { return limineCaps; };
 
 extern "C" void eirLimineMain(void) {
 	initPlatform();
 
 	eir::infoLogger() << "Booting Eir from Limine" << frg::endlog;
 	eirRunConstructors();
+
+	limineCaps.imageStart = reinterpret_cast<uintptr_t>(&eirImageFloor);
+	limineCaps.imageEnd = reinterpret_cast<uintptr_t>(&eirImageCeiling);
 
 	if (!LIMINE_BASE_REVISION_SUPPORTED)
 		panicLogger() << "eir-limine was not booted with correct base revision" << frg::endlog;

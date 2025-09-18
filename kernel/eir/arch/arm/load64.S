@@ -8,25 +8,10 @@ eirStackTop:
 .section .text
 .global eirEnterKernel
 eirEnterKernel:
-	// x0 -> TTBR0 ptr
-	// x1 -> TTBR1 ptr
-	// x2 -> thor entry point
-	// x3 -> thor stack pointer
-
-	// Set page table pointers
-	msr TTBR0_EL1, x0
-	msr TTBR1_EL1, x1
-	dsb ish
-	isb
-
-	// Enable the MMU
-	mrs x0, SCTLR_EL1
-	orr x0, x0, #1
-	msr SCTLR_EL1, x0
-	isb
-
-	mov sp, x3
-	br x2
+	// x0 -> Thor entry pointer
+	// x1 -> Thor stack pointer
+	mov sp, x1
+	br x0
 
 #ifndef __clang__
 	.section .note.GNU-stack,"",%progbits

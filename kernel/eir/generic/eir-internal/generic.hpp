@@ -42,9 +42,11 @@ struct GenericInfo {
 
 // Capabilites of a boot protocol.
 struct BootCaps {
-	bool hasMemoryMap;
+	uintptr_t imageStart{0};
+	uintptr_t imageEnd{0};
+	bool hasMemoryMap{false};
 
-	static BootCaps *get();
+	static const BootCaps &get();
 };
 
 void eirRelocate();
