@@ -9,4 +9,11 @@ eirEnterKernel:
 	mv sp, a2
 	jr a1
 
+.section .bss
+.global eirStackBase
+.global eirStackTop
+eirStackBase:
+	.space 0x10000
+eirStackTop:
+
 .section .note.GNU-stack,"",%progbits

@@ -3,6 +3,7 @@
 #endif
 #include <assert.h>
 #include <eir-internal/acpi/acpi.hpp>
+#include <eir-internal/arch-generic/stack.hpp>
 #include <eir-internal/arch.hpp>
 #include <eir-internal/debug.hpp>
 #include <eir-internal/framebuffer.hpp>
@@ -754,6 +755,8 @@ extern "C" efi_status eirUefiMain(const efi_handle h, const efi_system_table *sy
 	overrideSubnet = subnetStr.size() != 0;
 	overrideServer = serverStr.size() != 0;
 
+	eir::infoLogger() << "eir: image base address " << frg::hex_fmt{loadedImage->image_base}
+	                  << frg::endlog;
 	eir::infoLogger() << "eir: command line='" << ascii_cmdline << "'" << frg::endlog;
 
 	// this needs to be volatile as GDB sets this to true on attach
@@ -771,15 +774,15 @@ extern "C" efi_status eirUefiMain(const efi_handle h, const efi_system_table *sy
 		}
 #endif
 
-		eir::infoLogger() << "eir: image base address " << frg::hex_fmt{loadedImage->image_base}
-		                  << frg::endlog;
 		eir::infoLogger() << "eir: Waiting for GDB to attach" << frg::endlog;
 	}
 
 	while (!eir_gdb_ready)
 		;
 
-	eirMain();
+	// Enter a stack that is part of Eir's image.
+	// This ensures that we can still access the stack when paging in enabled.
+	runOnStack([] { eirMain(); }, eirStackTop);
 
 	return EFI_SUCCESS;
 }

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <dtb.hpp>
 #include <eir-internal/acpi/acpi.hpp>
+#include <eir-internal/arch-generic/stack.hpp>
 #include <eir-internal/arch.hpp>
 #include <eir-internal/debug.hpp>
 #include <eir-internal/framebuffer.hpp>
@@ -158,7 +159,9 @@ extern "C" void eirLimineMain(void) {
 	initrd = initrd_file->address;
 	kernel_physical = kernel_address_request.response->physical_base;
 
-	eirMain();
+	// Enter a stack that is part of Eir's image.
+	// This ensures that we can still access the stack when paging in enabled.
+	runOnStack([] { eirMain(); }, eirStackTop);
 }
 
 } // namespace eir
