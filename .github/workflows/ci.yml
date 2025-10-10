@@ -258,12 +258,19 @@ jobs:
             env:
                 XBPS_ARCH: ${{ matrix.arch }}
             working-directory: build/
-          - name: Set up xbstrap and test image
+          - name: Set up xbstrap
             run: |
                 set -x
                 xbstrap init ../src
                 cp ../src/managarm/ci/bootstrap-site-$CI_ARCH.yml bootstrap-site.yml
-                xbstrap run test-image
             env:
                 CI_ARCH: ${{ matrix.arch }}
+            working-directory: build/
+          - name: Run ci-all
+            run: |
+                xbstrap run ci-all
+            working-directory: build/
+          - name: Run test-image
+            run: |
+                xbstrap run test-image
             working-directory: build/
