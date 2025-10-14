@@ -13,6 +13,7 @@ jobs:
             bootstrap-commit: ${{ steps.head.outputs.bootstrap-commit }}
             mlibc-commit: ${{ steps.head.outputs.mlibc-commit }}
             caching-key: ${{ steps.head.outputs.caching-key }}
+            corresponding-bootstrap: ${{ steps.head.outputs.corresponding-bootstrap }}
         steps:
           - id: head
             name: Get HEAD of bootstrap-managarm
@@ -39,6 +40,16 @@ jobs:
                 set -x
                 curl -o rootfs.tar.gz https://repos.managarm.org/buildenv/managarm-buildenv.tar.gz
                 tar -xzf rootfs.tar.gz
+          - name: Check for corresponding bootstrap-managarm PR
+            env:
+              PR_BODY: ${{ github.event.pull_request.body }}
+            run: |
+              pr_num=$(echo "$PR_BODY" | grep -Po '(?<=^Depends on managarm\/bootstrap-managarm#)([0-9]+)$' | head -n1)
+              pr_ref=""
+              if [ ! -z "${pr_num}" ]; then
+                pr_ref="refs/pull/$pr_num/head"
+              fi
+              echo "corresponding-bootstrap=${pr_ref}" > "$GITHUB_OUTPUT"
 
     cache-arch:
         strategy:
@@ -113,8 +124,6 @@ jobs:
           - name: Install prerequisites
             run: |
                 set -x
-                sudo apt-get update
-                sudo apt-get install pcre2-utils
                 pip3 install xbstrap y4
                 xbstrap prereqs cbuildrt xbps
           - name: Restore rootfs cache
@@ -131,21 +140,11 @@ jobs:
                 # Note: must be kept in sync with the restore action (effectively part of the key).
                 path: build/xbps-repo/*.xbps
                 fail-on-cache-miss: true
-          - name: Check for requested bootstrap-managarm PR
-            env:
-              PR_BODY: ${{ github.event.pull_request.body }}
-            run: |
-              pr_num=$(echo "$PR_BODY" | pcre2grep -o1 "^Depends on managarm\/bootstrap-managarm#([0-9]+)" | head -n1)
-              pr_ref=""
-              if [ ! -z "${pr_num}" ]; then
-                pr_ref="refs/pull/$pr_num/head"
-              fi
-              echo "bootstrap_ref=${pr_ref}" >> "$GITHUB_ENV"
           - name: Checkout bootstrap-managarm
             uses: actions/checkout@v2
             with:
                 repository: managarm/bootstrap-managarm
-                ref: ${{env.bootstrap_ref}}
+                ref: ${{ needs.cache-generic.outputs.corresponding-bootstrap }}
                 path: src/
           - name: Checkout Managarm
             uses: actions/checkout@v2
@@ -197,8 +196,6 @@ jobs:
           - name: Install prerequisites
             run: |
                 set -x
-                sudo apt-get update
-                sudo apt-get install pcre2-utils
                 pip3 install xbstrap y4
                 xbstrap prereqs cbuildrt xbps
           - name: Restore rootfs cache
@@ -215,21 +212,11 @@ jobs:
                 # Note: must be kept in sync with the restore action (effectively part of the key).
                 path: build/xbps-repo/*.xbps
                 fail-on-cache-miss: true
-          - name: Check for requested bootstrap-managarm PR
-            env:
-              PR_BODY: ${{ github.event.pull_request.body }}
-            run: |
-              pr_num=$(echo "$PR_BODY" | pcre2grep -o1 "^Depends on managarm\/bootstrap-managarm#([0-9]+)" | head -n1)
-              pr_ref=""
-              if [ ! -z "${pr_num}" ]; then
-                pr_ref="refs/pull/$pr_num/head"
-              fi
-              echo "bootstrap_ref=${pr_ref}" >> "$GITHUB_ENV"
           - name: Checkout bootstrap-managarm
             uses: actions/checkout@v2
             with:
                 repository: managarm/bootstrap-managarm
-                ref: ${{env.bootstrap_ref}}
+                ref: ${{ needs.cache-generic.outputs.corresponding-bootstrap }}
                 path: src/
           - name: Checkout Managarm
             uses: actions/checkout@v2
@@ -312,21 +299,11 @@ jobs:
             with:
                 name: "${{ matrix.arch }}-managarm-system"
                 path: build/xbps-repo/
-          - name: Check for requested bootstrap-managarm PR
-            env:
-              PR_BODY: ${{ github.event.pull_request.body }}
-            run: |
-              pr_num=$(echo "$PR_BODY" | pcre2grep -o1 "^Depends on managarm\/bootstrap-managarm#([0-9]+)" | head -n1)
-              pr_ref=""
-              if [ ! -z "${pr_num}" ]; then
-                pr_ref="refs/pull/$pr_num/head"
-              fi
-              echo "bootstrap_ref=${pr_ref}" >> "$GITHUB_ENV"
           - name: Checkout bootstrap-managarm
             uses: actions/checkout@v2
             with:
                 repository: managarm/bootstrap-managarm
-                ref: ${{env.bootstrap_ref}}
+                ref: ${{ needs.cache-generic.outputs.corresponding-bootstrap }}
                 path: src/
           - name: Checkout Managarm
             uses: actions/checkout@v2
