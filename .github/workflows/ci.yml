@@ -250,7 +250,7 @@ jobs:
     test-image:
         strategy:
             matrix:
-                arch: [x86_64]
+                arch: [x86_64, aarch64]
         name: Test ${{ matrix.arch }} image
         needs:
           - cache-generic
@@ -267,7 +267,7 @@ jobs:
             run: |
                 set -x
                 sudo apt-get update
-                sudo apt-get install qemu-system-x86
+                sudo apt-get install qemu-system-x86 qemu-system-arm
                 pip3 install xbstrap y4
                 xbstrap prereqs cbuildrt xbps
           - name: Restore rootfs cache
@@ -326,6 +326,7 @@ jobs:
             run: |
                 xbstrap run ci-all
             working-directory: build/
+            if: matrix.arch == 'x86_64'
           - name: Run test-image
             run: |
                 xbstrap run test-image
