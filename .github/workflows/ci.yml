@@ -182,7 +182,24 @@ jobs:
             matrix:
                 arch: [x86_64, aarch64, riscv64]
                 pkg: [managarm-kernel, managarm-system, managarm-kernel-uefi]
-        name: Build ${{ matrix.pkg }} on ${{ matrix.arch }}
+                variant: [vanilla]
+                include:
+                    # Add variant-suffix to vanilla variants.
+                  - variant: vanilla
+                    variant-suffix: ""
+                    title-suffix: ""
+                    # Add KASAN variants.
+                  - pkg: managarm-kernel
+                    arch: x86_64 # TODO: Extend to other archs.
+                    variant: KASAN
+                    variant-suffix: "+kasan"
+                    title-suffix: ", KASAN"
+                  - pkg: managarm-kernel-uefi
+                    arch: x86_64 # TODO: Extend to other archs.
+                    variant: KASAN
+                    variant-suffix: "+kasan"
+                    title-suffix: ", KASAN"
+        name: Build ${{ matrix.pkg }}${{ matrix.title-suffix }} on ${{ matrix.arch }}
         needs:
           - cache-generic
           - cache-arch
@@ -235,15 +252,20 @@ jobs:
                 set -x
                 xbstrap init ../src
                 ~/.xbstrap/bin/xbps-rindex -fa xbps-repo/*.xbps
+                xbstrap configure $CI_BUILD_PKG
+                if [ "$CI_VARIANT" = "KASAN" ]; then
+                    xbstrap runtool -- meson configure pkg-builds/$CI_BUILD_PKG/ -Dkernel_kasan=true -Dkernel_ubsan=true
+                fi
                 xbstrap pack $CI_BUILD_PKG
             env:
                 CI_BUILD_PKG: ${{ matrix.pkg }}
+                CI_VARIANT: ${{ matrix.variant }}
                 XBPS_ARCH: ${{ matrix.arch }}
             working-directory: build/
           - name: Upload artifact
             uses: actions/upload-artifact@v4
             with:
-                name: "${{ matrix.arch }}-${{ matrix.pkg }}"
+                name: "${{ matrix.arch }}-${{ matrix.pkg }}${{ matrix.variant-suffix }}"
                 path: "build/xbps-repo/${{ matrix.pkg }}*.xbps"
                 if-no-files-found: error
 
@@ -251,7 +273,15 @@ jobs:
         strategy:
             matrix:
                 arch: [x86_64]
-        name: Test ${{ matrix.arch }} image
+                variant: [vanilla, KASAN]
+                include:
+                  - variant: vanilla
+                    variant-suffix: ""
+                    title-suffix: ""
+                  - variant: KASAN
+                    variant-suffix: "+kasan"
+                    title-suffix: ", KASAN"
+        name: Test ${{ matrix.arch }}${{ matrix.title-suffix }} image
         needs:
           - cache-generic
           - cache-arch
@@ -287,12 +317,12 @@ jobs:
           - name: Download managarm-kernel
             uses: actions/download-artifact@v4
             with:
-                name: "${{ matrix.arch }}-managarm-kernel"
+                name: "${{ matrix.arch }}-managarm-kernel${{ matrix.variant-suffix }}"
                 path: build/xbps-repo/
           - name: Download managarm-kernel-uefi
             uses: actions/download-artifact@v4
             with:
-                name: "${{ matrix.arch }}-managarm-kernel-uefi"
+                name: "${{ matrix.arch }}-managarm-kernel-uefi${{ matrix.variant-suffix }}"
                 path: build/xbps-repo/
           - name: Download managarm-system
             uses: actions/download-artifact@v4
@@ -334,5 +364,5 @@ jobs:
             uses: actions/upload-artifact@v4
             if: ${{ always() }}
             with:
-                name: "logfiles-${{ matrix.arch }}"
+                name: "logfiles-${{ matrix.arch }}${{ matrix.variant-suffix }}"
                 path: "build/ci-*.txt"
