@@ -272,13 +272,14 @@ jobs:
     test-image:
         strategy:
             matrix:
-                arch: [x86_64]
-                variant: [vanilla, KASAN]
+                arch: [x86_64, aarch64, riscv64]
+                variant: [vanilla]
                 include:
                   - variant: vanilla
                     variant-suffix: ""
                     title-suffix: ""
-                  - variant: KASAN
+                  - arch: x86_64
+                    variant: KASAN
                     variant-suffix: "+kasan"
                     title-suffix: ", KASAN"
         name: Test ${{ matrix.arch }}${{ matrix.title-suffix }} image
@@ -297,7 +298,7 @@ jobs:
             run: |
                 set -x
                 sudo apt-get update
-                sudo apt-get install qemu-system-x86
+                sudo apt-get install qemu-system-x86 qemu-system-arm qemu-system-misc
                 pip3 install xbstrap y4
                 xbstrap prereqs cbuildrt xbps
           - name: Restore rootfs cache
@@ -356,6 +357,7 @@ jobs:
             run: |
                 xbstrap run ci-all
             working-directory: build/
+            if: matrix.arch == 'x86_64'
           - name: Run test-image
             run: |
                 xbstrap run test-image
