@@ -3,6 +3,7 @@ auto_pull: true
 define_options:
     arch: x86_64
     arch-triple: x86_64-managarm
+    rust-arch: x86_64
 
 pkg_management:
     format: xbps

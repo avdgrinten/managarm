@@ -3,6 +3,7 @@ auto_pull: true
 define_options:
     arch: riscv64
     arch-triple: riscv64-managarm
+    rust-arch: riscv64gc
 
 labels:
     match:

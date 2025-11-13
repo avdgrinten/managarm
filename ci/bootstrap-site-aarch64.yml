@@ -3,6 +3,7 @@ auto_pull: true
 define_options:
     arch: aarch64
     arch-triple: aarch64-managarm
+    rust-arch: aarch64
 
 labels:
     match:

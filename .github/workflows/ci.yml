@@ -100,6 +100,7 @@ jobs:
                 set -x
                 xbstrap init ../src
                 xbstrap pull-pack -c --deps-of managarm-system
+                xbstrap pull-pack -c --deps-of managarm-system-rs
                 xbstrap pull-pack -c --deps-of managarm-kernel
                 xbstrap pull-pack -c --deps-of weston-desktop
                 rm xbps-repo/managarm-system*.xbps
@@ -195,7 +196,7 @@ jobs:
         strategy:
             matrix:
                 arch: [x86_64, aarch64, riscv64]
-                pkg: [managarm-kernel, managarm-system, managarm-kernel-uefi]
+                pkg: [managarm-kernel, managarm-system, managarm-kernel-uefi, managarm-system-rs]
                 variant: [vanilla]
                 include:
                     # Add variant-suffix to vanilla variants.
@@ -344,6 +345,11 @@ jobs:
             with:
                 name: "${{ matrix.arch }}-managarm-system"
                 path: build/xbps-repo/
+          - name: Download managarm-system-rs
+            uses: actions/download-artifact@v4
+            with:
+                name: "${{ matrix.arch }}-managarm-system-rs"
+                path: build/xbps-repo/
           - name: Checkout bootstrap-managarm
             uses: actions/checkout@v2
             with:
@@ -361,6 +367,9 @@ jobs:
                 xbstrap init ../src
                 cp ../src/managarm/ci/bootstrap-site-$CI_ARCH.yml bootstrap-site.yml
                 ~/.xbstrap/bin/xbps-rindex -fa xbps-repo/*.xbps
+                # Use --only-wanted to verify that we do not build or pull-pack here.
+                # managarm-system-rs is not included in base yet, so we install it manually here.
+                xbstrap install --only-wanted --deps-of managarm-system-rs
                 xbstrap install --only-wanted --deps-of weston-desktop
                 if [ "$CI_ARCH" = "x86_64" ]; then
                   xbstrap install os-test
