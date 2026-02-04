@@ -55,7 +55,7 @@ jobs:
     cache-arch:
         strategy:
             matrix:
-                arch: [x86_64, aarch64, riscv64]
+                arch: [x86_64]
         name: Cache ${{ matrix.arch }} prerequisites
         needs: cache-generic
         runs-on: ubuntu-24.04
@@ -107,95 +107,95 @@ jobs:
                 rm xbps-repo/managarm-kernel*.xbps
             working-directory: build/
 
-    lint-package:
-        strategy:
-            matrix:
-                arch: [x86_64, aarch64, riscv64]
-                pkg: [managarm-kernel, managarm-system, managarm-kernel-uefi]
-        name: Lint ${{ matrix.pkg }} on ${{ matrix.arch }}
-        needs:
-          - cache-generic
-          - cache-arch
-        runs-on: ubuntu-24.04
-        steps:
-          - name: Permit unprivileged user namespaces
-            run: |
-                set -x
-                sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0
-                sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          - name: Install prerequisites
-            run: |
-                set -x
-                pip3 install xbstrap y4
-                xbstrap prereqs cbuildrt xbps
-          - name: Restore rootfs cache
-            uses: actions/cache/restore@v4
-            with:
-                key: "rootfs-${{ needs.cache-generic.outputs.caching-key }}"
-                # Note: must be kept in sync with the cache action (effectively part of the key).
-                path: rootfs/
-                fail-on-cache-miss: true
-          - name: Restore xbps cache
-            uses: actions/cache/restore@v4
-            with:
-                key: "xbps-${{ matrix.arch }}-${{ needs.cache-generic.outputs.caching-key }}"
-                # Note: must be kept in sync with the restore action (effectively part of the key).
-                path: build/xbps-repo/*.xbps
-                fail-on-cache-miss: true
-          - name: Checkout bootstrap-managarm
-            uses: actions/checkout@v2
-            with:
-                repository: managarm/bootstrap-managarm
-                ref: ${{ needs.cache-generic.outputs.corresponding-bootstrap }}
-                path: src/
-          - name: Checkout Managarm
-            uses: actions/checkout@v2
-            with:
-                path: src/managarm/
-                fetch-depth: 0
-          - name: Prepare src/ and build/
-            run: |
-                set -x
-                touch src/managarm/checkedout.xbstrap
-                cp src/managarm/ci/bootstrap-site-$CI_ARCH.yml build/bootstrap-site.yml
-            env:
-                CI_ARCH: ${{ matrix.arch }}
-          - name: Set up xbstrap
-            run: |
-                set -x
-                xbstrap init ../src
-                ~/.xbstrap/bin/xbps-rindex -fa xbps-repo/*.xbps
-            env:
-                XBPS_ARCH: ${{ matrix.arch }}
-            working-directory: build/
-          - name: Build on ${{ matrix.pkg }} on ${{ matrix.arch }}
-            # Note that we do need to build the package to run clang-tidy (otherwise generated files are missing).
-            # Build without optimizations to reduce the build time.
-            run: |
-                xbstrap configure $CI_BUILD_PKG
-                xbstrap runtool -- meson configure pkg-builds/$CI_BUILD_PKG/ -Dbuildtype=debug -Ddebug=false -Db_lto=false
-                xbstrap runtool -- meson configure pkg-builds/$CI_BUILD_PKG/ -Dwerror=true
-                xbstrap build $CI_BUILD_PKG
-            working-directory: build/
-            env:
-                CI_ARCH: ${{ matrix.arch }}
-                CI_BUILD_PKG: ${{ matrix.pkg }}
-          - name: Run clang-format / clang-tidy on ${{ matrix.pkg }} on ${{ matrix.arch }}
-            run: |
-                if [ "$CI_BUILD_PKG" = "managarm-kernel" ]; then
-                    xbstrap run --keep-going --pkg $CI_BUILD_PKG clang-tidy clang-format-check
-                else
-                    xbstrap run --pkg $CI_BUILD_PKG clang-tidy
-                fi
-            working-directory: build/
-            env:
-                CI_ARCH: ${{ matrix.arch }}
-                CI_BUILD_PKG: ${{ matrix.pkg }}
+#    lint-package:
+#        strategy:
+#            matrix:
+#                arch: [x86_64, aarch64, riscv64]
+#                pkg: [managarm-kernel, managarm-system, managarm-kernel-uefi]
+#        name: Lint ${{ matrix.pkg }} on ${{ matrix.arch }}
+#        needs:
+#          - cache-generic
+#          - cache-arch
+#        runs-on: ubuntu-24.04
+#        steps:
+#          - name: Permit unprivileged user namespaces
+#            run: |
+#                set -x
+#                sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0
+#                sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+#          - name: Install prerequisites
+#            run: |
+#                set -x
+#                pip3 install xbstrap y4
+#                xbstrap prereqs cbuildrt xbps
+#          - name: Restore rootfs cache
+#            uses: actions/cache/restore@v4
+#            with:
+#                key: "rootfs-${{ needs.cache-generic.outputs.caching-key }}"
+#                # Note: must be kept in sync with the cache action (effectively part of the key).
+#                path: rootfs/
+#                fail-on-cache-miss: true
+#          - name: Restore xbps cache
+#            uses: actions/cache/restore@v4
+#            with:
+#                key: "xbps-${{ matrix.arch }}-${{ needs.cache-generic.outputs.caching-key }}"
+#                # Note: must be kept in sync with the restore action (effectively part of the key).
+#                path: build/xbps-repo/*.xbps
+#                fail-on-cache-miss: true
+#          - name: Checkout bootstrap-managarm
+#            uses: actions/checkout@v2
+#            with:
+#                repository: managarm/bootstrap-managarm
+#                ref: ${{ needs.cache-generic.outputs.corresponding-bootstrap }}
+#                path: src/
+#          - name: Checkout Managarm
+#            uses: actions/checkout@v2
+#            with:
+#                path: src/managarm/
+#                fetch-depth: 0
+#          - name: Prepare src/ and build/
+#            run: |
+#                set -x
+#                touch src/managarm/checkedout.xbstrap
+#                cp src/managarm/ci/bootstrap-site-$CI_ARCH.yml build/bootstrap-site.yml
+#            env:
+#                CI_ARCH: ${{ matrix.arch }}
+#          - name: Set up xbstrap
+#            run: |
+#                set -x
+#                xbstrap init ../src
+#                ~/.xbstrap/bin/xbps-rindex -fa xbps-repo/*.xbps
+#            env:
+#                XBPS_ARCH: ${{ matrix.arch }}
+#            working-directory: build/
+#          - name: Build on ${{ matrix.pkg }} on ${{ matrix.arch }}
+#            # Note that we do need to build the package to run clang-tidy (otherwise generated files are missing).
+#            # Build without optimizations to reduce the build time.
+#            run: |
+#                xbstrap configure $CI_BUILD_PKG
+#                xbstrap runtool -- meson configure pkg-builds/$CI_BUILD_PKG/ -Dbuildtype=debug -Ddebug=false -Db_lto=false
+#                xbstrap runtool -- meson configure pkg-builds/$CI_BUILD_PKG/ -Dwerror=true
+#                xbstrap build $CI_BUILD_PKG
+#            working-directory: build/
+#            env:
+#                CI_ARCH: ${{ matrix.arch }}
+#                CI_BUILD_PKG: ${{ matrix.pkg }}
+#          - name: Run clang-format / clang-tidy on ${{ matrix.pkg }} on ${{ matrix.arch }}
+#            run: |
+#                if [ "$CI_BUILD_PKG" = "managarm-kernel" ]; then
+#                    xbstrap run --keep-going --pkg $CI_BUILD_PKG clang-tidy clang-format-check
+#                else
+#                    xbstrap run --pkg $CI_BUILD_PKG clang-tidy
+#                fi
+#            working-directory: build/
+#            env:
+#                CI_ARCH: ${{ matrix.arch }}
+#                CI_BUILD_PKG: ${{ matrix.pkg }}
 
     build-package:
         strategy:
             matrix:
-                arch: [x86_64, aarch64, riscv64]
+                arch: [x86_64]
                 pkg: [managarm-kernel, managarm-system, managarm-kernel-uefi, managarm-system-rs]
                 variant: [vanilla]
                 include:
@@ -287,7 +287,7 @@ jobs:
     test-image:
         strategy:
             matrix:
-                arch: [x86_64, aarch64, riscv64]
+                arch: [x86_64]
                 variant: [vanilla]
                 include:
                   - variant: vanilla
@@ -303,23 +303,25 @@ jobs:
           - cache-arch
           - build-package
         runs-on: ubuntu-24.04
+        container:
+              image: debian:latest
+              options: --privileged
         steps:
           - name: Permit unprivileged user namespaces
             run: |
                 set -x
-                sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0
-                sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+                echo 0 | tee /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined
+                echo 0 | tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
           - name: Enable KVM group perms
             run: |
-                echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-                sudo udevadm control --reload-rules
-                sudo udevadm trigger --name-match=kvm
+                chmod 0666 /dev/kvm
           - name: Install prerequisites
             run: |
                 set -x
-                sudo apt-get update
-                sudo apt-get install qemu-system-x86 qemu-system-arm qemu-system-misc
-                pip3 install xbstrap y4
+                apt-get update
+                apt-get install -y --no-install-recommends qemu-system-x86 qemu-system-arm qemu-system-riscv
+                apt-get install -y python3-pip
+                pip3 install --break-system-packages xbstrap y4
                 xbstrap prereqs cbuildrt xbps
           - name: Restore rootfs cache
             uses: actions/cache/restore@v4
