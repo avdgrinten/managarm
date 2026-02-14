@@ -72,8 +72,6 @@
 	swapgs
 1:
 
-	# We're pushing 15 registers here.
-	# Adjust the rsp offsets below if you change those pushs.
 	push %rbp
 	.cfi_adjust_cfa_offset 8
 	.cfi_rel_offset %rbp, 0
@@ -89,9 +87,6 @@
 	push %r12
 	.cfi_adjust_cfa_offset 8
 	.cfi_rel_offset %r12, 0
-	push %r11
-	.cfi_adjust_cfa_offset 8
-	.cfi_rel_offset %r11, 0
 	push %r10
 	.cfi_adjust_cfa_offset 8
 	.cfi_rel_offset %r10, 0
@@ -110,15 +105,18 @@
 	push %rdx
 	.cfi_adjust_cfa_offset 8
 	.cfi_rel_offset %rdx, 0
+	push %rax
+	.cfi_adjust_cfa_offset 8
+	.cfi_rel_offset %rax, 0
+	push %r11
+	.cfi_adjust_cfa_offset 8
+	.cfi_rel_offset %r11, 0
 	push %rcx
 	.cfi_adjust_cfa_offset 8
 	.cfi_rel_offset %rcx, 0
 	push %rbx
 	.cfi_adjust_cfa_offset 8
 	.cfi_rel_offset %rbx, 0
-	push %rax
-	.cfi_adjust_cfa_offset 8
-	.cfi_rel_offset %rax, 0
 
 	# Reserve space for iplState.
 	sub $8, %rsp
@@ -133,15 +131,18 @@
 	add $8, %rsp
 	.cfi_adjust_cfa_offset -8
 
-	pop %rax
-	.cfi_adjust_cfa_offset -8
-	.cfi_restore %rax
 	pop %rbx
 	.cfi_adjust_cfa_offset -8
 	.cfi_restore %rbx
 	pop %rcx
 	.cfi_adjust_cfa_offset -8
 	.cfi_restore %rcx
+	pop %r11
+	.cfi_adjust_cfa_offset -8
+	.cfi_restore %r11
+	pop %rax
+	.cfi_adjust_cfa_offset -8
+	.cfi_restore %rax
 	pop %rdx
 	.cfi_adjust_cfa_offset -8
 	.cfi_restore %rdx
@@ -160,9 +161,6 @@
 	pop %r10
 	.cfi_adjust_cfa_offset -8
 	.cfi_restore %r10
-	pop %r11
-	.cfi_adjust_cfa_offset -8
-	.cfi_restore %r11
 	pop %r12
 	.cfi_adjust_cfa_offset -8
 	.cfi_restore %r12
@@ -225,21 +223,22 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 	swapgs
 1:
 
+	push $0 # Dummy error code.
 	push %rbp
 	push %r15
 	push %r14
 	push %r13
 	push %r12
-	push %r11
 	push %r10
 	push %r9
 	push %r8
 	push %rsi
 	push %rdi
 	push %rdx
+	push %rax
+	push %r11
 	push %rcx
 	push %rbx
-	push %rax
 
 	# Reserve space for iplState.
 	sub $8, %rsp
@@ -252,16 +251,16 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 
 	add $8, %rsp
 
-	pop %rax
 	pop %rbx
 	pop %rcx
+	pop %r11
+	pop %rax
 	pop %rdx
 	pop %rdi
 	pop %rsi
 	pop %r8
 	pop %r9
 	pop %r10
-	pop %r11
 	pop %r12
 	pop %r13
 	pop %r14
@@ -269,11 +268,12 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 	pop %rbp
 
 	# Restore GS.
-	testl $3, 8(%rsp)
+	testl $3, 16(%rsp)
 	jz 1f
 	swapgs
 1:
 
+	add $8, %rsp
 	iretq
 .endm
 
@@ -287,21 +287,22 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 	swapgs
 1:
 
+	push $0 # Dummy error code.
 	push %rbp
 	push %r15
 	push %r14
 	push %r13
 	push %r12
-	push %r11
 	push %r10
 	push %r9
 	push %r8
 	push %rsi
 	push %rdi
 	push %rdx
+	push %rax
+	push %r11
 	push %rcx
 	push %rbx
-	push %rax
 
 	# Reserve space for iplState.
 	sub $8, %rsp
@@ -314,16 +315,16 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 
 	add $8, %rsp
 
-	pop %rax
 	pop %rbx
 	pop %rcx
+	pop %r11
+	pop %rax
 	pop %rdx
 	pop %rdi
 	pop %rsi
 	pop %r8
 	pop %r9
 	pop %r10
-	pop %r11
 	pop %r12
 	pop %r13
 	pop %r14
@@ -331,11 +332,12 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 	pop %rbp
 
 	# Restore GS.
-	testl $3, 8(%rsp)
+	testl $3, 16(%rsp)
 	jz 1f
 	swapgs
 1:
 
+	add $8, %rsp
 	iretq
 .endm
 
@@ -349,21 +351,22 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 	swapgs
 1:
 
+	push $0 # Dummy error code.
 	push %rbp
 	push %r15
 	push %r14
 	push %r13
 	push %r12
-	push %r11
 	push %r10
 	push %r9
 	push %r8
 	push %rsi
 	push %rdi
 	push %rdx
+	push %rax
+	push %r11
 	push %rcx
 	push %rbx
-	push %rax
 
 	# Reserve space for iplState.
 	sub $8, %rsp
@@ -374,16 +377,16 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 
 	add $8, %rsp
 
-	pop %rax
 	pop %rbx
 	pop %rcx
+	pop %r11
+	pop %rax
 	pop %rdx
 	pop %rdi
 	pop %rsi
 	pop %r8
 	pop %r9
 	pop %r10
-	pop %r11
 	pop %r12
 	pop %r13
 	pop %r14
@@ -391,11 +394,12 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 	pop %rbp
 
 	# Restore GS.
-	testl $3, 8(%rsp)
+	testl $3, 16(%rsp)
 	jz 1f
 	swapgs
 1:
 
+	add $8, %rsp
 	iretq
 .endm
 
@@ -485,11 +489,18 @@ syscallStub:
 	mov %rsp, %rbx
 	mov %gs:THOR_GS_SYSCALL_STACK, %rsp
 
-	# syscall stores rip to rcx and rflags to r11
-	push %r11 
-	push %rcx
+	# Construct iret frame.
+	# syscall stores rip to rcx and rflags to r11.
+	pushq $0 # ss
 	push %rbx
+	push %r11
+	pushq $0 # cs
+	push %rcx
 
+	# Push error code.
+	pushq $0
+
+	# Push non-clobbered registers in Frame order.
 	push %rbp
 	push %r15
 	push %r14
@@ -498,35 +509,27 @@ syscallStub:
 	push %r10
 	push %r9
 	push %r8
-	push %rax
-	push %rdx
 	push %rsi
 	push %rdi
+	push %rdx
+	push %rax
 
-	# Reserve space for iplState.
-	sub $8, %rsp
-
-	# debugging: disallow use of the FPU in kernel code
-#	mov %cr0, %r15
-#	or $8, %r15
-#	mov %r15, %cr0
+	# Skip rbx, rcx, r11, iplState.
+	sub $32, %rsp
 
 	mov %rsp, %rdi
 	xor %ebp, %ebp
 	cld
 	call onPlatformSyscall
 
-	# debugging: disallow use of the FPU in kernel code
-#	mov %cr0, %r15
-#	and $0xFFFFFFFFFFFFFFF7, %r15
-#	mov %r15, %cr0
+	# Skip rbx, rcx, r11, iplState.
+	add $32, %rsp
+	xor %ebx, %ebx
 
-	add $8, %rsp
-
+	pop %rax
+	pop %rdx
 	pop %rdi
 	pop %rsi
-	pop %rdx
-	pop %rax
 	pop %r8
 	pop %r9
 	pop %r10
@@ -535,38 +538,34 @@ syscallStub:
 	pop %r14
 	pop %r15
 	pop %rbp
-	
-	# prepare rcx and r11 for sysret
-	pop %rbx
-	pop %rcx
-	pop %r11
 
-	mov %rbx, %rsp
-	# TODO: is this necessary? should r11 not already have the flag set?
-	#or $.L_kRflagsIf, %r11 # enable interrupts
+	# Load rip, rflags, user rsp from the iret frame.
+	mov 8(%rsp), %rcx
+	mov 24(%rsp), %r11
+	mov 32(%rsp), %rsp
+
 	swapgs
 	sysretq
 
 .section .text.stubs
 .global nmiStub
 nmiStub:
-	# We're pushing 15 registers here.
-	# Adjust the rsp offsets below if you change those pushs.
+	push $0
 	push %rbp
 	push %r15
 	push %r14
 	push %r13
 	push %r12
-	push %r11
 	push %r10
 	push %r9
 	push %r8
 	push %rsi
 	push %rdi
 	push %rdx
+	push %rax
+	push %r11
 	push %rcx
 	push %rbx
-	push %rax
 
 	# Reserve space for iplState.
 	sub $8, %rsp
@@ -578,22 +577,23 @@ nmiStub:
 
 	add $8, %rsp
 
-	pop %rax
 	pop %rbx
 	pop %rcx
+	pop %r11
+	pop %rax
 	pop %rdx
 	pop %rdi
 	pop %rsi
 	pop %r8
 	pop %r9
 	pop %r10
-	pop %r11
 	pop %r12
 	pop %r13
 	pop %r14
 	pop %r15
 	pop %rbp
 
+	add $8, %rsp
 	iretq
 
 # ---------------------------------------------------------
