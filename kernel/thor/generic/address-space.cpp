@@ -13,7 +13,7 @@ namespace thor {
 
 namespace {
 	constexpr bool logCleanup = false;
-	constexpr bool logRss = false;
+	constexpr bool logRss = true;
 
 	// Used in working set limit computation.
 	// TODO: Do not make this global and add a hierarchical API that allows userspace
@@ -207,8 +207,8 @@ CowChain::~CowChain() {
 // VirtualSpace
 // --------------------------------------------------------
 
-VirtualSpace::VirtualSpace(VirtualOperations *ops)
-: _ops{ops} {
+VirtualSpace::VirtualSpace(VirtualOperations *ops, smarter::shared_ptr<Hierarchy> hierarchy)
+: _ops{ops}, hierarchy_{std::move(hierarchy)} {
 	numVirtualSpaces.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -322,7 +322,7 @@ coroutine<void> VirtualSpace::runAgingLoop() {
 				// Only log on wrap-around to avoid log spam.
 				infoLogger() << frg::fmt(
 					"thor: {} RSS: 0x{:x}, goal: 0x{:x}",
-					this,
+					hierarchy_->tag(),
 					rss_.load(std::memory_order_relaxed),
 					workingSetGoal_()
 				) << frg::endlog;
@@ -1242,8 +1242,8 @@ void AddressSpace::activate(smarter::shared_ptr<AddressSpace, BindableHandle> sp
 	PageSpace::activate(smarter::shared_ptr<PageSpace>{space->selfPtr.lock(), pageSpace});
 }
 
-AddressSpace::AddressSpace()
-: VirtualSpace{&ops_}, ops_{this} { }
+AddressSpace::AddressSpace(smarter::shared_ptr<Hierarchy> hierarchy)
+: VirtualSpace{&ops_, std::move(hierarchy)}, ops_{this} { }
 
 AddressSpace::~AddressSpace() { }
 

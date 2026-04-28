@@ -156,8 +156,8 @@ frg::expected<Error, PagesAffected> EptOperations::agePages(VirtualAddr, size_t,
 	return PagesAffected{};
 }
 
-EptSpace::EptSpace(PhysicalAddr root)
-: VirtualizedPageSpace{&eptOps_}, eptOps_{&pageSpace_}, pageSpace_{root} { }
+EptSpace::EptSpace(PhysicalAddr root, smarter::shared_ptr<Hierarchy> hierarchy)
+: VirtualizedPageSpace{&eptOps_, std::move(hierarchy)}, eptOps_{&pageSpace_}, pageSpace_{root} { }
 
 EptSpace::~EptSpace() { }
 

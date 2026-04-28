@@ -673,7 +673,13 @@ void handleSyscall(SyscallImageAccessor image) {
 	} break;
 	case kHelCallCreateSpace: {
 		HelHandle handle;
-		*image.error() = helCreateSpace(&handle);
+		*image.error() = helCreateSpace((HelHandle)arg0, &handle);
+		*image.out0() = handle;
+	} break;
+	case kHelCallExtendHierarchy: {
+		HelHandle handle;
+		*image.error() = helExtendHierarchy((HelHandle)arg0,
+				(const HelHierarchyParameters *)arg1, &handle);
 		*image.out0() = handle;
 	} break;
 	case kHelCallMapMemory: {
@@ -704,7 +710,7 @@ void handleSyscall(SyscallImageAccessor image) {
 	} break;
 	case kHelCallCreateVirtualizedSpace: {
 		HelHandle handle;
-		*image.error() = helCreateVirtualizedSpace(&handle);
+		*image.error() = helCreateVirtualizedSpace((HelHandle)arg0, &handle);
 		*image.out0() = handle;
 	} break;
 	case kHelCallCreateVirtualizedCpu: {

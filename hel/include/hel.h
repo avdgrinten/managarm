@@ -18,7 +18,7 @@
 
 enum {
 	// largest system call number plus 1
-	kHelNumCalls = 107,
+	kHelNumCalls = 108,
 
 	kHelCallLog = 1,
 	kHelCallPanic = 10,
@@ -107,6 +107,8 @@ enum {
 	kHelCallSetAffinity = 100,
 
 	kHelCallCreateToken = 104,
+
+	kHelCallExtendHierarchy = 107,
 
 	kHelCallSuper = 0x80000000
 };
@@ -476,6 +478,11 @@ struct HelQueueParameters {
 	unsigned int numSqChunks;
 };
 
+struct HelHierarchyParameters {
+	// Optional tag to identify the hierarchy in kernel messages.
+	char tag[128];
+};
+
 //! Set in userNotify after kernel has written progress.
 static const int kHelUserNotifyCqProgress = (1 << 0);
 //! Set in userNotify after kernel has supplied new SQ chunks.
@@ -842,6 +849,17 @@ HEL_C_LINKAGE HelError helNop();
 //! This is an asynchronous operation.
 HEL_C_LINKAGE HelError helSubmitAsyncNop(HelHandle queueHandle, uintptr_t context);
 
+//! Creates a child hierarchy capability under @p hierarchyHandle.
+//! @param[in] hierarchyHandle
+//!     Handle to the parent hierarchy capability.
+//! @param[in] params
+//!     Parameters for the new hierarchy node. The @c tag field must be a
+//!     null-terminated string used in kernel messages.
+//! @param[out] handle
+//!     Handle to the new child hierarchy capability.
+HEL_C_LINKAGE HelError helExtendHierarchy(HelHandle hierarchyHandle,
+		const struct HelHierarchyParameters *params, HelHandle *handle);
+
 //! @}
 //! @name Management of Descriptors and Universes
 //! @{
@@ -1005,9 +1023,11 @@ HEL_C_LINKAGE HelError helCreateSliceView(HelHandle bundle, uintptr_t offset, si
 HEL_C_LINKAGE HelError helForkMemory(HelHandle handle, HelHandle *forkedHandle);
 
 //! Creates a virtual address space that threads can run in.
+//! @param[in] hierarchyHandle
+//!     Handle to the hierarchy capability that owns the new address space.
 //! @param[out] handle
 //!     Handle to the new address space.
-HEL_C_LINKAGE HelError helCreateSpace(HelHandle *handle);
+HEL_C_LINKAGE HelError helCreateSpace(HelHandle hierarchyHandle, HelHandle *handle);
 
 //! Maps memory objects into an address space.
 //! @param[in] memoryHandle
@@ -1061,7 +1081,7 @@ HEL_C_LINKAGE HelError helUpdateMemory(HelHandle handle, int type, uintptr_t off
 //!     Length of the memory range that is preloaded.
 HEL_C_LINKAGE HelError helLoadahead(HelHandle handle, uintptr_t offset, size_t length);
 
-HEL_C_LINKAGE HelError helCreateVirtualizedSpace(HelHandle *handle);
+HEL_C_LINKAGE HelError helCreateVirtualizedSpace(HelHandle hierarchyHandle, HelHandle *handle);
 
 //! @}
 //! @name Thread Management

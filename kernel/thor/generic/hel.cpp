@@ -13,6 +13,7 @@
 #include <thor-internal/cancel.hpp>
 #include <thor-internal/event.hpp>
 #include <thor-internal/coroutine.hpp>
+#include <thor-internal/hierarchy.hpp>
 #include <thor-internal/io.hpp>
 #include <thor-internal/ipc-queue.hpp>
 #include <thor-internal/irq.hpp>
@@ -831,11 +832,64 @@ HelError doSubmitInvalidateMemory(HelHandle handle, smarter::shared_ptr<IpcQueue
 	return kHelErrNone;
 }
 
-HelError helCreateSpace(HelHandle *handle) {
+HelError helExtendHierarchy(HelHandle hierarchyHandle,
+		const HelHierarchyParameters *paramsPtr, HelHandle *handle) {
 	auto this_thread = getCurrentThread();
 	auto this_universe = this_thread->getUniverse();
 
-	auto space = AddressSpace::create();
+	HelHierarchyParameters params;
+	if(!readUserObject(paramsPtr, params))
+		return kHelErrFault;
+
+	size_t tagLen = 0;
+	while(tagLen < sizeof(params.tag) && params.tag[tagLen])
+		++tagLen;
+	if(tagLen == sizeof(params.tag))
+		return kHelErrIllegalArgs;
+
+	frg::string<KernelAlloc> tagStr{*kernelAlloc};
+	tagStr.resize(tagLen);
+	if(tagLen)
+		memcpy(tagStr.data(), params.tag, tagLen);
+
+	auto parentOutcome = this_universe->inspectDescriptor(hierarchyHandle,
+			[](AnyDescriptor &desc) -> std::expected<smarter::shared_ptr<Hierarchy>, Error> {
+		if(!desc.is<HierarchyDescriptor>())
+			return std::unexpected{Error::badDescriptor};
+		return desc.get<HierarchyDescriptor>().hierarchy;
+	});
+	if(!parentOutcome)
+		return translateError(parentOutcome.error());
+
+	auto childResult = Hierarchy::extend(std::move(*parentOutcome), std::move(tagStr));
+	if(!childResult) {
+		switch(childResult.error()) {
+			case Error::noMemory: return kHelErrNoMemory;
+			case Error::illegalArgs: return kHelErrIllegalArgs;
+			default: return kHelErrOther;
+		}
+	}
+
+	*handle = this_universe->attachDescriptor(
+			HierarchyDescriptor(std::move(*childResult)));
+
+	return kHelErrNone;
+}
+
+HelError helCreateSpace(HelHandle hierarchyHandle, HelHandle *handle) {
+	auto this_thread = getCurrentThread();
+	auto this_universe = this_thread->getUniverse();
+
+	auto hierarchyOutcome = this_universe->inspectDescriptor(hierarchyHandle,
+			[](AnyDescriptor &desc) -> std::expected<smarter::shared_ptr<Hierarchy>, Error> {
+		if(!desc.is<HierarchyDescriptor>())
+			return std::unexpected{Error::badDescriptor};
+		return desc.get<HierarchyDescriptor>().hierarchy;
+	});
+	if(!hierarchyOutcome)
+		return translateError(hierarchyOutcome.error());
+
+	auto space = AddressSpace::create(std::move(*hierarchyOutcome));
 
 	*handle = this_universe->attachDescriptor(
 			AddressSpaceDescriptor(std::move(space)));
@@ -843,13 +897,23 @@ HelError helCreateSpace(HelHandle *handle) {
 	return kHelErrNone;
 }
 
-HelError helCreateVirtualizedSpace(HelHandle *handle) {
+HelError helCreateVirtualizedSpace(HelHandle hierarchyHandle, HelHandle *handle) {
 #ifdef __x86_64__
 	if(!getCpuData()->haveVirtualization) {
 		return kHelErrNoHardwareSupport;
 	}
 	auto this_thread = getCurrentThread();
 	auto this_universe = this_thread->getUniverse();
+
+	auto hierarchyOutcome = this_universe->inspectDescriptor(hierarchyHandle,
+			[](AnyDescriptor &desc) -> std::expected<smarter::shared_ptr<Hierarchy>, Error> {
+		if(!desc.is<HierarchyDescriptor>())
+			return std::unexpected{Error::badDescriptor};
+		return desc.get<HierarchyDescriptor>().hierarchy;
+	});
+	if(!hierarchyOutcome)
+		return translateError(hierarchyOutcome.error());
+	auto hierarchy = std::move(*hierarchyOutcome);
 
 	PhysicalAddr pml4e = physicalAllocator->allocate(kPageSize);
 	if(pml4e == static_cast<PhysicalAddr>(-1)) {
@@ -860,9 +924,9 @@ HelError helCreateVirtualizedSpace(HelHandle *handle) {
 
 	smarter::shared_ptr<VirtualizedPageSpace> vspace;
 	if(getGlobalCpuFeatures()->haveVmx) {
-		vspace = thor::vmx::EptSpace::create(pml4e);
+		vspace = thor::vmx::EptSpace::create(pml4e, std::move(hierarchy));
 	} else if(getGlobalCpuFeatures()->haveSvm) {
-		vspace = thor::svm::NptSpace::create(pml4e);
+		vspace = thor::svm::NptSpace::create(pml4e, std::move(hierarchy));
 	} else {
 		physicalAllocator->free(pml4e, kPageSize);
 		return kHelErrNoHardwareSupport;
@@ -872,6 +936,7 @@ HelError helCreateVirtualizedSpace(HelHandle *handle) {
 			VirtualizedSpaceDescriptor(std::move(vspace)));
 	return kHelErrNone;
 #else
+	(void)hierarchyHandle;
 	(void)handle;
 	return kHelErrNoHardwareSupport;
 #endif

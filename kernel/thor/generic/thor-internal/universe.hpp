@@ -26,6 +26,7 @@ struct NamedMemoryViewLock;
 struct KernletObject;
 struct BoundKernlet;
 struct Credentials;
+struct Hierarchy;
 
 struct QueueDescriptor {
 	QueueDescriptor(smarter::shared_ptr<IpcQueue> queue)
@@ -234,6 +235,17 @@ struct TokenDescriptor {
 };
 
 // --------------------------------------------------------
+// Hierarchy related descriptors.
+// --------------------------------------------------------
+
+struct HierarchyDescriptor {
+	HierarchyDescriptor(smarter::shared_ptr<Hierarchy> hierarchy)
+	: hierarchy(std::move(hierarchy)) { }
+
+	smarter::shared_ptr<Hierarchy> hierarchy;
+};
+
+// --------------------------------------------------------
 // AnyDescriptor
 // --------------------------------------------------------
 
@@ -254,7 +266,8 @@ typedef frg::variant<
 	IoDescriptor,
 	KernletObjectDescriptor,
 	BoundKernletDescriptor,
-	TokenDescriptor
+	TokenDescriptor,
+	HierarchyDescriptor
 > AnyDescriptor;
 
 // --------------------------------------------------------

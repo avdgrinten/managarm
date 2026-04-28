@@ -9,6 +9,7 @@
 #include <frg/container_of.hpp>
 #include <frg/expected.hpp>
 #include <thor-internal/coroutine.hpp>
+#include <thor-internal/hierarchy.hpp>
 #include <thor-internal/memory-view.hpp>
 #include <thor-internal/mm-rc.hpp>
 #include <thor-internal/rcu.hpp>
@@ -542,9 +543,13 @@ public:
 		kFaultExecute = (1 << 2)
 	};
 
-	VirtualSpace(VirtualOperations *ops);
+	VirtualSpace(VirtualOperations *ops, smarter::shared_ptr<Hierarchy> hierarchy);
 
 	~VirtualSpace();
+
+	smarter::borrowed_ptr<Hierarchy> hierarchy() const {
+		return hierarchy_;
+	}
 
 	void retire();
 
@@ -729,6 +734,8 @@ private:
 	async::recurring_event agingEvent_;
 	async::cancellation_event cancelAging_;
 	async::oneshot_event agingDoneEvent_;
+
+	smarter::shared_ptr<Hierarchy> hierarchy_;
 };
 
 struct AddressSpace final : VirtualSpace {
@@ -792,11 +799,12 @@ public:
 		return smarter::shared_ptr<AddressSpace, BindableHandle>{smarter::adopt_rc, space, BindableHandle{space}};
 	}
 
-	static smarter::shared_ptr<AddressSpace, BindableHandle> create() {
+	static smarter::shared_ptr<AddressSpace, BindableHandle> create(
+			smarter::shared_ptr<Hierarchy> hierarchy) {
 		// Note: technically, we do not rely on RCU here.
 		//       However, the refcount may be decrement in IRQ context
 		//       and RCU ensures that freeing happens on a work queue.
-		auto ptr = allocate_rcu_shared<AddressSpace>(Allocator{});
+		auto ptr = allocate_rcu_shared<AddressSpace>(Allocator{}, std::move(hierarchy));
 		ptr->selfPtr = ptr;
 		ptr->setupInitialHole(0x1000, (UINT64_C(1) << getLowerHalfBits()) - 0x1000);
 		spawnOnWorkQueue(*kernelAlloc, WorkQueue::generalQueue().lock(), ptr->runAgingLoop());
@@ -805,7 +813,7 @@ public:
 
 	static void activate(smarter::shared_ptr<AddressSpace, BindableHandle> space);
 
-	AddressSpace();
+	AddressSpace(smarter::shared_ptr<Hierarchy> hierarchy);
 
 	~AddressSpace();
 

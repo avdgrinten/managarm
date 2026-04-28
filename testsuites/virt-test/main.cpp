@@ -3,10 +3,17 @@
 #include <iostream>
 #include <assert.h>
 
+#include <protocols/posix/data.hpp>
+#include <protocols/posix/supercalls.hpp>
+
 
 int main() {
+	posix::ManagarmProcessData pd;
+	HEL_CHECK(helSyscall1(kHelCallSuper + posix::superGetProcessData,
+			reinterpret_cast<HelWord>(&pd)));
+
 	HelHandle vspace, vcpu, mem;
-	HEL_CHECK(helCreateVirtualizedSpace(&vspace));
+	HEL_CHECK(helCreateVirtualizedSpace(pd.hierarchyHandle, &vspace));
 
 	HEL_CHECK(helAllocateMemory(0x10000, 0, nullptr, &mem));
 

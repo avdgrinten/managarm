@@ -49,7 +49,7 @@ namespace thor::svm {
 		friend struct ShootNode;
 		friend struct Vcpu;
 
-		NptSpace(PhysicalAddr root);
+		NptSpace(PhysicalAddr root, smarter::shared_ptr<Hierarchy> hierarchy);
 
 		NptSpace(const NptSpace &) = delete;
 
@@ -57,8 +57,9 @@ namespace thor::svm {
 
 		NptSpace& operator=(const NptSpace &) = delete;
 
-		static smarter::shared_ptr<NptSpace> create(PhysicalAddr root) {
-			auto ptr = smarter::allocate_shared<NptSpace>(Allocator{}, root);
+		static smarter::shared_ptr<NptSpace> create(PhysicalAddr root,
+				smarter::shared_ptr<Hierarchy> hierarchy) {
+			auto ptr = smarter::allocate_shared<NptSpace>(Allocator{}, root, std::move(hierarchy));
 			ptr->selfPtr = ptr;
 			ptr->setupInitialHole(0, 0x7ffffff00000);
 			return ptr;

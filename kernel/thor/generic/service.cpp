@@ -23,7 +23,9 @@ namespace thor {
 
 extern frg::manual_box<LaneHandle> mbusClient;
 
-void runService(frg::string<KernelAlloc> name, LaneHandle controlLane, smarter::shared_ptr<Thread, ActiveHandle> thread);
+void runService(frg::string<KernelAlloc> name, LaneHandle controlLane,
+		smarter::shared_ptr<Hierarchy> hierarchy,
+		smarter::shared_ptr<Thread, ActiveHandle> thread);
 
 struct OpenFile {
 	OpenFile()
@@ -413,6 +415,12 @@ namespace posix {
 					LaneDescriptor{lane});
 		}
 
+		void attachHierarchy(smarter::shared_ptr<Thread, ActiveHandle> thread,
+				smarter::shared_ptr<Hierarchy> hierarchy) {
+			hierarchyHandle = thread->getUniverse()->attachDescriptor(
+					HierarchyDescriptor{std::move(hierarchy)});
+		}
+
 		void attachMbus(smarter::shared_ptr<Thread, ActiveHandle> thread) {
 			mbusHandle = thread->getUniverse()->attachDescriptor(
 					LaneDescriptor{*mbusClient});
@@ -447,6 +455,7 @@ namespace posix {
 
 		Handle mbusHandle;
 		Handle controlHandle;
+		Handle hierarchyHandle;
 		frg::vector<OpenFile *, KernelAlloc> openFiles;
 		smarter::shared_ptr<AllocatedMemory> fileTableMemory;
 		VirtualAddr clientFileTable;
@@ -922,7 +931,8 @@ namespace posix {
 					mbusHandle,
 					nullptr,
 					reinterpret_cast<HelHandle *>(clientFileTable),
-					nullptr
+					nullptr,
+					hierarchyHandle,
 				};
 
 				auto outcome = co_await info.thread->getAddressSpace()->writeSpace(
@@ -947,7 +957,7 @@ namespace posix {
 					panicLogger() << "thor: Failed to access server registers" << frg::endlog;
 
 				::posix::ManagarmServerData data = {
-					controlHandle
+					controlHandle,
 				};
 
 				auto outcome = co_await info.thread->getAddressSpace()->writeSpace(
@@ -1035,8 +1045,10 @@ namespace posix {
 } // namepace posix
 
 void runService(frg::string<KernelAlloc> name, LaneHandle controlLane,
+		smarter::shared_ptr<Hierarchy> hierarchy,
 		smarter::shared_ptr<Thread, ActiveHandle> thread) {
-	KernelFiber::run([name, thread, controlLane = std::move(controlLane)] () mutable {
+	KernelFiber::run([name, thread, controlLane = std::move(controlLane),
+			hierarchy = std::move(hierarchy)] () mutable {
 		auto stdioStream = createStream();
 		auto stdioFile = frg::construct<StdioFile>(*kernelAlloc);
 		stdioFile->clientLane = std::move(stdioStream.get<1>());
@@ -1047,6 +1059,7 @@ void runService(frg::string<KernelAlloc> name, LaneHandle controlLane,
 		auto process = frg::construct<posix::Process>(*kernelAlloc, std::move(name));
 		KernelFiber::asyncBlockCurrent(process->setupAddressSpace(thread));
 		process->attachControl(thread, std::move(controlLane));
+		process->attachHierarchy(thread, std::move(hierarchy));
 		process->attachMbus(thread);
 		KernelFiber::asyncBlockCurrent(process->attachFile(thread, stdioFile));
 		KernelFiber::asyncBlockCurrent(process->attachFile(thread, stdioFile));

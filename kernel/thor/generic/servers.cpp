@@ -6,6 +6,7 @@
 #include <elf.h>
 #include <thor-internal/coroutine.hpp>
 #include <thor-internal/debug.hpp>
+#include <thor-internal/hierarchy.hpp>
 #include <thor-internal/load-balancing.hpp>
 #include <thor-internal/universe.hpp>
 #include <thor-internal/fiber.hpp>
@@ -40,6 +41,7 @@ static frg::manual_box<
 
 // TODO: move this declaration to a header file
 void runService(frg::string<KernelAlloc> desc, LaneHandle control_lane,
+		smarter::shared_ptr<Hierarchy> hierarchy,
 		smarter::shared_ptr<Thread, ActiveHandle> thread);
 
 // ------------------------------------------------------------------------
@@ -267,7 +269,15 @@ coroutine<void> executeModule(frg::string_view name, MfsRegular *module,
 		LaneHandle control_lane,
 		LaneHandle xpipe_lane,
 		Scheduler *scheduler) {
-	auto space = AddressSpace::create();
+	auto tag = frg::string<KernelAlloc>{*kernelAlloc, "server:"};
+	tag += name;
+
+	auto hierarchy = Hierarchy::extend(rootHierarchy(), std::move(tag));
+	if(!hierarchy)
+		panicLogger() << "thor: Failed to extend hierarchy for server"
+				<< frg::endlog;
+
+	auto space = AddressSpace::create(*hierarchy);
 
 	ImageInfo exec_info = co_await loadModuleImage(space, 0, module->getMemory());
 
@@ -373,6 +383,7 @@ coroutine<void> executeModule(frg::string_view name, MfsRegular *module,
 	// Call this after resumeOther() to ensure that we do not see the initial interrupt.
 	runService(frg::string<KernelAlloc>{*kernelAlloc, name.data(), name.size()},
 			control_lane,
+			std::move(*hierarchy),
 			thread);
 }
 

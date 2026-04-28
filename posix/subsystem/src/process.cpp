@@ -10,6 +10,7 @@
 #include "process.hpp"
 
 #include <protocols/posix/data.hpp>
+#include <protocols/posix/supercalls.hpp>
 #include <helix/ipc.hpp>
 
 #include "debug-options.hpp"
@@ -22,24 +23,62 @@ async::result<void> serve(std::shared_ptr<Process> self, std::shared_ptr<Generat
 std::shared_ptr<ThreadGroup> initThreadGroup = nullptr;
 
 // ----------------------------------------------------------------------------
+// Root hierarchy handle, obtained from the kernel via ManagarmProcessData.
+// ----------------------------------------------------------------------------
+
+namespace {
+	HelHandle rootHierarchyHandle_ = kHelNullHandle;
+
+	HelHandle fetchRootHierarchy() {
+		posix::ManagarmProcessData pd;
+		HEL_CHECK(helSyscall1(kHelCallSuper + posix::superGetProcessData,
+				reinterpret_cast<HelWord>(&pd)));
+		return pd.hierarchyHandle;
+	}
+}
+
+HelHandle rootHierarchy() {
+	if(rootHierarchyHandle_ == kHelNullHandle)
+		rootHierarchyHandle_ = fetchRootHierarchy();
+	return rootHierarchyHandle_;
+}
+
+namespace {
+	helix::UniqueDescriptor extendHierarchyForProcess(ProcessId pid,
+			std::string_view path) {
+		std::string tag = "pid" + std::to_string(pid) + ":" + std::string{path};
+
+		HelHierarchyParameters params{};
+		auto n = std::min(tag.size(), sizeof(params.tag) - 1);
+		memcpy(params.tag, tag.data(), n);
+		params.tag[n] = '\0';
+
+		HelHandle child;
+		HEL_CHECK(helExtendHierarchy(rootHierarchy(), &params, &child));
+		return helix::UniqueDescriptor{child};
+	}
+}
+
+// ----------------------------------------------------------------------------
 // VmContext.
 // ----------------------------------------------------------------------------
 
-std::shared_ptr<VmContext> VmContext::create() {
+std::shared_ptr<VmContext> VmContext::create(HelHandle hierarchyHandle) {
 	auto context = std::make_shared<VmContext>();
 
 	HelHandle space;
-	HEL_CHECK(helCreateSpace(&space));
+	HEL_CHECK(helCreateSpace(hierarchyHandle, &space));
 	context->_space = helix::UniqueDescriptor(space);
 
 	return context;
 }
 
-async::result<std::shared_ptr<VmContext>> VmContext::clone(std::shared_ptr<VmContext> original) {
+async::result<std::shared_ptr<VmContext>> VmContext::clone(
+		std::shared_ptr<VmContext> original, HelHandle hierarchyHandle) {
 	auto context = std::make_shared<VmContext>();
 
 	HelHandle space;
-	HEL_CHECK(helCreateSpace(&space));
+	HEL_CHECK(helCreateSpace(hierarchyHandle, &space));
 	context->_space = helix::UniqueDescriptor(space);
 
 	for(const auto &entry : original->_areaTree) {
@@ -1280,7 +1319,8 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 	assert(pos != std::string::npos);
 	process->_path = path;
 	process->_name = path.substr(pos + 1);
-	process->_vmContext = VmContext::create();
+	process->_hierarchy = extendHierarchyForProcess(process->pid(), process->_path);
+	process->_vmContext = VmContext::create(process->_hierarchy.getHandle());
 	process->_fsContext = FsContext::create();
 	process->_fileContext = FileContext::create();
 	process->threadGroup()->_signalContext = SignalContext::create();
@@ -1304,6 +1344,13 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 	    &process->_clientPosixLane
 	));
 	client_lane.release();
+
+	HEL_CHECK(helTransferDescriptor(
+	    process->_hierarchy.getHandle(),
+	    process->_fileContext->getUniverse().getHandle(),
+	    kHelTransferDescriptorOut,
+	    &process->_clientHierarchyHandle
+	));
 
 	HEL_CHECK(helMapMemory(process->_threadPageMemory.getHandle(),
 			process->_vmContext->getSpace().getHandle(),
@@ -1358,7 +1405,9 @@ async::result<std::shared_ptr<Process>> Process::fork(std::shared_ptr<Process> o
 	process->threadGroup()->associateProcess(process);
 	process->_path = original->path();
 	process->_name = original->name();
-	process->_vmContext = co_await VmContext::clone(original->_vmContext);
+	process->_hierarchy = extendHierarchyForProcess(process->pid(), process->_path);
+	process->_vmContext = co_await VmContext::clone(original->_vmContext,
+			process->_hierarchy.getHandle());
 	process->_fsContext = FsContext::clone(original->_fsContext);
 	process->_fileContext = FileContext::clone(original->_fileContext);
 	process->threadGroup()->_signalContext = SignalContext::clone(original->threadGroup()->_signalContext);
@@ -1382,6 +1431,13 @@ async::result<std::shared_ptr<Process>> Process::fork(std::shared_ptr<Process> o
 	    &process->_clientPosixLane
 	));
 	client_lane.release();
+
+	HEL_CHECK(helTransferDescriptor(
+	    process->_hierarchy.getHandle(),
+	    process->_fileContext->getUniverse().getHandle(),
+	    kHelTransferDescriptorOut,
+	    &process->_clientHierarchyHandle
+	));
 
 	HEL_CHECK(helMapMemory(process->_threadPageMemory.getHandle(),
 			process->_vmContext->getSpace().getHandle(),
@@ -1463,10 +1519,14 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 	process->_path = original->path();
 	process->_name = original->name();
 
-	if (args->flags & CLONE_VM)
+	if (args->flags & CLONE_VM) {
 		process->_vmContext = original->_vmContext;
-	else
-		process->_vmContext = co_await VmContext::clone(original->_vmContext);
+		process->_hierarchy = original->_hierarchy.dup();
+	} else {
+		process->_hierarchy = extendHierarchyForProcess(process->pid(), process->_path);
+		process->_vmContext = co_await VmContext::clone(original->_vmContext,
+				process->_hierarchy.getHandle());
+	}
 
 	if (args->flags & CLONE_FS)
 		process->_fsContext = original->_fsContext;
@@ -1513,6 +1573,13 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 	));
 	client_lane.release();
 
+	HEL_CHECK(helTransferDescriptor(
+	    process->_hierarchy.getHandle(),
+	    process->_fileContext->getUniverse().getHandle(),
+	    kHelTransferDescriptorOut,
+	    &process->_clientHierarchyHandle
+	));
+
 	HEL_CHECK(helMapMemory(process->_threadPageMemory.getHandle(),
 			process->_vmContext->getSpace().getHandle(),
 			nullptr, 0, 0x1000, kHelMapProtRead | kHelMapProtWrite,
@@ -1556,7 +1623,8 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 
 async::result<Error> Process::exec(std::shared_ptr<Process> process,
 		std::string path, std::vector<std::string> args, std::vector<std::string> env) {
-	auto exec_vm_context = VmContext::create();
+	auto exec_hierarchy = extendHierarchyForProcess(process->pid(), path);
+	auto exec_vm_context = VmContext::create(exec_hierarchy.getHandle());
 
 	// Perform the exec() in a new VM context so that we
 	// can catch errors before trashing the calling process.
@@ -1576,6 +1644,14 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 	    &exec_posix_lane
 	));
 	client_lane.release();
+
+	HelHandle exec_client_hierarchy;
+	HEL_CHECK(helTransferDescriptor(
+	    exec_hierarchy.getHandle(),
+	    process->_fileContext->getUniverse().getHandle(),
+	    kHelTransferDescriptorOut,
+	    &exec_client_hierarchy
+	));
 
 	posix::ThreadPage *exec_thread_page;
 	void *exec_clk_tracker_page;
@@ -1614,12 +1690,14 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 	process->_posixLane = std::move(server_lane);
 	process->_threadDescriptor = std::move(execResult.thread);
 	process->_vmContext = std::move(exec_vm_context);
+	process->_hierarchy = std::move(exec_hierarchy);
 	process->threadGroup()->_signalContext->resetHandlers();
 	process->setAltStackEnabled(false);
 	process->setAltStackSp(0, 0);
 
 	process->_clientThreadPage = exec_thread_page;
 	process->_clientPosixLane = exec_posix_lane;
+	process->_clientHierarchyHandle = exec_client_hierarchy;
 	process->_clientFileTable = exec_client_table;
 	process->_clientClkTrackerPage = exec_clk_tracker_page;
 	process->_clientAuxBegin = execResult.auxBegin;

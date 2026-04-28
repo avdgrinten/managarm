@@ -34,7 +34,8 @@ namespace thor {
 	};
 
 	struct VirtualizedPageSpace : VirtualSpace {
-		VirtualizedPageSpace(VirtualOperations *ops) : VirtualSpace{ops} {}
+		VirtualizedPageSpace(VirtualOperations *ops, smarter::shared_ptr<Hierarchy> hierarchy)
+		: VirtualSpace{ops, std::move(hierarchy)} {}
 
 	protected:
 		~VirtualizedPageSpace() = default;

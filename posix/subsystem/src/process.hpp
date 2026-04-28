@@ -30,11 +30,14 @@ struct ControllingTerminalState;
 
 typedef int ProcessId;
 
+HelHandle rootHierarchy();
+
 // TODO: This struct should store the process' VMAs once we implement them.
 // TODO: We need a clarification here: Does mmap() keep file descriptions open (e.g. for flock())?
 struct VmContext {
-	static std::shared_ptr<VmContext> create();
-	static async::result<std::shared_ptr<VmContext>> clone(std::shared_ptr<VmContext> original);
+	static std::shared_ptr<VmContext> create(HelHandle hierarchyHandle);
+	static async::result<std::shared_ptr<VmContext>> clone(
+			std::shared_ptr<VmContext> original, HelHandle hierarchyHandle);
 
 	~VmContext();
 
@@ -605,6 +608,7 @@ public:
 	posix::ThreadPage *clientThreadPage() { return _clientThreadPage; }
 	void *clientFileTable() { return _clientFileTable; }
 	void *clientClkTrackerPage() { return _clientClkTrackerPage; }
+	HelHandle clientHierarchyHandle() { return _clientHierarchyHandle; }
 	void *clientAuxBegin() { return _clientAuxBegin; }
 	void *clientAuxEnd() { return _clientAuxEnd; }
 
@@ -703,6 +707,7 @@ private:
 	std::shared_ptr<VmContext> _vmContext;
 	std::shared_ptr<FsContext> _fsContext;
 	std::shared_ptr<FileContext> _fileContext;
+	helix::UniqueDescriptor _hierarchy;
 
 	std::shared_ptr<procfs::Link> procfsTaskLink_;
 
@@ -713,6 +718,7 @@ private:
 	helix::Mapping _threadPageMapping;
 
 	HelHandle _clientPosixLane = kHelNullHandle;
+	HelHandle _clientHierarchyHandle = kHelNullHandle;
 	posix::ThreadPage *_clientThreadPage;
 	void *_clientFileTable = nullptr;
 	void *_clientClkTrackerPage;

@@ -145,6 +145,7 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 				self->clientThreadPage(),
 				static_cast<HelHandle *>(self->clientFileTable()),
 				self->clientClkTrackerPage(),
+				self->clientHierarchyHandle(),
 			};
 
 			if(logRequests)
