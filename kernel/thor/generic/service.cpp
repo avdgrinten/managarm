@@ -368,10 +368,10 @@ namespace posix {
 	// ----------------------------------------------------
 
 	struct Process {
-		Process(frg::string<KernelAlloc> name)
-		: _name{std::move(name)}, openFiles(*kernelAlloc) {
+		Process(frg::string<KernelAlloc> name, smarter::shared_ptr<Hierarchy> hierarchy)
+		: _name{std::move(name)}, hierarchy_{std::move(hierarchy)}, openFiles(*kernelAlloc) {
 			fileTableMemory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc,
-					rootHierarchy(), 0x1000);
+					hierarchy_, 0x1000);
 			fileTableMemory->selfPtr = fileTableMemory;
 		}
 
@@ -416,10 +416,9 @@ namespace posix {
 					LaneDescriptor{lane});
 		}
 
-		void attachHierarchy(smarter::shared_ptr<Thread, ActiveHandle> thread,
-				smarter::shared_ptr<Hierarchy> hierarchy) {
+		void attachHierarchy(smarter::shared_ptr<Thread, ActiveHandle> thread) {
 			hierarchyHandle = thread->getUniverse()->attachDescriptor(
-					HierarchyDescriptor{std::move(hierarchy)});
+					HierarchyDescriptor{hierarchy_});
 		}
 
 		void attachMbus(smarter::shared_ptr<Thread, ActiveHandle> thread) {
@@ -450,6 +449,7 @@ namespace posix {
 		}
 
 		frg::string<KernelAlloc> _name;
+		smarter::shared_ptr<Hierarchy> hierarchy_;
 		frg::vector<ThreadInfo, KernelAlloc> _thread{*kernelAlloc};
 
 		uint64_t nextTid_ = 1;
@@ -774,7 +774,7 @@ namespace posix {
 						fileMemory = getZeroMemory();
 					}else{
 						auto memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc,
-								rootHierarchy(), req->size());
+								hierarchy_, req->size());
 						memory->selfPtr = memory;
 						fileMemory = std::move(memory);
 					}
@@ -789,7 +789,7 @@ namespace posix {
 				smarter::shared_ptr<MemorySlice> slice;
 				if(req->flags() & MAP_PRIVATE) { // MAP_PRIVATE.
 					auto cowMemory = smarter::allocate_shared<CopyOnWriteMemory>(*kernelAlloc,
-							rootHierarchy(), std::move(fileMemory), req->rel_offset(), req->size());
+							hierarchy_, std::move(fileMemory), req->rel_offset(), req->size());
 					cowMemory->selfPtr = cowMemory;
 					slice = smarter::allocate_shared<MemorySlice>(*kernelAlloc,
 							std::move(cowMemory), 0, req->size());
@@ -871,10 +871,10 @@ namespace posix {
 				if(!readOutcome)
 					panicLogger() << "thor: Failed to access server registers" << frg::endlog;
 				auto fileMemory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc,
-						rootHierarchy(), size);
+						hierarchy_, size);
 				fileMemory->selfPtr = fileMemory;
 				auto cowMemory = smarter::allocate_shared<CopyOnWriteMemory>(*kernelAlloc,
-						rootHierarchy(), std::move(fileMemory), 0, size);
+						hierarchy_, std::move(fileMemory), 0, size);
 				cowMemory->selfPtr = cowMemory;
 				auto slice = smarter::allocate_shared<MemorySlice>(*kernelAlloc,
 						std::move(cowMemory), 0, size);
@@ -1058,10 +1058,11 @@ void runService(frg::string<KernelAlloc> name, LaneHandle controlLane,
 		spawnOnWorkQueue(*kernelAlloc, WorkQueue::generalQueue().lock(),
 				stdio::runStdioRequests(stdioStream.get<0>()));
 
-		auto process = frg::construct<posix::Process>(*kernelAlloc, std::move(name));
+		auto process = frg::construct<posix::Process>(*kernelAlloc, std::move(name),
+				std::move(hierarchy));
 		KernelFiber::asyncBlockCurrent(process->setupAddressSpace(thread));
 		process->attachControl(thread, std::move(controlLane));
-		process->attachHierarchy(thread, std::move(hierarchy));
+		process->attachHierarchy(thread);
 		process->attachMbus(thread);
 		KernelFiber::asyncBlockCurrent(process->attachFile(thread, stdioFile));
 		KernelFiber::asyncBlockCurrent(process->attachFile(thread, stdioFile));
