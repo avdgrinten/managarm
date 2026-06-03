@@ -2,6 +2,7 @@
 #include <thor-internal/arch-generic/paging.hpp>
 #include <thor-internal/cpu-data.hpp>
 #include <thor-internal/debug.hpp>
+#include <thor-internal/hierarchy.hpp>
 #include <thor-internal/physical.hpp>
 
 namespace thor {
@@ -52,35 +53,41 @@ void PhysicalChunkAllocator::bootstrapRegion(PhysicalAddr address,
 }
 
 PhysicalAddr PhysicalChunkAllocator::allocate(size_t size, int addressBits) {
-	auto irq_lock = frg::guard(&irqMutex());
-	auto lock = frg::guard(&_mutex);
+	{
+		auto irq_lock = frg::guard(&irqMutex());
+		auto lock = frg::guard(&_mutex);
 
-	auto currentFree = _freePages.load(std::memory_order_relaxed);
-	auto currentUsed = _usedPages.load(std::memory_order_relaxed);
-	assert(currentFree > size / kPageSize);
-	_freePages.store(currentFree - size / kPageSize, std::memory_order_relaxed);
-	_usedPages.store(currentUsed + size / kPageSize, std::memory_order_relaxed);
+		auto currentFree = _freePages.load(std::memory_order_relaxed);
+		auto currentUsed = _usedPages.load(std::memory_order_relaxed);
+		assert(currentFree > size / kPageSize);
+		_freePages.store(currentFree - size / kPageSize, std::memory_order_relaxed);
+		_usedPages.store(currentUsed + size / kPageSize, std::memory_order_relaxed);
 
-	// TODO: This could be solved better.
-	int target = 0;
-	while(size > (size_t(kPageSize) << target))
-		target++;
-	assert(size == (size_t(kPageSize) << target));
+		// TODO: This could be solved better.
+		int target = 0;
+		while(size > (size_t(kPageSize) << target))
+			target++;
+		assert(size == (size_t(kPageSize) << target));
 
-	if(logPhysicalAllocs)
-		infoLogger() << "thor: Allocating physical memory of order "
-					<< (target + kPageShift) << frg::endlog;
-	for(int i = 0; i < _numRegions; i++) {
-		if(target > _allRegions[i].buddyAccessor.tableOrder())
-			continue;
+		if(logPhysicalAllocs)
+			infoLogger() << "thor: Allocating physical memory of order "
+						<< (target + kPageShift) << frg::endlog;
+		for(int i = 0; i < _numRegions; i++) {
+			if(target > _allRegions[i].buddyAccessor.tableOrder())
+				continue;
 
-		auto physical = _allRegions[i].buddyAccessor.allocate(target, addressBits);
-		if(physical == BuddyAccessor::illegalAddress)
-			continue;
-	//	infoLogger() << "Allocate " << (void *)physical << frg::endlog;
-		assert(!(physical % (size_t(kPageSize) << target)));
-		return physical;
+			auto physical = _allRegions[i].buddyAccessor.allocate(target, addressBits);
+			if(physical == BuddyAccessor::illegalAddress)
+				continue;
+		//	infoLogger() << "Allocate " << (void *)physical << frg::endlog;
+			assert(!(physical % (size_t(kPageSize) << target)));
+			return physical;
+		}
 	}
+
+	// The allocation failed: report per-hierarchy memory usage before signalling failure.
+	// Done outside the lock so that the report can walk hierarchies and log freely.
+	dumpHierarchyMemoryUsage();
 
 	return static_cast<PhysicalAddr>(-1);
 }

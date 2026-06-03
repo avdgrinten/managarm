@@ -113,23 +113,41 @@ void collectConsumers(Hierarchy *node, TopConsumers &top) {
 		collectConsumers(child, top);
 }
 
+} // anonymous namespace
+
+void dumpHierarchyMemoryUsage() {
+	// Avoid reentrancy (this may be called from the allocation-failure path) and
+	// concurrent dumps from other CPUs.
+	static std::atomic<bool> inProgress{false};
+	if(inProgress.exchange(true, std::memory_order_acq_rel))
+		return;
+
+	// Do not force the root hierarchy into existence from here.
+	if(rootHierarchy_) {
+		auto root = *rootHierarchy_;
+		TopConsumers top;
+		collectConsumers(root.get(), top);
+
+		infoLogger() << "thor: Hierarchy memory usage (top consumers):" << frg::endlog;
+		for(int i = 0; i < top.count; ++i) {
+			if(!top.entries[i].bytes)
+				break;
+			infoLogger() << "thor:     " << top.entries[i].tag << ": "
+					<< (top.entries[i].bytes / 1024) << " KiB" << frg::endlog;
+		}
+	}
+
+	inProgress.store(false, std::memory_order_release);
+}
+
+namespace {
+
 void runHierarchyMonitor() {
 	KernelFiber::run([] {
 		while(true) {
 			KernelFiber::asyncBlockCurrent(
 					generalTimerEngine()->sleepFor(hierarchyLogInterval));
-
-			auto root = rootHierarchy();
-			TopConsumers top;
-			collectConsumers(root.get(), top);
-
-			infoLogger() << "thor: Hierarchy memory usage (top consumers):" << frg::endlog;
-			for(int i = 0; i < top.count; ++i) {
-				if(!top.entries[i].bytes)
-					break;
-				infoLogger() << "thor:     " << top.entries[i].tag << ": "
-						<< (top.entries[i].bytes / 1024) << " KiB" << frg::endlog;
-			}
+			dumpHierarchyMemoryUsage();
 		}
 	});
 }

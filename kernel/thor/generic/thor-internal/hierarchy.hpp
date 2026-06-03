@@ -57,4 +57,7 @@ private:
 
 smarter::shared_ptr<Hierarchy> rootHierarchy();
 
+// Logs the hierarchy nodes that currently consume the most physical memory.
+void dumpHierarchyMemoryUsage();
+
 } // namespace thor
