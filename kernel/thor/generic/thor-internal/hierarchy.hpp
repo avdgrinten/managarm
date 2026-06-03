@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <expected>
+#include <frg/list.hpp>
+#include <frg/spinlock.hpp>
 #include <frg/string.hpp>
 #include <smarter.hpp>
 #include <thor-internal/error.hpp>
@@ -17,6 +19,7 @@ struct Hierarchy {
 
 	Hierarchy(smarter::shared_ptr<Hierarchy> parent,
 			frg::string<KernelAlloc> tag);
+	~Hierarchy();
 
 	smarter::borrowed_ptr<Hierarchy> parent() const { return parent_; }
 	frg::string_view tag() const { return tag_; }
@@ -31,6 +34,20 @@ struct Hierarchy {
 	size_t chargedBytes() const {
 		return chargedBytes_.load(std::memory_order_relaxed);
 	}
+
+	// Hook that links this node into its parent's list of children.
+	frg::intrusive_rcu_list_hook<Hierarchy> siblingHook_;
+
+	// Protects children_. Never acquired from IRQ context.
+	frg::ticket_spinlock childrenMutex_;
+	frg::intrusive_rcu_list<
+		Hierarchy,
+		frg::locate_member<
+			Hierarchy,
+			frg::intrusive_rcu_list_hook<Hierarchy>,
+			&Hierarchy::siblingHook_
+		>
+	> children_;
 
 private:
 	smarter::shared_ptr<Hierarchy> parent_;
