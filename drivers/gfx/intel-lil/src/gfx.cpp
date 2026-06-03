@@ -1,4 +1,5 @@
 #include <span>
+#include <protocols/posix/procdata.hpp>
 #include <print>
 
 #include <arch/dma_structs.hpp>
@@ -229,7 +230,7 @@ GfxDevice::createDumb(uint32_t width, uint32_t height, uint32_t bpp) {
 
 	HelHandle handle;
 	void *cpuVaPtr = nullptr;
-	HEL_CHECK(helAllocateMemory(size, 0, nullptr, &handle));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), size, 0, nullptr, &handle));
 	helix::UniqueDescriptor allocationHandle{handle};
 
 	HEL_CHECK(helMapMemory(

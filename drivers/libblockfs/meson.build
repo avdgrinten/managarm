@@ -9,7 +9,7 @@ src = [
 	'src/btrfs/ops.cpp',
 ]
 inc = [ 'include' ]
-deps = [ libarch, core_dep, fs_proto_dep, mbus_proto_dep, ostrace_proto_dep ]
+deps = [ libarch, core_dep, fs_proto_dep, mbus_proto_dep, ostrace_proto_dep , posix_extra_dep ]
 
 libblockfs_driver = shared_library('blockfs', src,
 	dependencies : deps,

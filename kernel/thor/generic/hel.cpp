@@ -476,7 +476,24 @@ HelError helAlertQueue(HelHandle handle) {
 	return kHelErrNone;
 }
 
-HelError helAllocateMemory(size_t size, uint32_t flags,
+// Resolves a hierarchy handle that owns newly allocated memory.
+// A null handle is rejected: every allocation must name an owning hierarchy.
+static std::expected<smarter::shared_ptr<Hierarchy>, HelError>
+resolveHierarchy(Universe *universe, HelHandle handle) {
+	if(handle == kHelNullHandle)
+		return std::unexpected{kHelErrIllegalArgs};
+	auto outcome = universe->inspectDescriptor(handle,
+			[](AnyDescriptor &desc) -> std::expected<smarter::shared_ptr<Hierarchy>, Error> {
+		if(!desc.is<HierarchyDescriptor>())
+			return std::unexpected{Error::badDescriptor};
+		return desc.get<HierarchyDescriptor>().hierarchy;
+	});
+	if(!outcome)
+		return std::unexpected{translateError(outcome.error())};
+	return std::move(*outcome);
+}
+
+HelError helAllocateMemory(HelHandle hierarchyHandle, size_t size, uint32_t flags,
 		const HelAllocRestrictions *restrictions, HelHandle *handle) {
 	if(!size)
 		return kHelErrIllegalArgs;
@@ -485,6 +502,10 @@ HelError helAllocateMemory(size_t size, uint32_t flags,
 
 	auto thisThread = getCurrentThread();
 	auto thisUniverse = thisThread->getUniverse();
+
+	auto hierarchy = resolveHierarchy(thisUniverse.get(), hierarchyHandle);
+	if(!hierarchy)
+		return hierarchy.error();
 
 //	auto pressure = physicalAllocator->numUsedPages() * kPageSize;
 //	infoLogger() << "Allocate " << (void *)size
@@ -499,13 +520,15 @@ HelError helAllocateMemory(size_t size, uint32_t flags,
 
 	smarter::shared_ptr<AllocatedMemory> memory;
 	if(flags & kHelAllocContinuous) {
-		memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc, size, effective.addressBits,
-				size, kPageSize);
+		memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc, *hierarchy, size,
+				effective.addressBits, size, kPageSize);
 	}else if(flags & kHelAllocOnDemand) {
-		memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc, size, effective.addressBits);
+		memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc, *hierarchy, size,
+				effective.addressBits);
 	}else{
 		// TODO:
-		memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc, size, effective.addressBits);
+		memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc, *hierarchy, size,
+				effective.addressBits);
 	}
 	memory->selfPtr = memory;
 
@@ -549,7 +572,7 @@ HelError doSubmitResizeMemory(HelHandle handle, smarter::shared_ptr<IpcQueue> qu
 	return kHelErrNone;
 }
 
-HelError helCreateManagedMemory(size_t size, uint32_t flags,
+HelError helCreateManagedMemory(HelHandle hierarchyHandle, size_t size, uint32_t flags,
 		HelHandle *backing_handle, HelHandle *frontal_handle) {
 	if(flags & ~uint32_t{kHelManagedReadahead})
 		return kHelErrIllegalArgs;
@@ -559,7 +582,11 @@ HelError helCreateManagedMemory(size_t size, uint32_t flags,
 	auto thisThread = getCurrentThread();
 	auto thisUniverse = thisThread->getUniverse();
 
-	auto managed = smarter::allocate_shared<ManagedSpace>(*kernelAlloc, size,
+	auto hierarchy = resolveHierarchy(thisUniverse.get(), hierarchyHandle);
+	if(!hierarchy)
+		return hierarchy.error();
+
+	auto managed = smarter::allocate_shared<ManagedSpace>(*kernelAlloc, *hierarchy, size,
 			flags & kHelManagedReadahead);
 	managed->selfPtr = managed;
 	auto backingMemory = smarter::allocate_shared<BackingMemory>(*kernelAlloc, managed);
@@ -574,10 +601,14 @@ HelError helCreateManagedMemory(size_t size, uint32_t flags,
 	return kHelErrNone;
 }
 
-HelError helCopyOnWrite(HelHandle memoryHandle,
+HelError helCopyOnWrite(HelHandle hierarchyHandle, HelHandle memoryHandle,
 		uintptr_t offset, size_t size, HelHandle *outHandle) {
 	auto this_thread = getCurrentThread();
 	auto this_universe = this_thread->getUniverse();
+
+	auto hierarchy = resolveHierarchy(this_universe.get(), hierarchyHandle);
+	if(!hierarchy)
+		return hierarchy.error();
 
 	smarter::shared_ptr<MemoryView> view;
 
@@ -597,8 +628,8 @@ HelError helCopyOnWrite(HelHandle memoryHandle,
 		view = std::move(*viewOutcome);
 	}
 
-	auto slice = smarter::allocate_shared<CopyOnWriteMemory>(*kernelAlloc, std::move(view),
-			offset, size);
+	auto slice = smarter::allocate_shared<CopyOnWriteMemory>(*kernelAlloc, *hierarchy,
+			std::move(view), offset, size);
 	slice->selfPtr = slice;
 	*outHandle = this_universe->attachDescriptor(
 			MemoryViewDescriptor(std::move(slice)));

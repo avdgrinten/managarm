@@ -5,7 +5,7 @@ src = [
 ]
 
 executable('snd-hda', src,
-	dependencies : [ libarch, hw_proto_dep, libsound_dep, uhda_dep ],
+	dependencies : [ libarch, hw_proto_dep, libsound_dep, uhda_dep , posix_extra_dep ],
 	install : true
 )
 

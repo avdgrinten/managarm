@@ -1,5 +1,5 @@
 inc = [ 'include' ]
-headers = [ 'include/protocols/posix/data.hpp', 'include/protocols/posix/supercalls.hpp' ]
+headers = [ 'include/protocols/posix/data.hpp', 'include/protocols/posix/procdata.hpp', 'include/protocols/posix/supercalls.hpp' ]
 
 posix_bragi_files = files('posix.bragi')
 

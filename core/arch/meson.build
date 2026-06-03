@@ -5,14 +5,14 @@ if build_drivers
 	libarch_libary = shared_library(
 		'arch',
 		'src/dma_pool.cpp',
-		dependencies: deps,
+		dependencies: deps + [ posix_extra_dep ],
 		include_directories: inc,
 		install: true
 	)
 
 	libarch = declare_dependency(
 		link_with : libarch_libary,
-		dependencies : deps,
+		dependencies : deps + [ posix_extra_dep ],
 		include_directories : inc
 	)
 endif

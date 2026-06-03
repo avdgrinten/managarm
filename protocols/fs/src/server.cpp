@@ -1,5 +1,6 @@
 
 #include <stdio.h>
+#include <protocols/posix/procdata.hpp>
 #include <string.h>
 #include <unistd.h>
 #include <iostream>
@@ -2249,7 +2250,7 @@ StatusPageProvider::StatusPageProvider() {
 	// Allocate and map our stauts page.
 	size_t page_size = 4096;
 	HelHandle handle;
-	HEL_CHECK(helAllocateMemory(page_size, 0, nullptr, &handle));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), page_size, 0, nullptr, &handle));
 	_memory = helix::UniqueDescriptor{handle};
 	_mapping = helix::Mapping{_memory, 0, page_size};
 }

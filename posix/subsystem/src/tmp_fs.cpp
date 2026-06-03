@@ -541,7 +541,7 @@ private:
 			HEL_CHECK(result.error());
 		}else{
 			HelHandle handle;
-			HEL_CHECK(helAllocateMemory(aligned_size, 0, nullptr, &handle));
+			HEL_CHECK(helAllocateMemory(rootHierarchy(), aligned_size, 0, nullptr, &handle));
 			_memory = helix::UniqueDescriptor{handle};
 		}
 

@@ -45,6 +45,11 @@ struct VmContext {
 		return _space;
 	}
 
+	// Handle to the hierarchy that owns this address space's memory.
+	HelHandle hierarchyHandle() {
+		return _hierarchyHandle;
+	}
+
 	// TODO: Pass abstract instead of hel flags to this function?
 	async::result<frg::expected<Error, void *>> mapFile(uintptr_t hint, helix::UniqueDescriptor memory,
 			smarter::shared_ptr<File, FileHandle> file,
@@ -74,6 +79,9 @@ private:
 	> splitAreaOn_(uintptr_t addr, size_t size);
 
 	helix::UniqueDescriptor _space;
+
+	// Non-owning; the owning Process keeps the hierarchy descriptor alive.
+	HelHandle _hierarchyHandle = kHelNullHandle;
 
 	std::map<uintptr_t, Area> _areaTree;
 

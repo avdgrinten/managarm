@@ -5,6 +5,6 @@ executable('kernel-tests',
 		'src/mapping.cpp',
 		'src/memory.cpp',
 	],
-	dependencies: [ helix_dep ],
+	dependencies: [ helix_dep , posix_extra_dep ],
 	install : true
 )

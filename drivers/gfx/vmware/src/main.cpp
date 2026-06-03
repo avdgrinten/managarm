@@ -1,5 +1,6 @@
 
 #include <assert.h>
+#include <protocols/posix/procdata.hpp>
 #include <stdio.h>
 #include <deque>
 #include <optional>
@@ -201,7 +202,7 @@ std::pair<std::shared_ptr<drm_core::BufferObject>, uint32_t> GfxDevice::createDu
 	auto size = ((w * h * bpp / 8) + 4095) & ~4095;
 
 	HelHandle handle;
-	HEL_CHECK(helAllocateMemory(size, 0, nullptr, &handle));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), size, 0, nullptr, &handle));
 
 	auto bo = std::make_shared<GfxDevice::BufferObject>(this, size, helix::UniqueDescriptor(handle), w, h);
 

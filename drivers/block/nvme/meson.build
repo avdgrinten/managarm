@@ -9,7 +9,7 @@ src = [
 ]
 
 executable('block-nvme', src,
-	dependencies : [ libarch, hw_proto_dep, mbus_proto_dep, libblockfs_dep, core_dep, svrctl_proto_dep ],
+	dependencies : [ libarch, hw_proto_dep, mbus_proto_dep, libblockfs_dep, core_dep, svrctl_proto_dep , posix_extra_dep ],
 	install : true
 )
 

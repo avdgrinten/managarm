@@ -1,4 +1,5 @@
 #include <iostream>
+#include <protocols/posix/procdata.hpp>
 #include <unordered_map>
 #include <pthread.h>
 
@@ -152,7 +153,7 @@ std::unordered_map<uintptr_t, void *> physicalMappings;
 UhdaStatus uhda_kernel_allocate_physical(size_t size, uintptr_t *res) {
 	HelHandle memory;
 	void *window;
-	HEL_CHECK(helAllocateMemory(size, kHelAllocContinuous, nullptr, &memory));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), size, kHelAllocContinuous, nullptr, &memory));
 	HEL_CHECK(helMapMemory(memory, kHelNullHandle, nullptr,
 		0, size, kHelMapProtRead | kHelMapProtWrite, &window));
 	HEL_CHECK(helCloseDescriptor(kHelThisUniverse, memory));

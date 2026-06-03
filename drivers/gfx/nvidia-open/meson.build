@@ -22,7 +22,7 @@ libnvo = dependency('nvidia-open', method: 'pkg-config')
 libnvo_modeset = dependency('nvidia-open-modeset', method: 'pkg-config')
 
 executable('gfx_nvidia_open', driver_src,
-	dependencies : [drm_core_dep, svrctl_proto_dep, libnvo, libnvo_modeset],
+	dependencies : [drm_core_dep, svrctl_proto_dep, libnvo, libnvo_modeset, posix_extra_dep ],
 	include_directories : ['src'],
 	cpp_args : ['-fno-operator-names'],
 	install : true

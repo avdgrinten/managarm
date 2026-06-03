@@ -16,6 +16,7 @@
 #include <thor-internal/arch-generic/paging.hpp>
 #include <thor-internal/error.hpp>
 #include <thor-internal/futex.hpp>
+#include <thor-internal/hierarchy.hpp>
 #include <thor-internal/types.hpp>
 #include <thor-internal/pfn-db.hpp>
 #include <thor-internal/rcu.hpp>
@@ -578,7 +579,8 @@ private:
 };
 
 struct AllocatedMemory final : MemoryView {
-	AllocatedMemory(size_t length, int addressBits = 64,
+	AllocatedMemory(smarter::shared_ptr<Hierarchy> hierarchy, size_t length,
+			int addressBits = 64,
 			size_t chunkSize = kPageSize, size_t chunkAlign = kPageSize);
 	AllocatedMemory(const AllocatedMemory &) = delete;
 	~AllocatedMemory();
@@ -599,6 +601,7 @@ public:
 private:
 	frg::ticket_spinlock _mutex;
 
+	smarter::shared_ptr<Hierarchy> _hierarchy;
 	frg::vector<PhysicalAddr, KernelAlloc> _physicalChunks;
 	int _addressBits;
 	size_t _chunkSize, _chunkAlign;
@@ -688,7 +691,7 @@ struct ManagedSpace : CacheBundle {
 		frg::intrusive_shared_ptr<TransactionMonitor, Allocator> monitor;
 	};
 
-	ManagedSpace(size_t length, bool readahead);
+	ManagedSpace(smarter::shared_ptr<Hierarchy> hierarchy, size_t length, bool readahead);
 	~ManagedSpace();
 
 	void incrementUses(CachePage *page) override;
@@ -702,6 +705,8 @@ struct ManagedSpace : CacheBundle {
 	void _progressManagement(ManageList &pending);
 
 	smarter::borrowed_ptr<ManagedSpace> selfPtr;
+
+	smarter::shared_ptr<Hierarchy> hierarchy;
 
 	frg::ticket_spinlock mutex;
 
@@ -842,6 +847,8 @@ struct CowPage {
 	PhysicalAddr physical = -1;
 	CowState state = CowState::null;
 	unsigned int lockCount = 0;
+	// Non-owning; the owning CopyOnWriteMemory/CowChain keeps the Hierarchy alive.
+	Hierarchy *hierarchy = nullptr;
 };
 
 struct CowChain {
@@ -857,7 +864,8 @@ struct CowChain {
 
 struct CopyOnWriteMemory final : MemoryView /*, MemoryObserver */ {
 public:
-	CopyOnWriteMemory(smarter::shared_ptr<MemoryView> view,
+	CopyOnWriteMemory(smarter::shared_ptr<Hierarchy> hierarchy,
+			smarter::shared_ptr<MemoryView> view,
 			uintptr_t offset, size_t length,
 			smarter::shared_ptr<CowChain> chain = nullptr);
 	CopyOnWriteMemory(const CopyOnWriteMemory &) = delete;
@@ -880,6 +888,7 @@ public:
 private:
 	frg::ticket_spinlock _mutex;
 
+	smarter::shared_ptr<Hierarchy> _hierarchy;
 	smarter::shared_ptr<MemoryView> _view;
 	uintptr_t _viewOffset;
 	size_t _length;

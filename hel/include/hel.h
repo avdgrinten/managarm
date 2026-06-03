@@ -935,6 +935,9 @@ HEL_C_LINKAGE HelError helAlertQueue(HelHandle queueHandle);
 //! @{
 
 //! Creates a memory object consisting of unmanaged RAM.
+//! @param[in] hierarchy
+//!    	Handle to the hierarchy that owns the new memory object.
+//!    	The allocated physical memory is accounted to this hierarchy node.
 //! @param[in] size
 //!    	Size of the memory object in bytes.
 //!    	Must be aligned to the system's page size.
@@ -943,7 +946,7 @@ HEL_C_LINKAGE HelError helAlertQueue(HelHandle queueHandle);
 //!    	May be @p NULL if there are no restrictions.
 //! @param[out] handle
 //!    	Handle to the new memory object.
-HEL_C_LINKAGE HelError helAllocateMemory(size_t size, uint32_t flags,
+HEL_C_LINKAGE HelError helAllocateMemory(HelHandle hierarchy, size_t size, uint32_t flags,
 		const struct HelAllocRestrictions *restrictions, HelHandle *handle);
 
 //! Resizes a memory object.
@@ -958,6 +961,9 @@ HEL_C_LINKAGE HelError helResizeMemory(HelHandle handle, size_t newSize);
 //!
 //!    The @p backingHandle is used to manage the memory object, while
 //! the @p frontalHandle provides a view on the memory object for consumers.
+//! @param[in] hierarchy
+//!    	Handle to the hierarchy that owns the new memory object.
+//!    	The allocated physical memory is accounted to this hierarchy node.
 //! @param[in] size
 //!    	Size of the memory object in bytes.
 //!    	Must be aligned to the system's page size.
@@ -965,10 +971,13 @@ HEL_C_LINKAGE HelError helResizeMemory(HelHandle handle, size_t newSize);
 //!    	Handle to the new memory object (for management)
 //! @param[out] frontalHandle
 //!    	Handle to the new memory object (for consumers).
-HEL_C_LINKAGE HelError helCreateManagedMemory(size_t size, uint32_t flags,
+HEL_C_LINKAGE HelError helCreateManagedMemory(HelHandle hierarchy, size_t size, uint32_t flags,
 		HelHandle *backingHandle, HelHandle *frontalHandle);
 
 //! Creates memory object that obtains its memory by copy-on-write from another memory object.
+//! @param[in] hierarchy
+//!    	Handle to the hierarchy that owns the new memory object.
+//!    	The copied physical pages are accounted to this hierarchy node.
 //! @param[in] memory
 //!    	Handle to the source memory object.
 //! @param[in] offset
@@ -978,7 +987,7 @@ HEL_C_LINKAGE HelError helCreateManagedMemory(size_t size, uint32_t flags,
 //!    	Must be aligned to the system's page size.
 //! @param[out] handle
 //!    	Handle to the new memory object.
-HEL_C_LINKAGE HelError helCopyOnWrite(HelHandle memory,
+HEL_C_LINKAGE HelError helCopyOnWrite(HelHandle hierarchy, HelHandle memory,
 		uintptr_t offset, size_t size, HelHandle *handle);
 
 HEL_C_LINKAGE HelError helAccessPhysical(uintptr_t physical,

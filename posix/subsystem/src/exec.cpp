@@ -134,7 +134,8 @@ loadElfImage(SharedFilePtr file, VmContext *vmContext, uintptr_t base) {
 			}else{
 				// Map the segment with write permission into this address space.
 				HelHandle segmentHandle;
-				HEL_CHECK(helAllocateMemory(mapLength, 0, nullptr, &segmentHandle));
+				HEL_CHECK(helAllocateMemory(vmContext->hierarchyHandle(), mapLength, 0, nullptr,
+						&segmentHandle));
 
 				void *window;
 				HEL_CHECK(helMapMemory(segmentHandle, kHelNullHandle, nullptr,
@@ -281,7 +282,8 @@ execute(ViewPath root, ViewPath workdir,
 
 	// Allocate memory for the stack.
 	HelHandle stackHandle;
-	HEL_CHECK(helAllocateMemory(stackSize, kHelAllocOnDemand, nullptr, &stackHandle));
+	HEL_CHECK(helAllocateMemory(vmContext->hierarchyHandle(), stackSize, kHelAllocOnDemand,
+			nullptr, &stackHandle));
 
 	void *window;
 	HEL_CHECK(helMapMemory(stackHandle, kHelNullHandle, nullptr,

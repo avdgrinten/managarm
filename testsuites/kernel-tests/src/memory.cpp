@@ -1,4 +1,5 @@
 #include <cassert>
+#include <protocols/posix/procdata.hpp>
 #include <cstddef>
 
 #include <async/algorithm.hpp>
@@ -34,7 +35,7 @@ async::result<void> handleManageRequests(helix::BorrowedDescriptor backingMemory
 
 async::result<void> testWritebackFence() {
 	HelHandle backingHandle, frontalHandle;
-	HEL_CHECK(helCreateManagedMemory(0x1000, 0, &backingHandle, &frontalHandle));
+	HEL_CHECK(helCreateManagedMemory(posix::getProcessHierarchy(), 0x1000, 0, &backingHandle, &frontalHandle));
 	helix::UniqueDescriptor backingMemory{backingHandle};
 	helix::UniqueDescriptor frontalMemory{frontalHandle};
 
@@ -67,7 +68,7 @@ namespace {
 
 async::result<void> testInvalidateRange() {
 	HelHandle backingHandle, frontalHandle;
-	HEL_CHECK(helCreateManagedMemory(0x1000, 0, &backingHandle, &frontalHandle));
+	HEL_CHECK(helCreateManagedMemory(posix::getProcessHierarchy(), 0x1000, 0, &backingHandle, &frontalHandle));
 	helix::UniqueDescriptor backingMemory{backingHandle};
 	helix::UniqueDescriptor frontalMemory{frontalHandle};
 

@@ -1,4 +1,5 @@
 #include "sound.hpp"
+#include <protocols/posix/procdata.hpp>
 
 #include <protocols/mbus/client.hpp>
 #include <protocols/fs/server.hpp>
@@ -72,7 +73,7 @@ struct DeviceFile {
 		size_t controlSize = (sizeof(snd_pcm_mmap_control) + pageSize - 1) & ~(pageSize - 1);
 
 		HelHandle handle;
-		HEL_CHECK(helAllocateMemory(SNDRV_PCM_MMAP_OFFSET_CONTROL_NEW + controlSize, kHelAllocOnDemand, nullptr, &handle));
+		HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), SNDRV_PCM_MMAP_OFFSET_CONTROL_NEW + controlSize, kHelAllocOnDemand, nullptr, &handle));
 
 		memory = helix::UniqueDescriptor{handle};
 

@@ -370,7 +370,8 @@ namespace posix {
 	struct Process {
 		Process(frg::string<KernelAlloc> name)
 		: _name{std::move(name)}, openFiles(*kernelAlloc) {
-			fileTableMemory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc, 0x1000);
+			fileTableMemory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc,
+					rootHierarchy(), 0x1000);
 			fileTableMemory->selfPtr = fileTableMemory;
 		}
 
@@ -773,7 +774,7 @@ namespace posix {
 						fileMemory = getZeroMemory();
 					}else{
 						auto memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc,
-								req->size());
+								rootHierarchy(), req->size());
 						memory->selfPtr = memory;
 						fileMemory = std::move(memory);
 					}
@@ -788,7 +789,7 @@ namespace posix {
 				smarter::shared_ptr<MemorySlice> slice;
 				if(req->flags() & MAP_PRIVATE) { // MAP_PRIVATE.
 					auto cowMemory = smarter::allocate_shared<CopyOnWriteMemory>(*kernelAlloc,
-							std::move(fileMemory), req->rel_offset(), req->size());
+							rootHierarchy(), std::move(fileMemory), req->rel_offset(), req->size());
 					cowMemory->selfPtr = cowMemory;
 					slice = smarter::allocate_shared<MemorySlice>(*kernelAlloc,
 							std::move(cowMemory), 0, req->size());
@@ -869,10 +870,11 @@ namespace posix {
 				});
 				if(!readOutcome)
 					panicLogger() << "thor: Failed to access server registers" << frg::endlog;
-				auto fileMemory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc, size);
+				auto fileMemory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc,
+						rootHierarchy(), size);
 				fileMemory->selfPtr = fileMemory;
 				auto cowMemory = smarter::allocate_shared<CopyOnWriteMemory>(*kernelAlloc,
-						std::move(fileMemory), 0, size);
+						rootHierarchy(), std::move(fileMemory), 0, size);
 				cowMemory->selfPtr = cowMemory;
 				auto slice = smarter::allocate_shared<MemorySlice>(*kernelAlloc,
 						std::move(cowMemory), 0, size);

@@ -1,4 +1,5 @@
 #include "memfd.hpp"
+#include "process.hpp"
 
 #include <helix/ipc.hpp>
 
@@ -59,7 +60,7 @@ async::result<frg::expected<Error>> MemoryFile::_resizeFile(size_t new_size) {
 		HEL_CHECK(resizeResult.error());
 	}else{
 		HelHandle handle;
-		HEL_CHECK(helAllocateMemory(aligned_size, 0, nullptr, &handle));
+		HEL_CHECK(helAllocateMemory(rootHierarchy(), aligned_size, 0, nullptr, &handle));
 		_memory = helix::UniqueDescriptor{handle};
 	}
 

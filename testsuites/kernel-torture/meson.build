@@ -3,4 +3,4 @@ src = [
 	'src/cow.cpp',
 ]
 
-executable('kernel-torture', src, install : true, dependencies: [ helix_dep ])
+executable('kernel-torture', src, install : true, dependencies: [ helix_dep , posix_extra_dep ])

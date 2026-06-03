@@ -4,7 +4,7 @@ src = [
 ]
 
 executable('gfx_virtio', src,
-	dependencies : [ drm_core_dep, virtio_core_dep, svrctl_proto_dep ],
+	dependencies : [ drm_core_dep, virtio_core_dep, svrctl_proto_dep , posix_extra_dep ],
 	install : true
 )
 

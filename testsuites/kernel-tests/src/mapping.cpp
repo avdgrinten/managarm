@@ -1,4 +1,5 @@
 #include <cassert>
+#include <protocols/posix/procdata.hpp>
 #include <cstddef>
 #include <iostream>
 
@@ -9,7 +10,7 @@
 
 DEFINE_TEST(unmapPartialPfs, ([] {
 	HelHandle handle;
-	HEL_CHECK(helAllocateMemory(0x3000, 0, nullptr, &handle));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), 0x3000, 0, nullptr, &handle));
 	void *window;
 	HEL_CHECK(helMapMemory(handle, kHelNullHandle, nullptr, 0, 0x3000,
 			kHelMapProtRead | kHelMapProtWrite, &window));
@@ -29,7 +30,7 @@ DEFINE_TEST(unmapPartialPfs, ([] {
 
 DEFINE_TEST(unmapPartialPreserve, ([] {
 	HelHandle handle;
-	HEL_CHECK(helAllocateMemory(0x3000, 0, nullptr, &handle));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), 0x3000, 0, nullptr, &handle));
 	void *window;
 	HEL_CHECK(helMapMemory(handle, kHelNullHandle, nullptr, 0, 0x3000,
 			kHelMapProtRead | kHelMapProtWrite, &window));

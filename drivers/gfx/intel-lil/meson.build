@@ -11,7 +11,7 @@ src = files(
 )
 
 executable('gfx_intel_lil', src,
-	dependencies : [ drm_core_dep, lil_dep, svrctl_proto_dep ],
+	dependencies : [ drm_core_dep, lil_dep, svrctl_proto_dep , posix_extra_dep ],
 	install : true
 )
 

@@ -762,9 +762,9 @@ size_t HardwareMemory::getLength() {
 // AllocatedMemory
 // --------------------------------------------------------
 
-AllocatedMemory::AllocatedMemory(size_t desiredLngth,
+AllocatedMemory::AllocatedMemory(smarter::shared_ptr<Hierarchy> hierarchy, size_t desiredLngth,
 		int addressBits, size_t desiredChunkSize, size_t chunkAlign)
-: _physicalChunks{*kernelAlloc},
+: _hierarchy{std::move(hierarchy)}, _physicalChunks{*kernelAlloc},
 		_addressBits{addressBits}, _chunkAlign{chunkAlign} {
 	static_assert(sizeof(unsigned long) == sizeof(uint64_t), "Fix use of __builtin_clzl");
 	_chunkSize = size_t(1) << (64 - __builtin_clzl(desiredChunkSize - 1));
@@ -795,6 +795,7 @@ AllocatedMemory::~AllocatedMemory() {
 			for(size_t pg = 0; pg < _chunkSize; pg += kPageSize)
 				globalPfnDb().erase(_physicalChunks[i] + pg);
 			physicalAllocator->free(_physicalChunks[i], _chunkSize);
+			_hierarchy->unchargeMemory(_chunkSize);
 		}
 	}
 	if(logUsage)
@@ -874,6 +875,7 @@ AllocatedMemory::touchRange(uintptr_t offset, size_t, FetchFlags) {
 			globalPfnDb().insert(physical + pg_progress, PfnDescriptor::otherPage());
 		}
 		_physicalChunks[index] = physical;
+		_hierarchy->chargeMemory(_chunkSize);
 	}
 
 	assert(_physicalChunks[index] != PhysicalAddr(-1));
@@ -891,8 +893,9 @@ size_t AllocatedMemory::getLength() {
 // ManagedSpace
 // --------------------------------------------------------
 
-ManagedSpace::ManagedSpace(size_t length, bool readahead)
-: pages{*kernelAlloc}, numPages{length >> kPageShift}, readahead{readahead} {
+ManagedSpace::ManagedSpace(smarter::shared_ptr<Hierarchy> hierarchy, size_t length, bool readahead)
+: hierarchy{std::move(hierarchy)}, pages{*kernelAlloc},
+		numPages{length >> kPageShift}, readahead{readahead} {
 	assert(!(length & (kPageSize - 1)));
 
 	globalReclaimer->registerBundle(this);
@@ -970,6 +973,7 @@ ManagedSpace::ManagedSpace(size_t length, bool readahead)
 
 				globalPfnDb().erase(physical);
 				physicalAllocator->free(physical, kPageSize);
+				self->hierarchy->unchargeMemory(kPageSize);
 				if(invalidateMonitor)
 					invalidateMonitor->event.raise();
 				sizeFreed += kPageSize;
@@ -1311,6 +1315,7 @@ BackingMemory::touchRange(uintptr_t offset, size_t, FetchFlags) {
 
 		globalPfnDb().insert(physical, PfnDescriptor::cachePage(&pit->cachePage));
 		pit->physical = physical;
+		_managed->hierarchy->chargeMemory(kPageSize);
 	}
 
 	co_return kPageSize - misalign;
@@ -1546,6 +1551,7 @@ coroutine<frg::expected<Error>> BackingMemory::invalidateRange(uintptr_t offset,
 			if(physical != PhysicalAddr(-1)) {
 				globalPfnDb().erase(physical);
 				physicalAllocator->free(physical, kPageSize);
+				_managed->hierarchy->unchargeMemory(kPageSize);
 			}
 			if(physical != PhysicalAddr(-1))
 				pg += kPageSize;
@@ -1834,12 +1840,15 @@ CowPage::~CowPage() {
 	assert(physical != PhysicalAddr(-1));
 	globalPfnDb().erase(physical);
 	physicalAllocator->free(physical, kPageSize);
+	if(hierarchy)
+		hierarchy->unchargeMemory(kPageSize);
 }
 
-CopyOnWriteMemory::CopyOnWriteMemory(smarter::shared_ptr<MemoryView> view,
+CopyOnWriteMemory::CopyOnWriteMemory(smarter::shared_ptr<Hierarchy> hierarchy,
+		smarter::shared_ptr<MemoryView> view,
 		uintptr_t offset, size_t length,
 		smarter::shared_ptr<CowChain> chain)
-: MemoryView{&_evictQueue}, _view{std::move(view)},
+: MemoryView{&_evictQueue}, _hierarchy{std::move(hierarchy)}, _view{std::move(view)},
 		_viewOffset{offset}, _length{length}, _copyChain{std::move(chain)},
 		_ownedPages{*kernelAlloc} {
 	assert(length);
@@ -1880,7 +1889,7 @@ coroutine<frg::expected<Error, smarter::shared_ptr<MemoryView>>> CopyOnWriteMemo
 
 		// Create a new mapping in the forked space.
 		forked = smarter::allocate_shared<CopyOnWriteMemory>(*kernelAlloc,
-						_view, _viewOffset, _length, newChain);
+						_hierarchy, _view, _viewOffset, _length, newChain);
 		forked->selfPtr = forked;
 
 		// Inspect all copied pages owned by the original mapping.
@@ -1980,6 +1989,8 @@ coroutine<frg::expected<Error, smarter::shared_ptr<MemoryView>>> CopyOnWriteMemo
 		auto copyPage = smarter::allocate_shared<CowPage>(*kernelAlloc);
 		copyPage->state = CowState::hasCopy;
 		copyPage->physical = copyPhysical;
+		copyPage->hierarchy = forked->_hierarchy.get();
+		forked->_hierarchy->chargeMemory(kPageSize);
 		globalPfnDb().insert(copyPhysical, PfnDescriptor::otherPage());
 		auto copyIt = forked->_ownedPages.insert(pg >> kPageShift);
 		*copyIt = copyPage;
@@ -2226,6 +2237,8 @@ CopyOnWriteMemory::touchRange(uintptr_t offset, size_t sizeHint, FetchFlags flag
 		assert(cowPage->state == CowState::inProgress);
 		cowPage->state = CowState::hasCopy;
 		cowPage->physical = physical;
+		cowPage->hierarchy = _hierarchy.get();
+		_hierarchy->chargeMemory(kPageSize);
 		globalPfnDb().insert(physical, PfnDescriptor::otherPage());
 	}
 	_copyEvent.raise();

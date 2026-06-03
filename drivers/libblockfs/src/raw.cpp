@@ -1,4 +1,5 @@
 #include "raw.hpp"
+#include <protocols/posix/procdata.hpp>
 
 #include <linux/cdrom.h>
 
@@ -15,7 +16,7 @@ RawFs::RawFs(BlockDevice *device)
 async::result<void> RawFs::init() {
 	auto device_size = co_await device->getSize();
 	auto cache_size = (device_size + 0xFFF) & ~size_t(0xFFF);
-	HEL_CHECK(helCreateManagedMemory(cache_size, 0,
+	HEL_CHECK(helCreateManagedMemory(posix::getProcessHierarchy(), cache_size, 0,
 				&backingMemory, &frontalMemory));
 
 	manageMapping();

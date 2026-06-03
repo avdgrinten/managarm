@@ -1,4 +1,5 @@
 #include <math.h>
+#include <protocols/posix/procdata.hpp>
 
 #include <async/result.hpp>
 #include <async/algorithm.hpp>
@@ -205,7 +206,7 @@ void doAllocateBenchmark(size_t size) {
 		bench.launchRepetition();
 		while(!bench.isRepetitionDone()) {
 			HelHandle handle;
-			HEL_CHECK(helAllocateMemory(size, 0, nullptr, &handle));
+			HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), size, 0, nullptr, &handle));
 			HEL_CHECK(helCloseDescriptor(kHelThisUniverse, handle));
 			++n;
 		}
@@ -223,7 +224,7 @@ void doMapBenchmark(size_t size) {
 		bench.launchRepetition();
 		while(!bench.isRepetitionDone()) {
 			HelHandle handle;
-			HEL_CHECK(helAllocateMemory(size, 0, nullptr, &handle));
+			HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), size, 0, nullptr, &handle));
 			void *window;
 			HEL_CHECK(helMapMemory(handle, kHelNullHandle, nullptr, 0, size,
 					kHelMapProtRead | kHelMapProtWrite, &window));
@@ -240,7 +241,7 @@ void doMapPopulatedBenchmark(size_t size) {
 	std::cout << "populated mapping, size = " << (size / (1024 * 1024)) << " MiB" << std::endl;
 
 	HelHandle handle;
-	HEL_CHECK(helAllocateMemory(size, 0, nullptr, &handle));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), size, 0, nullptr, &handle));
 	void *window;
 	HEL_CHECK(helMapMemory(handle, kHelNullHandle, nullptr, 0, size,
 			kHelMapProtRead | kHelMapProtWrite, &window));
@@ -279,7 +280,7 @@ void doPageFaultBenchmark(size_t size) {
 		bench.launchRepetition();
 		while(!bench.isRepetitionDone()) {
 			HelHandle handle;
-			HEL_CHECK(helAllocateMemory(size, 0, nullptr, &handle));
+			HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), size, 0, nullptr, &handle));
 			void *window;
 			HEL_CHECK(helMapMemory(handle, kHelNullHandle, nullptr, 0, size,
 					kHelMapProtRead | kHelMapProtWrite, &window));

@@ -1,4 +1,5 @@
 #include <arch/bit.hpp>
+#include <protocols/posix/procdata.hpp>
 #include <helix/ipc.hpp>
 #include <helix/memory.hpp>
 
@@ -17,7 +18,7 @@ async::result<void> PciExpressQueue::init() {
 
 	HelHandle memory;
 	void *window;
-	HEL_CHECK(helAllocateMemory(cqSize, kHelAllocContinuous, nullptr, &memory));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), cqSize, kHelAllocContinuous, nullptr, &memory));
 	HEL_CHECK(helMapMemory(memory, kHelNullHandle, nullptr,
 						   0, cqSize, kHelMapProtRead | kHelMapProtWrite, &window));
 	HEL_CHECK(helCloseDescriptor(kHelThisUniverse, memory));
@@ -25,7 +26,7 @@ async::result<void> PciExpressQueue::init() {
 	cqes_ = reinterpret_cast<spec::CompletionEntry *>(window);
 	memset(cqes_, 0, cqSize);
 
-	HEL_CHECK(helAllocateMemory(sqSize, kHelAllocContinuous, nullptr, &memory));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), sqSize, kHelAllocContinuous, nullptr, &memory));
 	HEL_CHECK(helMapMemory(memory, kHelNullHandle, nullptr,
 						   0, sqSize, kHelMapProtRead | kHelMapProtWrite, &window));
 	HEL_CHECK(helCloseDescriptor(kHelThisUniverse, memory));

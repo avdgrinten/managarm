@@ -1,5 +1,5 @@
 executable('gfx_plainfb', 'src/main.cpp',
-	dependencies : drm_core_dep,
+	dependencies : [ drm_core_dep, posix_extra_dep ],
 	install : true
 )
 

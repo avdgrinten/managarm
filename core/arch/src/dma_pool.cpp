@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <hel-syscalls.h>
 #include <hel.h>
+#include <protocols/posix/procdata.hpp>
 #include <print>
 
 namespace arch {
@@ -80,7 +81,8 @@ void *contiguous_pool::allocate_pages_(size_t region_size) {
 
 	HelHandle memory;
 	void *p;
-	HEL_CHECK(helAllocateMemory(region_size, kHelAllocContinuous, &restrictions, &memory));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), region_size, kHelAllocContinuous,
+			&restrictions, &memory));
 	HEL_CHECK(helMapMemory(memory, kHelNullHandle, nullptr, 0, region_size,
 			kHelMapProtRead | kHelMapProtWrite, &p));
 	HEL_CHECK(helCloseDescriptor(kHelThisUniverse, memory));

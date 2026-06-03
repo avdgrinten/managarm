@@ -3,7 +3,7 @@ src = [
 	'src/device.cpp',
 ]
 inc = [ 'include' ]
-deps = [ core_dep, fs_proto_dep, mbus_proto_dep ]
+deps = [ core_dep, fs_proto_dep, mbus_proto_dep , posix_extra_dep ]
 
 libsound_driver = shared_library('sound', src,
 	dependencies : deps,

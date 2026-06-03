@@ -1,5 +1,6 @@
 
 #include <ranges>
+#include <protocols/posix/procdata.hpp>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -680,9 +681,9 @@ async::result<void> FileSystem::init() {
 	// Create memory bundles to manage the block and inode bitmaps.
 	HelHandle block_bitmap_frontal, inode_bitmap_frontal;
 	HelHandle block_bitmap_backing, inode_bitmap_backing;
-	HEL_CHECK(helCreateManagedMemory(numBlockGroups << blockPagesShift,
+	HEL_CHECK(helCreateManagedMemory(posix::getProcessHierarchy(), numBlockGroups << blockPagesShift,
 			0, &block_bitmap_backing, &block_bitmap_frontal));
-	HEL_CHECK(helCreateManagedMemory(numBlockGroups << blockPagesShift,
+	HEL_CHECK(helCreateManagedMemory(posix::getProcessHierarchy(), numBlockGroups << blockPagesShift,
 			0, &inode_bitmap_backing, &inode_bitmap_frontal));
 	blockBitmap = helix::UniqueDescriptor{block_bitmap_frontal};
 	blockBitmapMapping = helix::Mapping{blockBitmap,
@@ -700,7 +701,7 @@ async::result<void> FileSystem::init() {
 	assert(!((inodesPerGroup * inodeSize) & 0xFFF));
 	HelHandle inode_table_frontal;
 	HelHandle inode_table_backing;
-	HEL_CHECK(helCreateManagedMemory(inodesPerGroup * inodeSize * numBlockGroups,
+	HEL_CHECK(helCreateManagedMemory(posix::getProcessHierarchy(), inodesPerGroup * inodeSize * numBlockGroups,
 			0, &inode_table_backing, &inode_table_frontal));
 	inodeTable = helix::UniqueDescriptor{inode_table_frontal};
 	inodeTableMapping = helix::Mapping{inodeTable,
@@ -1064,7 +1065,7 @@ async::detached FileSystem::initiateInode(std::shared_ptr<Inode> inode) {
 
 	// Allocate a page cache for the file.
 	auto cache_size = (inode->fileSize() + 0xFFF) & ~size_t(0xFFF);
-	HEL_CHECK(helCreateManagedMemory(cache_size, kHelManagedReadahead,
+	HEL_CHECK(helCreateManagedMemory(posix::getProcessHierarchy(), cache_size, kHelManagedReadahead,
 			&inode->backingMemory, &inode->frontalMemory));
 
 	if (inode->fileType == kTypeDirectory) {
@@ -1076,9 +1077,9 @@ async::detached FileSystem::initiateInode(std::shared_ptr<Inode> inode) {
 
 	HelHandle frontalOrder1, frontalOrder2;
 	HelHandle backingOrder1, backingOrder2;
-	HEL_CHECK(helCreateManagedMemory(3 << blockPagesShift,
+	HEL_CHECK(helCreateManagedMemory(posix::getProcessHierarchy(), 3 << blockPagesShift,
 			0, &backingOrder1, &frontalOrder1));
-	HEL_CHECK(helCreateManagedMemory((blockSize / 4) << blockPagesShift,
+	HEL_CHECK(helCreateManagedMemory(posix::getProcessHierarchy(), (blockSize / 4) << blockPagesShift,
 			0, &backingOrder2, &frontalOrder2));
 	inode->indirectOrder1 = helix::UniqueDescriptor{frontalOrder1};
 	inode->indirectOrder2 = helix::UniqueDescriptor{frontalOrder2};

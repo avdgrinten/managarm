@@ -7,7 +7,7 @@ headers = [ 'include/protocols/fs/client.hpp', 'include/protocols/fs/common.hpp'
 fs_bragi_files = files('fs.bragi')
 
 if not provide_deps
-	deps = [ helix_dep, frigg, ostrace_proto_dep, core_dep, libasync_dep, libsmarter ]
+	deps = [ helix_dep, frigg, ostrace_proto_dep, core_dep, libasync_dep, libsmarter , posix_extra_dep ]
 
 	libfs = shared_library('fs_protocol', src,
 		dependencies : deps,

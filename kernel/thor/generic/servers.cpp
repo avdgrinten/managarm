@@ -52,6 +52,7 @@ coroutine<bool> createMfsFile(frg::string_view path, const void *buffer, size_t 
 		MfsRegular **out) {
 	// Copy to the memory object before taking locks below.
 	auto memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc,
+			rootHierarchy(),
 			(size + (kPageSize - 1)) & ~size_t{kPageSize - 1});
 	memory->selfPtr = memory;
 	auto copyOutcome = co_await memory->copyTo(0, buffer, size);
@@ -202,7 +203,8 @@ coroutine<ImageInfo> loadModuleImage(smarter::shared_ptr<AddressSpace, BindableH
 			if((virt_length % kPageSize) != 0)
 				virt_length += kPageSize - virt_length % kPageSize;
 			
-			auto memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc, virt_length);
+			auto memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc,
+					rootHierarchy(), virt_length);
 			memory->selfPtr = memory;
 			auto copyResult = co_await copyBetweenViews(memory.get(), phdr.p_vaddr - virt_address,
 					image.get(), phdr.p_offset, phdr.p_filesz);
@@ -290,7 +292,8 @@ coroutine<void> executeModule(frg::string_view name, MfsRegular *module,
 
 	// allocate and map memory for the user mode stack
 	size_t stack_size = 0x10000;
-	auto stack_memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc, stack_size);
+	auto stack_memory = smarter::allocate_shared<AllocatedMemory>(*kernelAlloc,
+			rootHierarchy(), stack_size);
 	stack_memory->selfPtr = stack_memory;
 	auto stack_view = smarter::allocate_shared<MemorySlice>(*kernelAlloc,
 			stack_memory, 0, stack_size);

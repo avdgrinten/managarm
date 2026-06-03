@@ -1,4 +1,5 @@
 #include <hel.h>
+#include <protocols/posix/procdata.hpp>
 #include <hel-syscalls.h>
 #include <async/basic.hpp>
 #include <helix/ipc.hpp>
@@ -7,7 +8,7 @@
 
 DEFINE_TEST(cows, ([] {
 	HelHandle handle;
-	HEL_CHECK(helCopyOnWrite(kHelZeroMemory, 0, 0x1000, &handle));
+	HEL_CHECK(helCopyOnWrite(posix::getProcessHierarchy(), kHelZeroMemory, 0, 0x1000, &handle));
 
 	void *window;
 	HEL_CHECK(helMapMemory(handle, kHelNullHandle, nullptr, 0, 0x1000, kHelMapProtRead | kHelMapProtWrite, &window));

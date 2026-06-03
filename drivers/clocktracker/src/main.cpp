@@ -1,5 +1,6 @@
 
 #include <iostream>
+#include <protocols/posix/procdata.hpp>
 
 #include <async/oneshot-event.hpp>
 #include <core/dispatch.hpp>
@@ -113,7 +114,7 @@ async::detached initializeDriver() {
 	// Allocate and map our tracker page.
 	size_t page_size = 4096;
 	HelHandle handle;
-	HEL_CHECK(helAllocateMemory(page_size, 0, nullptr, &handle));
+	HEL_CHECK(helAllocateMemory(posix::getProcessHierarchy(), page_size, 0, nullptr, &handle));
 	trackerPageMemory = helix::UniqueDescriptor{handle};
 	trackerPageMapping = helix::Mapping{trackerPageMemory, 0, page_size};
 
