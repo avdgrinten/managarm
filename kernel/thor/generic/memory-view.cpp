@@ -1016,7 +1016,16 @@ ManagedSpace::ManagedSpace(size_t length, bool readahead)
 				while(!pending.empty()) {
 					auto *cp = pending.pop_front();
 					auto *page = frg::container_of(cp, &ManagedPage::cachePage);
-					assert(page->transactionState == TxState::dirty);
+					// A concurrent resize() may already have evicted a truncated page
+					// that was still in our local pending list; skip anything that is
+					// no longer dirty, and discard (rather than write back) pages that
+					// have since fallen beyond numPages.
+					if(page->transactionState != TxState::dirty)
+						continue;
+					if(cp->identity >= self->numPages) {
+						page->transactionState = TxState::none;
+						continue;
+					}
 					page->transactionState = TxState::wantWriteback;
 					page->monitor = frg::allocate_intrusive_shared<TransactionMonitor>(Allocator{});
 					self->_writebackList.push_back(cp);
@@ -1064,10 +1073,11 @@ Error ManagedSpace::lockPages(uintptr_t offset, size_t size) {
 }
 
 // Note: Neither offset nor size are necessarily multiples of the page size.
+// The range may extend beyond numPages: a concurrent resize() can shrink the
+// object while an in-flight DMA import still holds a lock on a truncated page.
 void ManagedSpace::unlockPages(uintptr_t offset, size_t size) {
 	auto irq_lock = frg::guard(&irqMutex());
 	auto lock = frg::guard(&mutex);
-	assert((offset + size) / kPageSize <= numPages);
 
 	for(size_t pg = 0; pg < size; pg += kPageSize) {
 		size_t index = (offset + pg) / kPageSize;
@@ -1205,6 +1215,11 @@ void ManagedSpace::markDirty(CachePage *cachePage) {
 		if(page->loadState == LoadState::missing)
 			return;
 
+		// A page beyond the current size is being discarded by a concurrent
+		// resize(); do not enter it into the writeback pipeline.
+		if(cachePage->identity >= numPages)
+			return;
+
 		if(page->loadState == LoadState::present
 				&& (page->transactionState == TxState::none
 					|| page->transactionState == TxState::inReclaimer)) {
@@ -1339,15 +1354,11 @@ Error BackingMemory::updateRange(ManageRequest type, size_t offset, size_t lengt
 		auto irqLock = frg::guard(&irqMutex());
 		auto lock = frg::guard(&_managed->mutex);
 
-		if ((offset + length) / kPageSize > _managed->numPages) {
-			infoLogger() << frg::fmt(
-				"thor: Requested {} of range {}-{} in BackingMemory of size {}",
-				type == ManageRequest::initialize ? "initialization" : "writeback",
-				offset, offset + length, _managed->numPages * kPageSize
-			) << frg::endlog;
-
-			return Error::illegalArgs;
-		}
+		// Note: the range is validated against each page's transaction state, not
+		// against numPages. A page dispatched before a concurrent resize() shrank
+		// the object is a legitimate in-flight transaction and must be retired
+		// here even though its index is now beyond numPages; resize() waits for
+		// exactly this retirement (and the subsequent unlock) before freeing it.
 
 	/*	assert(length == kPageSize);
 		auto inspect = (unsigned char *)physicalToVirtual(_managed->physicalPages[offset / kPageSize]);
@@ -1384,7 +1395,11 @@ Error BackingMemory::updateRange(ManageRequest type, size_t offset, size_t lengt
 				assert(pit);
 
 				assert(pit->transactionState == ManagedSpace::TxState::writeback);
-				if(!pit->stillDirty) {
+				// A page re-dirtied while its writeback was in flight is normally
+				// re-queued, but not if a concurrent resize() has truncated it: its
+				// contents are being discarded, so retire it clean instead.
+				if(!pit->stillDirty || index >= _managed->numPages) {
+					pit->stillDirty = false;
 					if (pit->lockCount || pit->cachePage.useCount.load(std::memory_order_relaxed)) {
 						pit->transactionState = ManagedSpace::TxState::none;
 					} else {
