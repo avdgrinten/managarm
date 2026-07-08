@@ -233,16 +233,9 @@ HandleRequest::operator()(managarm::posix::MkdirAtRequest &&req,
 			relative_to, req.path(), self.get());
 	auto resolveResult = co_await resolver.resolve(resolvePrefix);
 	if(!resolveResult) {
-		if(resolveResult.error() == protocols::fs::Error::fileNotFound) {
-			co_await sendErrorResponse<managarm::posix::MkdirAtResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-			co_return {};
-		} else if(resolveResult.error() == protocols::fs::Error::notDirectory) {
-			co_await sendErrorResponse<managarm::posix::MkdirAtResponse>(conversation, managarm::posix::Errors::NOT_A_DIRECTORY);
-			co_return {};
-		} else {
-			std::cout << "posix: Unexpected failure from resolve()" << std::endl;
-			co_return {};
-		}
+		co_await sendErrorResponse<managarm::posix::MkdirAtResponse>(conversation,
+				resolveResult.error() | toPosixError | toPosixProtoError);
+		co_return {};
 	}
 
 	if(!resolver.hasComponent()) {
