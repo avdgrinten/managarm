@@ -347,8 +347,9 @@ async::result<frg::expected<protocols::fs::Error, void>> PathResolver::resolve(R
 				}
 
 				// Finally, we might need to follow symlinks.
+				// A trailing slash forces the final symlink to be followed (POSIX: path/ resolves as path/.).
 				if(next.second->getTarget()->getType() == VfsType::symlink
-						&& !(_components.empty() && (flags & resolveDontFollow))) {
+						&& !(_components.empty() && (flags & resolveDontFollow) && !_trailingSlash)) {
 					auto symlinkResult = co_await next.second->getTarget()->readSymlink(next.second.get(), _process);
 					if(auto error = std::get_if<Error>(&symlinkResult); error) {
 						assert(*error == Error::illegalOperationTarget);
@@ -413,8 +414,9 @@ async::result<frg::expected<protocols::fs::Error, void>> PathResolver::resolve(R
 				}
 
 				// Finally, we might need to follow symlinks.
+				// A trailing slash forces the final symlink to be followed (POSIX: path/ resolves as path/.).
 				if(next.second->getTarget()->getType() == VfsType::symlink
-						&& !(_components.empty() && (flags & resolveDontFollow))) {
+						&& !(_components.empty() && (flags & resolveDontFollow) && !_trailingSlash)) {
 					auto symlinkResult = co_await next.second->getTarget()->readSymlink(next.second.get(), _process);
 					if(auto error = std::get_if<Error>(&symlinkResult); error) {
 						assert(*error == Error::illegalOperationTarget);
