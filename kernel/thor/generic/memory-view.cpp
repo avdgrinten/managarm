@@ -1334,14 +1334,7 @@ Error BackingMemory::updateRange(ManageRequest type, size_t offset, size_t lengt
 	assert((offset % kPageSize) == 0);
 	assert((length % kPageSize) == 0);
 
-	frg::intrusive_list<
-		ManagedSpace::TransactionMonitor,
-		frg::locate_member<
-			ManagedSpace::TransactionMonitor,
-			frg::default_list_hook<ManagedSpace::TransactionMonitor>,
-			&ManagedSpace::TransactionMonitor::pendingHook
-		>
-	> pendingMonitors;
+	ManagedSpace::MonitorPendingList pendingMonitors;
 	{
 		auto irqLock = frg::guard(&irqMutex());
 		auto lock = frg::guard(&_managed->mutex);

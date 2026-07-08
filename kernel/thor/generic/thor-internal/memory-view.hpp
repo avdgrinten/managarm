@@ -662,6 +662,15 @@ struct ManagedSpace : CacheBundle {
 		frg::default_list_hook<TransactionMonitor> pendingHook;
 	};
 
+	using MonitorPendingList = frg::intrusive_list<
+		TransactionMonitor,
+		frg::locate_member<
+			TransactionMonitor,
+			frg::default_list_hook<TransactionMonitor>,
+			&TransactionMonitor::pendingHook
+		>
+	>;
+
 	struct ManagedPage {
 		ManagedPage(ManagedSpace *bundle, uint64_t identity) {
 			cachePage.bundle = bundle;
@@ -712,32 +721,11 @@ struct ManagedSpace : CacheBundle {
 
 	EvictionQueue _evictQueue;
 
-	frg::intrusive_list<
-		CachePage,
-		frg::locate_member<
-			CachePage,
-			frg::default_list_hook<CachePage>,
-			&CachePage::listHook
-		>
-	> _dirtyList;
+	CachePagesList _dirtyList;
 
-	frg::intrusive_list<
-		CachePage,
-		frg::locate_member<
-			CachePage,
-			frg::default_list_hook<CachePage>,
-			&CachePage::listHook
-		>
-	> _initializationList;
+	CachePagesList _initializationList;
 
-	frg::intrusive_list<
-		CachePage,
-		frg::locate_member<
-			CachePage,
-			frg::default_list_hook<CachePage>,
-			&CachePage::listHook
-		>
-	> _writebackList;
+	CachePagesList _writebackList;
 
 	ManageList _managementQueue;
 
