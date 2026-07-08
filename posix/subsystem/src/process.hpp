@@ -30,6 +30,12 @@ struct ControllingTerminalState;
 
 typedef int ProcessId;
 
+// Number of file descriptors that fit into the shared file table.
+inline constexpr size_t fileTableSize = 1024;
+// Size (in bytes) of the shared file table memory region, rounded up to full pages.
+inline constexpr size_t fileTableMemorySize =
+		(fileTableSize * sizeof(HelHandle) + 0xFFF) & ~size_t{0xFFF};
+
 // TODO: This struct should store the process' VMAs once we implement them.
 // TODO: We need a clarification here: Does mmap() keep file descriptions open (e.g. for flock())?
 struct VmContext {
@@ -205,8 +211,7 @@ public:
 	}
 
 	void setFdLimit(uint64_t limit) {
-		// TODO: increase the limit once we allow more than one shared fd -> HelHandle mapping page
-		fdLimit_ = std::min(limit, 0x1000 / sizeof(HelHandle));
+		fdLimit_ = std::min(limit, fileTableSize);
 	}
 
 private:
@@ -222,8 +227,7 @@ private:
 	helix::UniqueDescriptor _fileTableMemory;
 	helix::Mapping fileTableWindow_;
 
-	// TODO: increase the limit once we allow more than one shared fd -> HelHandle mapping page
-	uint64_t fdLimit_ = 0x1000 / sizeof(HelHandle);
+	uint64_t fdLimit_ = fileTableSize;
 
 	HelHandle _clientMbusLane;
 };

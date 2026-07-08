@@ -7,11 +7,11 @@
 namespace helix {
 
 HelHandle handleForFd(int fd) {
-	if (fd >= 512)
-		return 0;
-
 	posix::ManagarmProcessData data;
 	HEL_CHECK(helSyscall1(kHelCallSuper + posix::superGetProcessData, reinterpret_cast<HelWord>(&data)));
+
+	if (static_cast<size_t>(fd) >= data.fileTableSize)
+		return 0;
 
 	return reinterpret_cast<HelHandle *>(data.fileTable)[fd];
 }

@@ -910,7 +910,7 @@ async::result<std::expected<std::string, Error>> ProcessStatusNode::show(Process
 	stream << "TracerPid: 0\n"; // We're not being traced, so 0 is fine.
 	stream << "Uid: " << tg->uid() << "\n";
 	stream << "Gid: " << tg->gid() << "\n";
-	stream << "FDSize: 512\n"; // TODO: adjust once we're not limited to one page worth of handles
+	stream << "FDSize: " << fileTableSize << "\n";
 	stream << "Groups: 0\n"; // We don't implement groups yet, so 0 is fine.
 	// Namespace information, unimplemented.
 	stream << "NStgid: N/A\n";
@@ -1014,7 +1014,7 @@ async::result<std::expected<std::string, Error>> StatusNode::show(Process *) {
 	stream << "TracerPid: 0\n"; // We're not being traced, so 0 is fine.
 	stream << "Uid: " << p->threadGroup()->uid() << "\n";
 	stream << "Gid: " << p->threadGroup()->gid() << "\n";
-	stream << "FDSize: 512\n"; // TODO: adjust once we're not limited to one page worth of handles
+	stream << "FDSize: " << fileTableSize << "\n";
 	stream << "Groups: 0\n"; // We don't implement groups yet, so 0 is fine.
 	// Namespace information, unimplemented.
 	stream << "NStgid: N/A\n";

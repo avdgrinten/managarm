@@ -1064,6 +1064,7 @@ namespace posix {
 					mbusHandle,
 					nullptr,
 					reinterpret_cast<HelHandle *>(clientFileTable),
+					0x1000 / sizeof(HelHandle),
 					nullptr
 				};
 

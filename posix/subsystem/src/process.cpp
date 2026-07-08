@@ -356,9 +356,9 @@ std::shared_ptr<FileContext> FileContext::create() {
 	context->_universe = helix::UniqueDescriptor(universe);
 
 	HelHandle memory;
-	HEL_CHECK(helAllocateMemory(0x1000, 0, nullptr, &memory));
+	HEL_CHECK(helAllocateMemory(fileTableMemorySize, 0, nullptr, &memory));
 	context->_fileTableMemory = helix::UniqueDescriptor(memory);
-	context->fileTableWindow_ = helix::Mapping{context->_fileTableMemory, 0, 0x1000};
+	context->fileTableWindow_ = helix::Mapping{context->_fileTableMemory, 0, fileTableMemorySize};
 
 	HEL_CHECK(helTransferDescriptor(
 	    posixMbusClient, context->_universe.getHandle(), kHelTransferDescriptorOut, &context->_clientMbusLane
@@ -375,9 +375,9 @@ std::shared_ptr<FileContext> FileContext::clone(std::shared_ptr<FileContext> ori
 	context->_universe = helix::UniqueDescriptor(universe);
 
 	HelHandle memory;
-	HEL_CHECK(helAllocateMemory(0x1000, 0, nullptr, &memory));
+	HEL_CHECK(helAllocateMemory(fileTableMemorySize, 0, nullptr, &memory));
 	context->_fileTableMemory = helix::UniqueDescriptor(memory);
-	context->fileTableWindow_ = helix::Mapping{context->_fileTableMemory, 0, 0x1000};
+	context->fileTableWindow_ = helix::Mapping{context->_fileTableMemory, 0, fileTableMemorySize};
 
 	for(auto entry : original->_fileTable) {
 		//std::cout << "Clone FD " << entry.first << std::endl;
@@ -1313,7 +1313,7 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 			reinterpret_cast<void **>(&process->_clientThreadPage)));
 	HEL_CHECK(helMapMemory(process->_fileContext->fileTableMemory().getHandle(),
 			process->_vmContext->getSpace().getHandle(),
-			nullptr, 0, 0x1000, kHelMapProtRead,
+			nullptr, 0, fileTableMemorySize, kHelMapProtRead,
 			&process->_clientFileTable));
 	HEL_CHECK(helMapMemory(clk::trackerPageMemory().getHandle(),
 			process->_vmContext->getSpace().getHandle(),
@@ -1391,7 +1391,7 @@ async::result<std::shared_ptr<Process>> Process::fork(std::shared_ptr<Process> o
 			reinterpret_cast<void **>(&process->_clientThreadPage)));
 	HEL_CHECK(helMapMemory(process->_fileContext->fileTableMemory().getHandle(),
 			process->_vmContext->getSpace().getHandle(),
-			nullptr, 0, 0x1000, kHelMapProtRead,
+			nullptr, 0, fileTableMemorySize, kHelMapProtRead,
 			&process->_clientFileTable));
 	HEL_CHECK(helMapMemory(clk::trackerPageMemory().getHandle(),
 			process->_vmContext->getSpace().getHandle(),
@@ -1596,7 +1596,7 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 			&exec_clk_tracker_page));
 	HEL_CHECK(helMapMemory(process->_fileContext->fileTableMemory().getHandle(),
 			exec_vm_context->getSpace().getHandle(),
-			nullptr, 0, 0x1000, kHelMapProtRead,
+			nullptr, 0, fileTableMemorySize, kHelMapProtRead,
 			&exec_client_table));
 
 	// Kill the old thread.

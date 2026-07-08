@@ -15,6 +15,7 @@ struct ManagarmProcessData {
 	HelHandle mbusLane;
 	ThreadPage *threadPage;
 	HelHandle *fileTable;
+	size_t fileTableSize;
 	void *clockTrackerPage;
 };
 
