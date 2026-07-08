@@ -629,19 +629,9 @@ HandleRequest::operator()(managarm::posix::RenameAtRequest &&req,
 			relative_to, req.path(), self.get());
 	auto resolveResult = co_await resolver.resolve(resolveDontFollow);
 	if(!resolveResult) {
-		if(resolveResult.error() == protocols::fs::Error::isDirectory) {
-			co_await sendErrorResponse<managarm::posix::RenameAtResponse>(conversation, managarm::posix::Errors::IS_DIRECTORY);
-			co_return {};
-		} else if(resolveResult.error() == protocols::fs::Error::fileNotFound) {
-			co_await sendErrorResponse<managarm::posix::RenameAtResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-			co_return {};
-		} else if(resolveResult.error() == protocols::fs::Error::notDirectory) {
-			co_await sendErrorResponse<managarm::posix::RenameAtResponse>(conversation, managarm::posix::Errors::NOT_A_DIRECTORY);
-			co_return {};
-		} else {
-			std::cout << "posix: Unexpected failure from resolve()" << std::endl;
-			co_return {};
-		}
+		co_await sendErrorResponse<managarm::posix::RenameAtResponse>(conversation,
+				resolveResult.error() | toPosixError | toPosixProtoError);
+		co_return {};
 	}
 
 	if (req.newfd() == AT_FDCWD) {
@@ -657,25 +647,20 @@ HandleRequest::operator()(managarm::posix::RenameAtRequest &&req,
 		relative_to = {file->associatedMount(), file->associatedLink()};
 	}
 
-	// TODO: Add resolveNoTrailingSlash if source is not a directory?
+	// A directory may be renamed onto a trailing-slash path; for any other
+	// source the trailing slash is always fatal (ENOTDIR).
+	ResolveFlags newFlags = resolvePrefix;
+	if(resolver.currentLink()->getTarget()->getType() != VfsType::directory)
+		newFlags |= resolveNoTrailingSlash;
+
 	PathResolver new_resolver;
 	new_resolver.setup(self->fsContext()->getRoot(),
 			relative_to, req.target_path(), self.get());
-	auto new_resolveResult = co_await new_resolver.resolve(resolvePrefix);
+	auto new_resolveResult = co_await new_resolver.resolve(newFlags);
 	if(!new_resolveResult) {
-		if(new_resolveResult.error() == protocols::fs::Error::isDirectory) {
-			co_await sendErrorResponse<managarm::posix::RenameAtResponse>(conversation, managarm::posix::Errors::IS_DIRECTORY);
-			co_return {};
-		} else if(new_resolveResult.error() == protocols::fs::Error::fileNotFound) {
-			co_await sendErrorResponse<managarm::posix::RenameAtResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-			co_return {};
-		} else if(new_resolveResult.error() == protocols::fs::Error::notDirectory) {
-			co_await sendErrorResponse<managarm::posix::RenameAtResponse>(conversation, managarm::posix::Errors::NOT_A_DIRECTORY);
-			co_return {};
-		} else {
-			std::cout << "posix: Unexpected failure from resolve()" << std::endl;
-			co_return {};
-		}
+		co_await sendErrorResponse<managarm::posix::RenameAtResponse>(conversation,
+				new_resolveResult.error() | toPosixError | toPosixProtoError);
+		co_return {};
 	}
 
 	logRequest(logRequests || logPaths, self, "RENAMEAT", "'{}' -> '{}{}'",
