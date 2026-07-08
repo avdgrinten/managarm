@@ -5,6 +5,7 @@
 #include <expected>
 
 #include <async/algorithm.hpp>
+#include <async/mutex.hpp>
 #include <async/oneshot-event.hpp>
 #include <async/post-ack.hpp>
 #include <async/recurring-event.hpp>
@@ -692,6 +693,9 @@ struct ManagedSpace : CacheBundle {
 		// to request that the eviction coroutine raise monitor after completing
 		// the transition to LoadState::missing.
 		bool forceInvalidation{false};
+		// Set by resize() to request that unlockPages() raises monitor once
+		// lockCount drops to zero, i.e., once an in-flight DMA import releases it.
+		bool waitForUnlock{false};
 		unsigned int lockCount = 0;
 		CachePage cachePage;
 		frg::intrusive_shared_ptr<TransactionMonitor, Allocator> monitor;
@@ -730,6 +734,10 @@ struct ManagedSpace : CacheBundle {
 	ManageList _managementQueue;
 
 	async::recurring_event _dirtyEvent;
+
+	// Serializes resize() operations, which span several co_awaits and therefore
+	// cannot rely on the short-held `mutex` spinlock alone.
+	async::mutex _resizeMutex;
 };
 
 struct BackingMemory final : MemoryView {

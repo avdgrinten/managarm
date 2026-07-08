@@ -1076,22 +1076,40 @@ Error ManagedSpace::lockPages(uintptr_t offset, size_t size) {
 // The range may extend beyond numPages: a concurrent resize() can shrink the
 // object while an in-flight DMA import still holds a lock on a truncated page.
 void ManagedSpace::unlockPages(uintptr_t offset, size_t size) {
-	auto irq_lock = frg::guard(&irqMutex());
-	auto lock = frg::guard(&mutex);
+	MonitorPendingList pendingMonitors;
+	{
+		auto irq_lock = frg::guard(&irqMutex());
+		auto lock = frg::guard(&mutex);
 
-	for(size_t pg = 0; pg < size; pg += kPageSize) {
-		size_t index = (offset + pg) / kPageSize;
-		auto pit = pages.find(index);
-		assert(pit);
-		assert(pit->lockCount > 0);
-		pit->lockCount--;
-		if(!pit->lockCount) {
-			if(pit->loadState == LoadState::present && pit->transactionState == TxState::none
-					&& !pit->cachePage.useCount.load(std::memory_order_relaxed)) {
-				globalReclaimer->addPage(&pit->cachePage);
-				pit->transactionState = TxState::inReclaimer;
+		for(size_t pg = 0; pg < size; pg += kPageSize) {
+			size_t index = (offset + pg) / kPageSize;
+			auto pit = pages.find(index);
+			assert(pit);
+			assert(pit->lockCount > 0);
+			pit->lockCount--;
+			if(!pit->lockCount) {
+				if(pit->waitForUnlock) {
+					pit->waitForUnlock = false;
+					if(pit->monitor) {
+						ref_rc(pit->monitor.get());
+						pendingMonitors.push_back(pit->monitor.get());
+						pit->monitor = {};
+					}
+				}
+				if(pit->loadState == LoadState::present && pit->transactionState == TxState::none
+						&& !pit->cachePage.useCount.load(std::memory_order_relaxed)) {
+					globalReclaimer->addPage(&pit->cachePage);
+					pit->transactionState = TxState::inReclaimer;
+				}
 			}
 		}
+	}
+
+	while(!pendingMonitors.empty()) {
+		frg::intrusive_shared_ptr<TransactionMonitor, Allocator> monitor{
+			frg::adopt_rc, pendingMonitors.pop_front()
+		};
+		monitor->event.raise();
 	}
 }
 
@@ -1253,6 +1271,12 @@ coroutine<frg::expected<Error>> BackingMemory::resize(size_t newSize) {
 	assert(!(newSize & (kPageSize - 1)));
 	auto newPages = newSize >> kPageShift;
 
+	// resize() spans several co_awaits below (draining in-flight transactions,
+	// waiting for DMA imports to unlock, breaking mappings), so it cannot be
+	// serialized by the short-held page spinlock; take the resize mutex instead.
+	co_await _managed->_resizeMutex.async_lock();
+	frg::unique_lock resizeLock{frg::adopt_lock, _managed->_resizeMutex};
+
 	size_t oldPages;
 	{
 		auto irqLock = frg::guard(&irqMutex());
@@ -1262,12 +1286,143 @@ coroutine<frg::expected<Error>> BackingMemory::resize(size_t newSize) {
 		_managed->numPages = newPages;
 	}
 
-	if(newPages > oldPages) {
-		// Do nothing for now.
-	}else if(newPages < oldPages) {
-		// TODO: also free the affected pages!
-		co_await _managed->_evictQueue.breakRange(newPages << kPageShift,
-				(oldPages - newPages) << kPageShift);
+	// Growing is trivial: the new pages are faulted in on demand. Lowering
+	// numPages above has already blocked new faults, locks and manage dispatch in
+	// the truncated range, which is what lets the drain below run without racing
+	// against fresh work.
+	if(newPages >= oldPages)
+		co_return {};
+
+	// Cancel every queued (but not yet dispatched) transaction in the truncated
+	// range and wake its waiters. Together with the guards in markDirty(), the
+	// dirty-drain coroutine and updateRange(), this guarantees that no page with
+	// index >= numPages ends up on any list, so _progressManagement() never
+	// dispatches one after this point.
+	ManagedSpace::MonitorPendingList pendingMonitors;
+	{
+		auto irqLock = frg::guard(&irqMutex());
+		auto lock = frg::guard(&_managed->mutex);
+
+		auto cancelQueue = [&] (CachePagesList &list) {
+			CachePagesList kept;
+			while(!list.empty()) {
+				auto cp = list.pop_front();
+				auto page = frg::container_of(cp, &ManagedSpace::ManagedPage::cachePage);
+				if(cp->identity >= newPages) {
+					page->transactionState = ManagedSpace::TxState::none;
+					page->stillDirty = false;
+					if(page->monitor) {
+						ref_rc(page->monitor.get());
+						pendingMonitors.push_back(page->monitor.get());
+						page->monitor = {};
+					}
+				} else {
+					kept.push_back(cp);
+				}
+			}
+			list.splice(list.end(), kept);
+		};
+
+		cancelQueue(_managed->_initializationList);
+		cancelQueue(_managed->_writebackList);
+		cancelQueue(_managed->_dirtyList);
+	}
+	while(!pendingMonitors.empty()) {
+		frg::intrusive_shared_ptr<ManagedSpace::TransactionMonitor, Allocator> monitor{
+			frg::adopt_rc, pendingMonitors.pop_front()
+		};
+		monitor->event.raise();
+	}
+
+	// Drain, unmap and free every page in the truncated range. For each page we
+	// first wait until it is transaction-quiescent and unlocked -- an in-flight
+	// initialization/writeback keeps a DMA-import lock until shortly after it
+	// acks -- then break any remaining mapping and free the physical page.
+	for(size_t index = newPages; index < oldPages; ) {
+		frg::intrusive_shared_ptr<ManagedSpace::TransactionMonitor, Allocator> monitor;
+		bool evict = false;
+		{
+			auto irqLock = frg::guard(&irqMutex());
+			auto lock = frg::guard(&_managed->mutex);
+
+			auto pit = _managed->pages.find(index);
+			if(!pit) {
+				++index;
+				continue;
+			}
+
+			switch(pit->transactionState) {
+			case ManagedSpace::TxState::initialization:
+			case ManagedSpace::TxState::writeback:
+				// In-flight transaction: wait for the userspace ack (updateRange).
+				monitor = pit->monitor;
+				break;
+			case ManagedSpace::TxState::performReclaim:
+			case ManagedSpace::TxState::avertReclaim:
+				// Owned by the reclaimer: have it raise monitor once evicted.
+				pit->forceInvalidation = true;
+				if(!pit->monitor)
+					pit->monitor = frg::allocate_intrusive_shared<
+							ManagedSpace::TransactionMonitor>(Allocator{});
+				monitor = pit->monitor;
+				break;
+			default:
+				if(pit->lockCount) {
+					// Locked by an in-flight DMA import: wait for the unlock.
+					pit->waitForUnlock = true;
+					if(!pit->monitor)
+						pit->monitor = frg::allocate_intrusive_shared<
+								ManagedSpace::TransactionMonitor>(Allocator{});
+					monitor = pit->monitor;
+				} else if(pit->loadState == ManagedSpace::LoadState::present) {
+					// Quiescent and unlocked: take ownership and evict it.
+					if(pit->transactionState == ManagedSpace::TxState::inReclaimer)
+						globalReclaimer->removePage(&pit->cachePage);
+					pit->transactionState = ManagedSpace::TxState::performReclaim;
+					evict = true;
+				}
+				// Otherwise the page is missing and idle: nothing to free.
+				break;
+			}
+		}
+
+		if(monitor) {
+			co_await monitor->event.wait();
+			continue;
+		}
+		if(!evict) {
+			++index;
+			continue;
+		}
+
+		co_await _managed->_evictQueue.breakRange(index << kPageShift, kPageSize);
+
+		PhysicalAddr physical = PhysicalAddr(-1);
+		{
+			auto irqLock = frg::guard(&irqMutex());
+			auto lock = frg::guard(&_managed->mutex);
+
+			auto pit = _managed->pages.find(index);
+			assert(pit);
+			// The page can only leave performReclaim if a mapping was established
+			// concurrently with breakRange() (performReclaim -> avertReclaim); in
+			// that case re-examine the same index instead of freeing (mirrors
+			// invalidateRange()).
+			if(pit->transactionState == ManagedSpace::TxState::performReclaim) {
+				physical = pit->physical;
+				pit->loadState = ManagedSpace::LoadState::missing;
+				pit->transactionState = ManagedSpace::TxState::none;
+				pit->physical = PhysicalAddr(-1);
+				pit->stillDirty = false;
+				pit->forceInvalidation = false;
+			}
+		}
+
+		if(physical != PhysicalAddr(-1)) {
+			globalPfnDb().erase(physical);
+			physicalAllocator->free(physical, kPageSize);
+			++index;
+		}
 	}
 
 	co_return {};
