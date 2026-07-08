@@ -399,6 +399,19 @@ FileContext::~FileContext() {
 		std::cout << "\e[33mposix: FileContext is destructed\e[39m" << std::endl;
 }
 
+void FileContext::writeFileTableEntry(int fd, HelHandle handle) {
+	auto slot = &fileTableWindow()[fd];
+	// Bump the sequence to an odd value, update the entry, then bump it back to even.
+	auto seq = slot->sequence;
+	__atomic_store_n(&slot->sequence, seq + 1, __ATOMIC_RELAXED);
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	slot->handle = handle;
+	slot->apiSignature = handle ? posix::ptApiDefault : 0;
+	slot->reserved = 0;
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	__atomic_store_n(&slot->sequence, seq + 2, __ATOMIC_RELAXED);
+}
+
 std::expected<int, Error> FileContext::attachFile(smarter::shared_ptr<File, FileHandle> file,
 		bool closeOnExec, int startAt) {
 	HelHandle handle;
@@ -417,7 +430,7 @@ std::expected<int, Error> FileContext::attachFile(smarter::shared_ptr<File, File
 			std::cout << "posix: Attaching FD " << fd << std::endl;
 
 		_fileTable.insert({fd, {std::move(file), closeOnExec}});
-		fileTableWindow()[fd] = handle;
+		writeFileTableEntry(fd, handle);
 		return fd;
 	}
 }
@@ -441,7 +454,7 @@ std::expected<void, Error> FileContext::attachFile(int fd, smarter::shared_ptr<F
 	}else{
 		_fileTable.insert({fd, {std::move(file), close_on_exec}});
 	}
-	fileTableWindow()[fd] = handle;
+	writeFileTableEntry(fd, handle);
 
 	return {};
 }
@@ -477,9 +490,9 @@ Error FileContext::closeFile(int fd) {
 		return Error::noSuchFile;
 	}
 
-	HEL_CHECK(helCloseDescriptor(_universe.getHandle(), fileTableWindow()[fd]));
+	HEL_CHECK(helCloseDescriptor(_universe.getHandle(), fileTableWindow()[fd].handle));
 
-	fileTableWindow()[fd] = 0;
+	writeFileTableEntry(fd, 0);
 	_fileTable.erase(it);
 	return Error::success;
 }
@@ -488,9 +501,9 @@ void FileContext::closeOnExec() {
 	auto it = _fileTable.begin();
 	while(it != _fileTable.end()) {
 		if(it->second.closeOnExec) {
-			HEL_CHECK(helCloseDescriptor(_universe.getHandle(), fileTableWindow()[it->first]));
+			HEL_CHECK(helCloseDescriptor(_universe.getHandle(), fileTableWindow()[it->first].handle));
 
-			fileTableWindow()[it->first] = 0;
+			writeFileTableEntry(it->first, 0);
 			it = _fileTable.erase(it);
 		}else{
 			it++;

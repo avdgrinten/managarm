@@ -13,7 +13,8 @@ HelHandle handleForFd(int fd) {
 	if (static_cast<size_t>(fd) >= data.fileTableSize)
 		return 0;
 
-	return reinterpret_cast<HelHandle *>(data.fileTable)[fd];
+	// Reading only the handle does not require the seqlock; a relaxed load suffices.
+	return __atomic_load_n(&data.fileTable[fd].handle, __ATOMIC_RELAXED);
 }
 
 } // namespace helix

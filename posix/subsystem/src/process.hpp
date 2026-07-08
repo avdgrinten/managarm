@@ -34,7 +34,7 @@ typedef int ProcessId;
 inline constexpr size_t fileTableSize = 1024;
 // Size (in bytes) of the shared file table memory region, rounded up to full pages.
 inline constexpr size_t fileTableMemorySize =
-		(fileTableSize * sizeof(HelHandle) + 0xFFF) & ~size_t{0xFFF};
+		(fileTableSize * sizeof(posix::PtDescriptor) + 0xFFF) & ~size_t{0xFFF};
 
 // TODO: This struct should store the process' VMAs once we implement them.
 // TODO: We need a clarification here: Does mmap() keep file descriptions open (e.g. for flock())?
@@ -215,9 +215,12 @@ public:
 	}
 
 private:
-	HelHandle *fileTableWindow() {
-		return reinterpret_cast<HelHandle *>(fileTableWindow_.get());
+	posix::PtDescriptor *fileTableWindow() {
+		return reinterpret_cast<posix::PtDescriptor *>(fileTableWindow_.get());
 	}
+
+	// Updates the file table entry for fd under the seqlock protocol.
+	void writeFileTableEntry(int fd, HelHandle handle);
 
 	helix::UniqueDescriptor _universe;
 

@@ -496,20 +496,27 @@ namespace posix {
 			Handle handle = thread->getUniverse()->attachDescriptor(
 					LaneDescriptor(file->clientLane));
 
+			::posix::PtDescriptor descriptor{
+				.sequence = 2,
+				.handle = handle,
+				.apiSignature = ::posix::ptApiDefault,
+				.reserved = 0,
+			};
+
 			for(int fd = 0; fd < (int)openFiles.size(); ++fd) {
 				if(openFiles[fd])
 					continue;
 				openFiles[fd] = file;
-				auto copyOutcome = co_await fileTableMemory->copyTo(sizeof(Handle) * fd,
-						&handle, sizeof(Handle));
+				auto copyOutcome = co_await fileTableMemory->copyTo(sizeof(descriptor) * fd,
+						&descriptor, sizeof(descriptor));
 				assert(copyOutcome);
 				co_return fd;
 			}
 
 			int fd = openFiles.size();
 			openFiles.push(file);
-			auto copyOutcome = co_await fileTableMemory->copyTo(sizeof(Handle) * fd,
-					&handle, sizeof(Handle));
+			auto copyOutcome = co_await fileTableMemory->copyTo(sizeof(descriptor) * fd,
+					&descriptor, sizeof(descriptor));
 			assert(copyOutcome);
 			co_return fd;
 		}
@@ -1063,8 +1070,8 @@ namespace posix {
 					info.posixHandle,
 					mbusHandle,
 					nullptr,
-					reinterpret_cast<HelHandle *>(clientFileTable),
-					0x1000 / sizeof(HelHandle),
+					reinterpret_cast<::posix::PtDescriptor *>(clientFileTable),
+					0x1000 / sizeof(::posix::PtDescriptor),
 					nullptr
 				};
 

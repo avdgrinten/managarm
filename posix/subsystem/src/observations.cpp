@@ -143,7 +143,7 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 				self->clientPosixLane(),
 				self->fileContext()->clientMbusLane(),
 				self->clientThreadPage(),
-				static_cast<HelHandle *>(self->clientFileTable()),
+				static_cast<posix::PtDescriptor *>(self->clientFileTable()),
 				fileTableSize,
 				self->clientClkTrackerPage(),
 			};
