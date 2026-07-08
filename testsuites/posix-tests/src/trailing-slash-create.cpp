@@ -163,3 +163,107 @@ DEFINE_TEST(open_creat_trailing_slash, ([] {
 	assert(open((missing + "/x/").c_str(), O_WRONLY | O_CREAT, 0644) == -1);
 	assert(errno == ENOENT);
 }))
+
+// rename() is not a creator in the above sense: a trailing slash demands that
+// the path names a directory, so a non-directory on either side is ENOTDIR.
+DEFINE_TEST(rename_trailing_slash, ([] {
+	auto dir = make_scratch();
+	auto src = dir + "/src";
+	auto missing = dir + "/missing";
+	auto file = dir + "/file";
+	auto subdir = dir + "/subdir";
+	auto srcdir = dir + "/srcdir";
+	frg::scope_exit cleanup{[&] {
+		unlink(src.c_str());
+		unlink(file.c_str());
+		rmdir(subdir.c_str());
+		rmdir(srcdir.c_str());
+		rmdir(dir.c_str());
+	}};
+
+	create_file(src);
+	create_file(file);
+	assert(mkdir(subdir.c_str(), 0755) == 0);
+
+	errno = 0;
+	assert(rename(src.c_str(), (missing + "/").c_str()) == -1);
+	assert(errno == ENOTDIR);
+
+	errno = 0;
+	assert(rename(src.c_str(), (file + "/").c_str()) == -1);
+	assert(errno == ENOTDIR);
+
+	errno = 0;
+	assert(rename(src.c_str(), (subdir + "/").c_str()) == -1);
+	assert(errno == ENOTDIR);
+
+	// A trailing slash on the source is subject to the same rule.
+	errno = 0;
+	assert(rename((src + "/").c_str(), missing.c_str()) == -1);
+	assert(errno == ENOTDIR);
+
+	// None of the failed renames moved anything.
+	struct stat st;
+	assert(stat(src.c_str(), &st) == 0);
+	assert(stat(missing.c_str(), &st) == -1);
+
+	// Renaming a directory is unaffected by the trailing slash.
+	assert(rename(subdir.c_str(), (srcdir + "/").c_str()) == 0);
+	assert(stat(srcdir.c_str(), &st) == 0);
+	assert(S_ISDIR(st.st_mode));
+}))
+
+// mkdir() creates a directory anyway, so a trailing slash imposes nothing
+// extra: the missing leaf is created and any existing leaf wins with EEXIST.
+DEFINE_TEST(mkdir_trailing_slash, ([] {
+	auto dir = make_scratch();
+	auto missing = dir + "/missing";
+	auto file = dir + "/file";
+	auto subdir = dir + "/subdir";
+	frg::scope_exit cleanup{[&] {
+		unlink(file.c_str());
+		rmdir(missing.c_str());
+		rmdir(subdir.c_str());
+		rmdir(dir.c_str());
+	}};
+
+	create_file(file);
+	assert(mkdir(subdir.c_str(), 0755) == 0);
+
+	assert(mkdir((missing + "/").c_str(), 0755) == 0);
+	struct stat st;
+	assert(stat(missing.c_str(), &st) == 0);
+	assert(S_ISDIR(st.st_mode));
+
+	errno = 0;
+	assert(mkdir((file + "/").c_str(), 0755) == -1);
+	assert(errno == EEXIST);
+
+	errno = 0;
+	assert(mkdir((subdir + "/").c_str(), 0755) == -1);
+	assert(errno == EEXIST);
+}))
+
+// stat() on a symlink-to-directory with a trailing slash must follow the
+// symlink and report the target as a directory.
+DEFINE_TEST(stat_symlink_to_dir_trailing_slash, ([] {
+	auto dir = make_scratch();
+	auto target = dir + "/d";
+	auto link = dir + "/l";
+	frg::scope_exit cleanup{[&] {
+		unlink(link.c_str());
+		rmdir(target.c_str());
+		rmdir(dir.c_str());
+	}};
+
+	assert(mkdir(target.c_str(), 0755) == 0);
+	assert(symlink(target.c_str(), link.c_str()) == 0);
+
+	struct stat st;
+	assert(stat((link + "/").c_str(), &st) == 0);
+	assert(S_ISDIR(st.st_mode));
+
+	// POSIX: a trailing slash forces symlink resolution even for lstat.
+	assert(lstat((link + "/").c_str(), &st) == 0);
+	assert(S_ISDIR(st.st_mode));
+}))
