@@ -471,6 +471,19 @@ static initgraph::Task discoverIoApicsTask{
     }
 };
 
+#ifdef __x86_64__
+static void configureIsaIrqs() {
+	// Configure the ISA IRQs.
+	// TODO: This is a hack. We assume that HPET will use legacy replacement.
+	infoLogger() << "thor: Configuring ISA IRQs." << frg::endlog;
+	configureIrq(resolveIsaIrq(0));
+	configureIrq(resolveIsaIrq(1));
+	configureIrq(resolveIsaIrq(4));
+	configureIrq(resolveIsaIrq(12));
+	configureIrq(resolveIsaIrq(14));
+}
+#endif
+
 static initgraph::Task loadAcpiNamespaceTask{
     &globalInitEngine,
     "acpi.load-namespace",
@@ -481,6 +494,10 @@ static initgraph::Task loadAcpiNamespaceTask{
 		    return;
 	    if (debugOptionsNote->useSif) {
 		    infoLogger() << "thor: Skipping ACPI namespace init (sif)" << frg::endlog;
+		    // The ISA IRQ setup only depends on the MADT, which thor still owns.
+#ifdef __x86_64__
+		    configureIsaIrqs();
+#endif
 		    return;
 	    }
 
@@ -507,14 +524,7 @@ static initgraph::Task loadAcpiNamespaceTask{
 	    assert(ret == UACPI_STATUS_OK);
 
 #ifdef __x86_64__
-	    // Configure the ISA IRQs.
-	    // TODO: This is a hack. We assume that HPET will use legacy replacement.
-	    infoLogger() << "thor: Configuring ISA IRQs." << frg::endlog;
-	    configureIrq(resolveIsaIrq(0));
-	    configureIrq(resolveIsaIrq(1));
-	    configureIrq(resolveIsaIrq(4));
-	    configureIrq(resolveIsaIrq(12));
-	    configureIrq(resolveIsaIrq(14));
+	    configureIsaIrqs();
 #endif
 
 	    initEvents();
