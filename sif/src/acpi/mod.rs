@@ -11,6 +11,13 @@ pub(crate) const PAGE_MASK: usize = PAGE_SIZE - 1;
 
 pub(crate) static RSDP: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(target_arch = "x86_64")]
+const INTERRUPT_MODEL: uacpi_sys::uacpi_interrupt_model = uacpi_sys::UACPI_INTERRUPT_MODEL_IOAPIC;
+#[cfg(target_arch = "aarch64")]
+const INTERRUPT_MODEL: uacpi_sys::uacpi_interrupt_model = uacpi_sys::UACPI_INTERRUPT_MODEL_GIC;
+#[cfg(target_arch = "riscv64")]
+const INTERRUPT_MODEL: uacpi_sys::uacpi_interrupt_model = uacpi_sys::UACPI_INTERRUPT_MODEL_RINTC;
+
 pub fn set_rsdp(addr: u64) {
     RSDP.store(addr, Ordering::Relaxed);
 }
@@ -29,7 +36,7 @@ pub fn uacpi_init() -> Result<()> {
         crate::pci::config::discover_config_spaces()?;
         check(uacpi_sys::uacpi_namespace_load(), "uacpi_namespace_load")?;
         check(
-            uacpi_sys::uacpi_set_interrupt_model(uacpi_sys::UACPI_INTERRUPT_MODEL_IOAPIC),
+            uacpi_sys::uacpi_set_interrupt_model(INTERRUPT_MODEL),
             "uacpi_set_interrupt_model",
         )?;
         check(
