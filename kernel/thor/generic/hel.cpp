@@ -3444,7 +3444,10 @@ HelError helRaiseEvent(HelHandle handle) {
 }
 
 HelError helAccessIrq(int number, HelHandle *handle) {
-#ifdef __x86_64__
+	// This syscall only makes sense on ACPI systems.
+	if (!acpiRsdpNote->rsdp)
+		return kHelErrUnsupportedOperation;
+
 	auto this_thread = getCurrentThread();
 	auto this_universe = this_thread->getUniverse();
 
@@ -3463,11 +3466,6 @@ HelError helAccessIrq(int number, HelHandle *handle) {
 			AnyDescriptor::make<DescriptorType::irq>(std::move(irq), kHelRightWait | kHelRightSignal));
 
 	return kHelErrNone;
-#else
-	(void)number;
-	(void)handle;
-	return kHelErrUnsupportedOperation;
-#endif
 }
 
 HelError helConfigureIrq(int number, uint32_t trigger, uint32_t polarity) {
