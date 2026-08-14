@@ -1383,6 +1383,7 @@ async::detached FileSystem::serviceFileDataRequest(std::shared_ptr<Inode> inode,
 	auto fileView = pool->importMemory(
 	    helix::BorrowedDescriptor{inode->backingMemory}, offset, length
 	);
+	uint64_t importTime = timer.elapsed();
 
 	if(type == kHelManageInitialize) {
 		assert(!(offset % inode->fs.blockSize));
@@ -1398,6 +1399,12 @@ async::detached FileSystem::serviceFileDataRequest(std::shared_ptr<Inode> inode,
 
 		HEL_CHECK(helUpdateMemory(inode->backingMemory, kHelManageInitialize,
 				offset, length));
+
+		ostContext.emit(
+			ostEvtExt2InitializeFile,
+			ostAttrTime(timer.elapsed()),
+			ostAttrNumBytes(length)
+		);
 	}else{
 		assert(type == kHelManageWriteback);
 
@@ -1408,6 +1415,11 @@ async::detached FileSystem::serviceFileDataRequest(std::shared_ptr<Inode> inode,
 
 		assert(numBlocks * inode->fs.blockSize <= length);
 
+		// Timestamps (relative to timer) of the individual phases below.
+		uint64_t mapCheckDone = importTime;
+		uint64_t assignDone = importTime;
+		uint64_t writeDone = importTime;
+
 		// If all blocks are already mapped, the write can proceed under the shared lock
 		// (concurrently with other reads and writes) since blocks are never deallocated.
 		bool mapped;
@@ -1415,8 +1427,12 @@ async::detached FileSystem::serviceFileDataRequest(std::shared_ptr<Inode> inode,
 			co_await inode->blockMapMutex.async_lock_shared();
 			frg::shared_lock blockMapLock{frg::adopt_lock, inode->blockMapMutex};
 			mapped = co_await inode->fs.dataBlocksMapped(inode, blockOffset, numBlocks);
-			if(mapped)
+			mapCheckDone = timer.elapsed();
+			assignDone = mapCheckDone;
+			if(mapped) {
 				co_await inode->fs.writeDataBlocks(inode, blockOffset, fileView);
+				writeDone = timer.elapsed();
+			}
 		}
 
 		if(!mapped) {
@@ -1425,20 +1441,27 @@ async::detached FileSystem::serviceFileDataRequest(std::shared_ptr<Inode> inode,
 				frg::unique_lock blockMapLock{frg::adopt_lock, inode->blockMapMutex};
 				co_await inode->fs.assignDataBlocks(inode.get(), blockOffset, numBlocks);
 			}
+			assignDone = timer.elapsed();
 
 			co_await inode->blockMapMutex.async_lock_shared();
 			frg::shared_lock blockMapLock{frg::adopt_lock, inode->blockMapMutex};
 			co_await inode->fs.writeDataBlocks(inode, blockOffset, fileView);
+			writeDone = timer.elapsed();
 		}
 
 		HEL_CHECK(helUpdateMemory(inode->backingMemory, kHelManageWriteback,
 				offset, length));
-	}
 
-	ostContext.emit(
-		ostEvtExt2ManageFile,
-		ostAttrTime(timer.elapsed())
-	);
+		ostContext.emit(
+			ostEvtExt2WritebackFile,
+			ostAttrTime(timer.elapsed()),
+			ostAttrNumBytes(length),
+			ostAttrTimeImport(importTime),
+			ostAttrTimeMapCheck(mapCheckDone - importTime),
+			ostAttrTimeAssign(assignDone - mapCheckDone),
+			ostAttrTimeWrite(writeDone - assignDone)
+		);
+	}
 }
 
 async::result<std::vector<uint32_t>> FileSystem::allocateBlocks(size_t num, std::optional<uint32_t> ino) {
@@ -2423,6 +2446,9 @@ async::result<void> FileSystem::writeDataBlocks(std::shared_ptr<Inode> inode,
 		co_return;
 	}
 
+	protocols::ostrace::Timer timer;
+	uint64_t deviceTime = 0;
+
 	// We perform "block-fusion" here i.e. we try to read/write multiple
 	// consecutive blocks in a single read/writeSectors() operation.
 	auto fuse = [] (size_t index, size_t remaining, uint32_t *list, size_t limit) {
@@ -2495,12 +2521,23 @@ async::result<void> FileSystem::writeDataBlocks(std::shared_ptr<Inode> inode,
 //				<< " blocks, starting at " << issue.first << std::endl;
 
 		assert(issue.first);
-		co_await device->writeSectors(
-		    issue.first * sectorsPerBlock,
-		    buf.subview(progress * blockSize, issue.second * blockSize)
-		);
+		{
+			protocols::ostrace::Timer deviceTimer;
+			co_await device->writeSectors(
+			    issue.first * sectorsPerBlock,
+			    buf.subview(progress * blockSize, issue.second * blockSize)
+			);
+			deviceTime += deviceTimer.elapsed();
+		}
 		progress += issue.second;
 	}
+
+	ostContext.emit(
+		ostEvtExt2WriteDataBlocks,
+		ostAttrTime(timer.elapsed()),
+		ostAttrNumBytes(buf.size()),
+		ostAttrTimeDevice(deviceTime)
+	);
 }
 
 // --------------------------------------------------------

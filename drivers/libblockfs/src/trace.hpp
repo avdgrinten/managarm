@@ -15,12 +15,19 @@ inline constinit protocols::ostrace::Event ostEvtRawRead{"libblockfs.rawRead"};
 inline constinit protocols::ostrace::Event ostEvtExt2AssignDataBlocks{"ext2.assignDataBlocks"};
 inline constinit protocols::ostrace::Event ostEvtExt2ManageInode{"ext2.manageInode"};
 inline constinit protocols::ostrace::Event ostEvtExt2ManageInodeBitmap{"ext2.manageInodeBitmap"};
-inline constinit protocols::ostrace::Event ostEvtExt2ManageFile{"ext2.manageFile"};
+inline constinit protocols::ostrace::Event ostEvtExt2InitializeFile{"ext2.initializeFile"};
+inline constinit protocols::ostrace::Event ostEvtExt2WritebackFile{"ext2.writebackFile"};
+inline constinit protocols::ostrace::Event ostEvtExt2WriteDataBlocks{"ext2.writeDataBlocks"};
 inline constinit protocols::ostrace::Event ostEvtExt2ManageBlockBitmap{"ext2.manageBlockBitmap"};
 inline constinit protocols::ostrace::Event ostEvtExt2AllocateBlocks{"ext2.allocateBlocks"};
 inline constinit protocols::ostrace::Event ostEvtExt2AllocateInode{"ext2.allocateInode"};
 inline constinit protocols::ostrace::UintAttribute ostAttrTime{"time"};
 inline constinit protocols::ostrace::UintAttribute ostAttrNumBytes{"numBytes"};
+inline constinit protocols::ostrace::UintAttribute ostAttrTimeImport{"timeImport"};
+inline constinit protocols::ostrace::UintAttribute ostAttrTimeMapCheck{"timeMapCheck"};
+inline constinit protocols::ostrace::UintAttribute ostAttrTimeAssign{"timeAssign"};
+inline constinit protocols::ostrace::UintAttribute ostAttrTimeWrite{"timeWrite"};
+inline constinit protocols::ostrace::UintAttribute ostAttrTimeDevice{"timeDevice"};
 
 inline protocols::ostrace::Vocabulary ostVocabulary{
 	ostEvtGetLink,
@@ -32,12 +39,19 @@ inline protocols::ostrace::Vocabulary ostVocabulary{
 	ostEvtExt2AssignDataBlocks,
 	ostEvtExt2ManageInode,
 	ostEvtExt2ManageInodeBitmap,
-	ostEvtExt2ManageFile,
+	ostEvtExt2InitializeFile,
+	ostEvtExt2WritebackFile,
+	ostEvtExt2WriteDataBlocks,
 	ostEvtExt2ManageBlockBitmap,
 	ostEvtExt2AllocateBlocks,
 	ostEvtExt2AllocateInode,
 	ostAttrTime,
 	ostAttrNumBytes,
+	ostAttrTimeImport,
+	ostAttrTimeMapCheck,
+	ostAttrTimeAssign,
+	ostAttrTimeWrite,
+	ostAttrTimeDevice,
 };
 
 inline protocols::ostrace::Context ostContext{ostVocabulary};

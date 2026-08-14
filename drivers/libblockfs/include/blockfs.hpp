@@ -54,12 +54,19 @@ extern protocols::ostrace::Event ostEvtExt2AssignDataBlocks;
 extern protocols::ostrace::Event ostEvtExt2InitiateInode;
 extern protocols::ostrace::Event ostEvtExt2ManageInode;
 extern protocols::ostrace::Event ostEvtExt2ManageInodeBitmap;
-extern protocols::ostrace::Event ostEvtExt2ManageFile;
+extern protocols::ostrace::Event ostEvtExt2InitializeFile;
+extern protocols::ostrace::Event ostEvtExt2WritebackFile;
+extern protocols::ostrace::Event ostEvtExt2WriteDataBlocks;
 extern protocols::ostrace::Event ostEvtExt2ManageBlockBitmap;
 extern protocols::ostrace::Event ostEvtExt2AllocateBlocks;
 extern protocols::ostrace::Event ostEvtExt2AllocateInode;
 extern protocols::ostrace::UintAttribute ostAttrTime;
 extern protocols::ostrace::UintAttribute ostAttrNumBytes;
+extern protocols::ostrace::UintAttribute ostAttrTimeImport;
+extern protocols::ostrace::UintAttribute ostAttrTimeMapCheck;
+extern protocols::ostrace::UintAttribute ostAttrTimeAssign;
+extern protocols::ostrace::UintAttribute ostAttrTimeWrite;
+extern protocols::ostrace::UintAttribute ostAttrTimeDevice;
 
 extern protocols::ostrace::Context ostContext;
 
