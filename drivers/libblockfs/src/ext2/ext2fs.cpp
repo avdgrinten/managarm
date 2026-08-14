@@ -910,6 +910,7 @@ async::result<void> FileSystem::init() {
 	        & ~(device->sectorSize - 1)
 	};
 	bgdt.init(blockGroupDescriptorBuffer.byte_data(), blockGroupDescriptorSize);
+	bgdtWritebackBuffer = arch::dma_buffer{pool, blockGroupDescriptorBuffer.size()};
 
 	auto bgdt_offset = (2048 + blockSize - 1) & ~size_t(blockSize - 1);
 	co_await device->readSectors((bgdt_offset >> blockShift) * sectorsPerBlock,
@@ -953,15 +954,25 @@ async::result<void> FileSystem::init() {
 }
 
 async::detached FileSystem::handleBgdtWriteback() {
+	uint64_t writtenSequence = 0;
 	while(true) {
-		co_await bdgtWriteback.async_wait();
+		while(co_await bdgtWriteback.async_wait_if([&] {
+			return bgdtDirtySequence.load(std::memory_order_relaxed) == writtenSequence;
+		}))
+			;
 
-		co_await allocationMutex.async_lock();
-		frg::unique_lock allocationLock{frg::adopt_lock, allocationMutex};
+		// Snapshot the table so that the device write does not stall allocations.
+		{
+			co_await allocationMutex.async_lock();
+			frg::unique_lock allocationLock{frg::adopt_lock, allocationMutex};
+			memcpy(bgdtWritebackBuffer.data(), blockGroupDescriptorBuffer.data(),
+					blockGroupDescriptorBuffer.size());
+			writtenSequence = bgdtDirtySequence.load(std::memory_order_relaxed);
+		}
 
 		auto bgdt_offset = (2048 + blockSize - 1) & ~size_t(blockSize - 1);
 		co_await device->writeSectors((bgdt_offset >> blockShift) * sectorsPerBlock,
-				blockGroupDescriptorBuffer);
+				bgdtWritebackBuffer);
 	}
 }
 
@@ -1601,7 +1612,7 @@ async::result<uint32_t> FileSystem::allocateInode(uint32_t parentIno, bool direc
 				updateInodeBitmapChecksum(*this, &bgdt[bg], words, blockSize);
 				updateBlockGroupChecksum(*this, &bgdt[bg], bg);
 
-				bdgtWriteback.raise();
+				markBgdtDirty();
 
 				auto syncBitmap = co_await helix_ng::synchronizeSpace(
 						helix::BorrowedDescriptor{kHelNullHandle},
@@ -1970,7 +1981,7 @@ async::result<void> FileSystem::assignDataBlocksUsingExtents(Inode *inode,
 
 	updateInodeChecksum(*this, diskInode, inode->number);
 
-	bdgtWriteback.raise();
+	markBgdtDirty();
 	auto syncInode = co_await helix_ng::synchronizeSpace(
 			helix::BorrowedDescriptor{kHelNullHandle},
 			inode->diskInode(), inodeSize);
@@ -2196,7 +2207,7 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 
 	updateInodeChecksum(*this, inode->diskInode(), inode->number);
 
-	bdgtWriteback.raise();
+	markBgdtDirty();
 	auto syncInode = co_await helix_ng::synchronizeSpace(
 			helix::BorrowedDescriptor{kHelNullHandle},
 			inode->diskInode(), inodeSize);

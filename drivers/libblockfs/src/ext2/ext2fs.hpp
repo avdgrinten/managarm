@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <expected>
 #include <functional>
 #include <string.h>
@@ -482,6 +483,16 @@ struct FileSystem final : BaseFileSystem {
 	async::result<void> init();
 
 	async::recurring_event bdgtWriteback;
+	// Bumped on every BGDT mutation; handleBgdtWriteback() tracks the last written value
+	// so that raises during an in-flight write are never lost.
+	std::atomic<uint64_t> bgdtDirtySequence{0};
+
+	// Marks the BGDT dirty so that handleBgdtWriteback() eventually writes it back.
+	void markBgdtDirty() {
+		bgdtDirtySequence.fetch_add(1, std::memory_order_relaxed);
+		bdgtWriteback.raise();
+	}
+
 	async::detached handleBgdtWriteback();
 
 	async::detached manageBlockBitmap(helix::UniqueDescriptor memory);
@@ -573,6 +584,10 @@ struct FileSystem final : BaseFileSystem {
 	arch::dma_buffer blockGroupDescriptorBuffer;
 	// View of blockGroupDescriptorBuffer; same locking as above.
 	BlockGroupDescriptorTable bgdt;
+
+	// Snapshot of blockGroupDescriptorBuffer taken under allocationMutex by
+	// handleBgdtWriteback() so that the device write happens outside of the mutex.
+	arch::dma_buffer bgdtWritebackBuffer;
 
 	uint32_t metadataChecksumSeed;
 	bool is64Bit;
