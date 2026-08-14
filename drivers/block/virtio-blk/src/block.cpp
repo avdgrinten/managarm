@@ -183,13 +183,21 @@ async::detached Device::_processRequests() {
 		co_await chain.setupBuffer(virtio_core::hostToDevice, header.view_buffer());
 
 		// Setup descriptors for the transfered data.
-		for(size_t i = 0; i < numSectors; i++) {
+		// Split the view at page boundaries (and not into individual sectors) since
+		// setupBuffer() only requires physical contiguity within each descriptor.
+		constexpr size_t pageSize = 0x1000;
+		size_t viewOffset = 0;
+		while(viewOffset < request->view.size()) {
+			auto address = reinterpret_cast<uintptr_t>(request->view.data()) + viewOffset;
+			auto chunk = std::min(request->view.size() - viewOffset,
+					pageSize - (address & (pageSize - 1)));
 			chain.append(co_await obtainDescriptor());
 			if(request->write) {
-				co_await chain.setupBuffer(virtio_core::hostToDevice, request->view.subview(i << sectorShift, sectorSize));
+				co_await chain.setupBuffer(virtio_core::hostToDevice, request->view.subview(viewOffset, chunk));
 			}else{
-				co_await chain.setupBuffer(virtio_core::deviceToHost, request->view.subview(i << sectorShift, sectorSize));
+				co_await chain.setupBuffer(virtio_core::deviceToHost, request->view.subview(viewOffset, chunk));
 			}
+			viewOffset += chunk;
 		}
 
 		if(logInitiateRetire)
