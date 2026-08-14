@@ -52,10 +52,12 @@ async::result<void> Context::create() {
 		co_return;
 	assert(resp.error() == managarm::ostrace::Error::SUCCESS);
 
-	enabled_ = true;
-
+	// Define all terms before enabling emission; otherwise, a concurrent emit could
+	// observe an active context whose terms have not been announced yet.
 	for (auto *term : vocabulary_->terms())
 		co_await define(term);
+
+	enabled_ = true;
 
 	async::detach(run_());
 }
