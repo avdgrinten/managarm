@@ -135,7 +135,8 @@ void setTimerDeadline(frg::optional<uint64_t> deadline) {
 	assert(localApicContext()->timersAreCalibrated);
 
 	if(localApicContext()->useTscMode) {
-		ostrace::emit(ostEvtArmCpuTimer);
+		// TODO: Re-enable once ostrace can emit from IRQ context without allocating.
+		//ostrace::emit(ostEvtArmCpuTimer);
 
 		if(!deadline) {
 			common::x86::wrmsr(common::x86::kMsrIa32TscDeadline, 0);

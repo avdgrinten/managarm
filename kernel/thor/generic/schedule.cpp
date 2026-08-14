@@ -419,7 +419,8 @@ void Scheduler::_updatePreemption() {
 		assert(!po);
 	}
 
-	ostrace::emit(ostEvtArmPreemption);
+	// TODO: Re-enable once ostrace can emit from IRQ context without allocating.
+	//ostrace::emit(ostEvtArmPreemption);
 	setPreemptionDeadline(getClockNanos() + sliceGranularity);
 }
 
