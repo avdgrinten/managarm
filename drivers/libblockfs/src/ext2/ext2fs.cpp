@@ -973,38 +973,43 @@ async::detached FileSystem::manageBlockBitmap(helix::UniqueDescriptor memory) {
 		co_await submit_manage.async_wait();
 		HEL_CHECK(manage.error());
 
-		protocols::ostrace::Timer timer;
-
-		assert(!(manage.offset() & ((1 << blockPagesShift) - 1))
-				&& "TODO: properly support multi-page blocks");
-
-		auto view = pool->importMemory(memory, manage.offset(), manage.length());
-
-		for(size_t progress = 0; progress < manage.length(); progress += (1 << blockPagesShift)) {
-			auto bg_idx = (manage.offset() + progress) >> blockPagesShift;
-			auto block = bgdt[bg_idx].blockBitmap;
-			assert(block);
-
-			auto subview = view.view().subview(progress, 1 << blockPagesShift);
-
-			if(manage.type() == kHelManageInitialize) {
-				co_await device->readSectors(block * sectorsPerBlock, subview);
-				HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageInitialize,
-						manage.offset() + progress, 1 << blockPagesShift));
-			}else{
-				assert(manage.type() == kHelManageWriteback);
-
-				co_await device->writeSectors(block * sectorsPerBlock, subview);
-				HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageWriteback,
-						manage.offset() + progress, 1 << blockPagesShift));
-			}
-		}
-
-		ostContext.emit(
-			ostEvtExt2ManageBlockBitmap,
-			ostAttrTime(timer.elapsed())
-		);
+		serviceBlockBitmapRequest(memory, manage.type(), manage.offset(), manage.length());
 	}
+}
+
+async::detached FileSystem::serviceBlockBitmapRequest(helix::BorrowedDescriptor memory,
+		int type, uintptr_t offset, size_t length) {
+	protocols::ostrace::Timer timer;
+
+	assert(!(offset & ((1 << blockPagesShift) - 1))
+			&& "TODO: properly support multi-page blocks");
+
+	auto view = pool->importMemory(memory, offset, length);
+
+	for(size_t progress = 0; progress < length; progress += (1 << blockPagesShift)) {
+		auto bg_idx = (offset + progress) >> blockPagesShift;
+		auto block = bgdt[bg_idx].blockBitmap;
+		assert(block);
+
+		auto subview = view.view().subview(progress, 1 << blockPagesShift);
+
+		if(type == kHelManageInitialize) {
+			co_await device->readSectors(block * sectorsPerBlock, subview);
+			HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageInitialize,
+					offset + progress, 1 << blockPagesShift));
+		}else{
+			assert(type == kHelManageWriteback);
+
+			co_await device->writeSectors(block * sectorsPerBlock, subview);
+			HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageWriteback,
+					offset + progress, 1 << blockPagesShift));
+		}
+	}
+
+	ostContext.emit(
+		ostEvtExt2ManageBlockBitmap,
+		ostAttrTime(timer.elapsed())
+	);
 }
 
 async::detached FileSystem::manageInodeBitmap(helix::UniqueDescriptor memory) {
@@ -1015,38 +1020,43 @@ async::detached FileSystem::manageInodeBitmap(helix::UniqueDescriptor memory) {
 		co_await submit_manage.async_wait();
 		HEL_CHECK(manage.error());
 
-		protocols::ostrace::Timer timer;
-
-		assert(!(manage.offset() & ((1 << blockPagesShift) - 1))
-				&& "TODO: properly support multi-page blocks");
-
-		auto view = pool->importMemory(memory, manage.offset(), manage.length());
-
-		for(size_t progress = 0; progress < manage.length(); progress += (1 << blockPagesShift)) {
-			auto bg_idx = (manage.offset() + progress) >> blockPagesShift;
-			auto block = bgdt[bg_idx].inodeBitmap;
-			assert(block);
-
-			auto subview = view.view().subview(progress, 1 << blockPagesShift);
-
-			if(manage.type() == kHelManageInitialize) {
-				co_await device->readSectors(block * sectorsPerBlock, subview);
-				HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageInitialize,
-						manage.offset() + progress, 1 << blockPagesShift));
-			}else{
-				assert(manage.type() == kHelManageWriteback);
-
-				co_await device->writeSectors(block * sectorsPerBlock, subview);
-				HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageWriteback,
-						manage.offset() + progress, 1 << blockPagesShift));
-			}
-		}
-
-		ostContext.emit(
-			ostEvtExt2ManageInodeBitmap,
-			ostAttrTime(timer.elapsed())
-		);
+		serviceInodeBitmapRequest(memory, manage.type(), manage.offset(), manage.length());
 	}
+}
+
+async::detached FileSystem::serviceInodeBitmapRequest(helix::BorrowedDescriptor memory,
+		int type, uintptr_t offset, size_t length) {
+	protocols::ostrace::Timer timer;
+
+	assert(!(offset & ((1 << blockPagesShift) - 1))
+			&& "TODO: properly support multi-page blocks");
+
+	auto view = pool->importMemory(memory, offset, length);
+
+	for(size_t progress = 0; progress < length; progress += (1 << blockPagesShift)) {
+		auto bg_idx = (offset + progress) >> blockPagesShift;
+		auto block = bgdt[bg_idx].inodeBitmap;
+		assert(block);
+
+		auto subview = view.view().subview(progress, 1 << blockPagesShift);
+
+		if(type == kHelManageInitialize) {
+			co_await device->readSectors(block * sectorsPerBlock, subview);
+			HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageInitialize,
+					offset + progress, 1 << blockPagesShift));
+		}else{
+			assert(type == kHelManageWriteback);
+
+			co_await device->writeSectors(block * sectorsPerBlock, subview);
+			HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageWriteback,
+					offset + progress, 1 << blockPagesShift));
+		}
+	}
+
+	ostContext.emit(
+		ostEvtExt2ManageInodeBitmap,
+		ostAttrTime(timer.elapsed())
+	);
 }
 
 async::detached FileSystem::manageInodeTable(helix::UniqueDescriptor memory) {
@@ -1057,62 +1067,67 @@ async::detached FileSystem::manageInodeTable(helix::UniqueDescriptor memory) {
 		co_await submit_manage.async_wait();
 		HEL_CHECK(manage.error());
 
-		protocols::ostrace::Timer timer;
+		serviceInodeTableRequest(memory, manage.type(), manage.offset(), manage.length());
+	}
+}
 
-		// TODO: Make sure that we do not read/write past the end of the table.
-		assert(!((inodesPerGroup * inodeSize) & (blockSize - 1)));
+async::detached FileSystem::serviceInodeTableRequest(helix::BorrowedDescriptor memory,
+		int type, uintptr_t offset, size_t length) {
+	protocols::ostrace::Timer timer;
 
-		auto sizePerGroup = inodesPerGroup * inodeSize;
-		// TODO: It would be possible to support this by separating
-		//       different block group inside the managed memory representing the inode table
-		//       (or by having per-block-group managed memory objects for the inode table).
-		if (sizePerGroup & (pageSize - 1))
-			logPanic("Missing support for inode table sizes that are not multiples of the page size");
+	// TODO: Make sure that we do not read/write past the end of the table.
+	assert(!((inodesPerGroup * inodeSize) & (blockSize - 1)));
 
-		auto view = pool->importMemory(memory, manage.offset(), manage.length());
+	auto sizePerGroup = inodesPerGroup * inodeSize;
+	// TODO: It would be possible to support this by separating
+	//       different block group inside the managed memory representing the inode table
+	//       (or by having per-block-group managed memory objects for the inode table).
+	if (sizePerGroup & (pageSize - 1))
+		logPanic("Missing support for inode table sizes that are not multiples of the page size");
 
-		size_t progress = 0;
-		while (progress < manage.length()) {
-			// TODO: Use shifts instead of division.
-			auto bg_idx = (manage.offset() + progress) / sizePerGroup;
-			auto bg_offset = (manage.offset() + progress) % sizePerGroup;
-			auto block = bgdt[bg_idx].inodeTable;
-			assert(block);
+	auto view = pool->importMemory(memory, offset, length);
 
-			// Do not cross block group boundaries.
-			auto chunk = std::min(manage.length() - progress, sizePerGroup - bg_offset);
-			assert(!(progress & (pageSize - 1))); // Guaranteed by the next assertion.
-			assert(!(chunk & (pageSize - 1))); // Otherwise, the panic above would trigger.
+	size_t progress = 0;
+	while (progress < length) {
+		// TODO: Use shifts instead of division.
+		auto bg_idx = (offset + progress) / sizePerGroup;
+		auto bg_offset = (offset + progress) % sizePerGroup;
+		auto block = bgdt[bg_idx].inodeTable;
+		assert(block);
 
-			assert(bg_offset % device->sectorSize == 0);
-			assert(chunk % device->sectorSize == 0);
+		// Do not cross block group boundaries.
+		auto chunk = std::min(length - progress, sizePerGroup - bg_offset);
+		assert(!(progress & (pageSize - 1))); // Guaranteed by the next assertion.
+		assert(!(chunk & (pageSize - 1))); // Otherwise, the panic above would trigger.
 
-			auto subview = view.view().subview(progress, chunk);
+		assert(bg_offset % device->sectorSize == 0);
+		assert(chunk % device->sectorSize == 0);
 
-			if(manage.type() == kHelManageInitialize) {
-				co_await device->readSectors(
-				    block * sectorsPerBlock + bg_offset / device->sectorSize, subview
-				);
-				HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageInitialize,
-						manage.offset() + progress, chunk));
-			}else{
-				assert(manage.type() == kHelManageWriteback);
+		auto subview = view.view().subview(progress, chunk);
 
-				co_await device->writeSectors(
-				    block * sectorsPerBlock + bg_offset / device->sectorSize, subview
-				);
-				HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageWriteback,
-						manage.offset() + progress, chunk));
-			}
+		if(type == kHelManageInitialize) {
+			co_await device->readSectors(
+			    block * sectorsPerBlock + bg_offset / device->sectorSize, subview
+			);
+			HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageInitialize,
+					offset + progress, chunk));
+		}else{
+			assert(type == kHelManageWriteback);
 
-			progress += chunk;
+			co_await device->writeSectors(
+			    block * sectorsPerBlock + bg_offset / device->sectorSize, subview
+			);
+			HEL_CHECK(helUpdateMemory(memory.getHandle(), kHelManageWriteback,
+					offset + progress, chunk));
 		}
 
-		ostContext.emit(
-			ostEvtExt2ManageInode,
-			ostAttrTime(timer.elapsed())
-		);
+		progress += chunk;
 	}
+
+	ostContext.emit(
+		ostEvtExt2ManageInode,
+		ostAttrTime(timer.elapsed())
+	);
 }
 
 auto FileSystem::accessRoot() -> std::shared_ptr<BaseInode> {
@@ -1337,59 +1352,82 @@ async::detached FileSystem::manageFileData(std::shared_ptr<Inode> inode) {
 				&manage, helix::Dispatcher::global());
 		co_await submit.async_wait();
 		HEL_CHECK(manage.error());
-		if(manage.type() == kHelManageInitialize) {
-			assert(manage.offset() + manage.length() <= ((inode->fileSize() + 0xFFF) & ~size_t(0xFFF)));
-		}else{
-			if(!(manage.offset() + manage.length() <= ((inode->fileSize() + 0xFFF) & ~size_t(0xFFF)))) {
-				continue;
-			}
+
+		// Service the request in a detached coroutine so that multiple requests
+		// can be in flight concurrently.
+		serviceFileDataRequest(inode, manage.type(), manage.offset(), manage.length());
+	}
+}
+
+async::detached FileSystem::serviceFileDataRequest(std::shared_ptr<Inode> inode,
+		int type, uintptr_t offset, size_t length) {
+	if(type == kHelManageInitialize) {
+		assert(offset + length <= ((inode->fileSize() + 0xFFF) & ~size_t(0xFFF)));
+	}else{
+		if(!(offset + length <= ((inode->fileSize() + 0xFFF) & ~size_t(0xFFF))))
+			co_return;
+	}
+
+	protocols::ostrace::Timer timer;
+	auto fileView = pool->importMemory(
+	    helix::BorrowedDescriptor{inode->backingMemory}, offset, length
+	);
+
+	if(type == kHelManageInitialize) {
+		assert(!(offset % inode->fs.blockSize));
+		size_t backed_size = std::min(length, inode->fileSize() - offset);
+		size_t num_blocks = (backed_size + (inode->fs.blockSize - 1)) / inode->fs.blockSize;
+		assert(num_blocks * inode->fs.blockSize <= length);
+
+		{
+			co_await inode->blockMapMutex.async_lock_shared();
+			frg::shared_lock blockMapLock{frg::adopt_lock, inode->blockMapMutex};
+			co_await inode->fs.readDataBlocks(inode, offset / inode->fs.blockSize, fileView);
 		}
 
-		protocols::ostrace::Timer timer;
-		auto fileView = pool->importMemory(
-		    helix::BorrowedDescriptor{inode->backingMemory}, manage.offset(), manage.length()
-		);
+		HEL_CHECK(helUpdateMemory(inode->backingMemory, kHelManageInitialize,
+				offset, length));
+	}else{
+		assert(type == kHelManageWriteback);
 
-		if(manage.type() == kHelManageInitialize) {
-			assert(!(manage.offset() % inode->fs.blockSize));
-			size_t backed_size = std::min(manage.length(), inode->fileSize() - manage.offset());
-			size_t num_blocks = (backed_size + (inode->fs.blockSize - 1)) / inode->fs.blockSize;
-			assert(num_blocks * inode->fs.blockSize <= manage.length());
+		assert(!(offset % inode->fs.blockSize));
+		size_t backedSize = std::min(length, inode->fileSize() - offset);
+		auto blockOffset = offset / inode->fs.blockSize;
+		size_t numBlocks = (backedSize + (inode->fs.blockSize - 1)) / inode->fs.blockSize;
 
-			{
-				co_await inode->blockMapMutex.async_lock();
-				frg::unique_lock blockMapLock{frg::adopt_lock, inode->blockMapMutex};
-				co_await inode->fs.readDataBlocks(inode, manage.offset() / inode->fs.blockSize, fileView);
-			}
+		assert(numBlocks * inode->fs.blockSize <= length);
 
-			HEL_CHECK(helUpdateMemory(inode->backingMemory, kHelManageInitialize,
-					manage.offset(), manage.length()));
-		}else{
-			assert(manage.type() == kHelManageWriteback);
+		// If all blocks are already mapped, the write can proceed under the shared lock
+		// (concurrently with other reads and writes) since blocks are never deallocated.
+		bool mapped;
+		{
+			co_await inode->blockMapMutex.async_lock_shared();
+			frg::shared_lock blockMapLock{frg::adopt_lock, inode->blockMapMutex};
+			mapped = co_await inode->fs.dataBlocksMapped(inode, blockOffset, numBlocks);
+			if(mapped)
+				co_await inode->fs.writeDataBlocks(inode, blockOffset, fileView);
+		}
 
-			assert(!(manage.offset() % inode->fs.blockSize));
-			size_t backedSize = std::min(manage.length(), inode->fileSize() - manage.offset());
-			auto blockOffset = manage.offset() / inode->fs.blockSize;
-			size_t numBlocks = (backedSize + (inode->fs.blockSize - 1)) / inode->fs.blockSize;
-
-			assert(numBlocks * inode->fs.blockSize <= manage.length());
-
+		if(!mapped) {
 			{
 				co_await inode->blockMapMutex.async_lock();
 				frg::unique_lock blockMapLock{frg::adopt_lock, inode->blockMapMutex};
 				co_await inode->fs.assignDataBlocks(inode.get(), blockOffset, numBlocks);
-				co_await inode->fs.writeDataBlocks(inode, blockOffset, fileView);
 			}
 
-			HEL_CHECK(helUpdateMemory(inode->backingMemory, kHelManageWriteback,
-					manage.offset(), manage.length()));
+			co_await inode->blockMapMutex.async_lock_shared();
+			frg::shared_lock blockMapLock{frg::adopt_lock, inode->blockMapMutex};
+			co_await inode->fs.writeDataBlocks(inode, blockOffset, fileView);
 		}
 
-		ostContext.emit(
-			ostEvtExt2ManageFile,
-			ostAttrTime(timer.elapsed())
-		);
+		HEL_CHECK(helUpdateMemory(inode->backingMemory, kHelManageWriteback,
+				offset, length));
 	}
+
+	ostContext.emit(
+		ostEvtExt2ManageFile,
+		ostAttrTime(timer.elapsed())
+	);
 }
 
 async::result<std::vector<uint32_t>> FileSystem::allocateBlocks(size_t num, std::optional<uint32_t> ino) {
@@ -2168,6 +2206,81 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 		ostEvtExt2AssignDataBlocks,
 		ostAttrTime(timer.elapsed())
 	);
+}
+
+async::result<bool> FileSystem::dataBlocksMapped(std::shared_ptr<Inode> inode,
+		uint64_t block_offset, size_t num_blocks) {
+	co_await inode->readyEvent.wait();
+
+	if(inode->usesExtents) {
+		auto blockRanges = co_await lookupBlocksUsingExtent(inode.get(),
+				block_offset, num_blocks, false);
+		for(auto &range : blockRanges)
+			if(!range.found)
+				co_return false;
+		co_return true;
+	}
+
+	size_t per_indirect = blockSize / 4;
+	size_t per_single = per_indirect;
+	size_t per_double = per_indirect * per_indirect;
+
+	// Number of blocks that can be accessed by:
+	size_t i_range = 12; // Direct blocks only.
+	size_t s_range = i_range + per_single; // Plus the first single indirect block.
+	size_t d_range = s_range + per_double; // Plus the first double indirect block.
+
+	auto disk_inode = inode->diskInode();
+
+	size_t progress = 0;
+	while(progress < num_blocks) {
+		auto index = block_offset + progress;
+
+		assert(index < d_range);
+		if(index >= s_range) { // Use the double indirect block.
+			int64_t indirect_frame = (index - s_range) >> (blockShift - 2);
+			int64_t indirect_index = (index - s_range) & ((1 << (blockShift - 2)) - 1);
+
+			if(!disk_inode->data.blocks.doubleIndirect)
+				co_return false;
+
+			uint32_t indirect_block = 0;
+			co_await metadataCache->read(disk_inode->data.blocks.doubleIndirect,
+					indirect_frame * 4, 4, &indirect_block);
+			if(!indirect_block)
+				co_return false;
+
+			auto indirectWindow = co_await metadataCache->access(indirect_block, false);
+			auto entries = reinterpret_cast<uint32_t *>(indirectWindow.get());
+
+			auto chunk = std::min<size_t>(num_blocks - progress, per_indirect - indirect_index);
+			for(size_t i = 0; i < chunk; i++)
+				if(!entries[indirect_index + i])
+					co_return false;
+			progress += chunk;
+		}else if(index >= i_range) { // Use the single indirect block.
+			auto indirect_index = index - i_range;
+
+			if(!disk_inode->data.blocks.singleIndirect)
+				co_return false;
+
+			auto indirectWindow = co_await metadataCache->access(
+					disk_inode->data.blocks.singleIndirect, false);
+			auto entries = reinterpret_cast<uint32_t *>(indirectWindow.get());
+
+			auto chunk = std::min<size_t>(num_blocks - progress, per_single - indirect_index);
+			for(size_t i = 0; i < chunk; i++)
+				if(!entries[indirect_index + i])
+					co_return false;
+			progress += chunk;
+		}else{
+			if(!disk_inode->data.blocks.direct[index])
+				co_return false;
+			progress++;
+		}
+	}
+
+	co_return true;
 }
 
 async::result<void> FileSystem::readDataBlocks(std::shared_ptr<Inode> inode,

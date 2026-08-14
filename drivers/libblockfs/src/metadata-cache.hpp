@@ -50,6 +50,8 @@ struct MetadataCache {
 
 private:
 	async::detached manage_(helix::UniqueDescriptor backing);
+	async::detached serviceRequest_(helix::BorrowedDescriptor backing,
+			int type, uintptr_t offset, size_t length);
 
 	BlockDevice *device_;
 	uint64_t numBlocks_;

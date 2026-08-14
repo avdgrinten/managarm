@@ -415,8 +415,10 @@ struct Inode final : BaseInode, std::enable_shared_from_this<Inode> {
 	// blockMapMutex MUST be taken for all operations that access:
 	// - the direct pointers in the inode
 	// - the single/double/triple indirect blocks
+	// Mutations of the block map require the mutex exclusively; read-only lookups
+	// (and the I/O that they drive) only require it shared.
 	// Ordered after inodeMutex.
-	async::mutex blockMapMutex;
+	async::shared_mutex blockMapMutex;
 
 	// page cache that stores the contents of this file
 	HelHandle backingMemory;
@@ -486,6 +488,13 @@ struct FileSystem final : BaseFileSystem {
 	async::detached manageInodeBitmap(helix::UniqueDescriptor memory);
 	async::detached manageInodeTable(helix::UniqueDescriptor memory);
 
+	async::detached serviceBlockBitmapRequest(helix::BorrowedDescriptor memory,
+			int type, uintptr_t offset, size_t length);
+	async::detached serviceInodeBitmapRequest(helix::BorrowedDescriptor memory,
+			int type, uintptr_t offset, size_t length);
+	async::detached serviceInodeTableRequest(helix::BorrowedDescriptor memory,
+			int type, uintptr_t offset, size_t length);
+
 	std::shared_ptr<BaseInode> accessRoot() override;
 	std::shared_ptr<BaseInode> accessInode(uint32_t number) override;
 	async::result<std::shared_ptr<BaseInode>> createRegular(int uid, int gid, uint32_t parentIno) override;
@@ -496,38 +505,45 @@ struct FileSystem final : BaseFileSystem {
 
 	async::detached initiateInode(std::shared_ptr<Inode> inode);
 	async::detached manageFileData(std::shared_ptr<Inode> inode);
+	async::detached serviceFileDataRequest(std::shared_ptr<Inode> inode,
+			int type, uintptr_t offset, size_t length);
 
 	// Allocate up to num blocks for the given inode.
 	// This function does not write back the BGDT, this is the caller's responsibility.
 	async::result<std::vector<uint32_t>> allocateBlocks(size_t num, std::optional<uint32_t> ino = std::nullopt);
 	async::result<uint32_t> allocateInode(uint32_t parentIno = 0, bool directory = false);
 
-	// Callers must hold inode->blockMapMutex.
+	// Callers must hold inode->blockMapMutex (exclusive).
 	async::result<void> assignDataBlocks(Inode *inode,
 			uint64_t block_offset, size_t num_blocks);
 
-	// Callers must hold inode->blockMapMutex.
+	// Returns whether all blocks of the given range are present in the block map.
+	// Callers must hold inode->blockMapMutex (shared or exclusive).
+	async::result<bool> dataBlocksMapped(std::shared_ptr<Inode> inode,
+			uint64_t block_offset, size_t num_blocks);
+
+	// Callers must hold inode->blockMapMutex (shared or exclusive).
 	async::result<void>
 	readDataBlocks(std::shared_ptr<Inode> inode, uint64_t block_offset, arch::dma_buffer_view buf);
 
-	// Callers must hold inode->blockMapMutex.
+	// Callers must hold inode->blockMapMutex (shared or exclusive).
 	async::result<void> writeDataBlocks(
 	    std::shared_ptr<Inode> inode, uint64_t block_offset, arch::dma_buffer_view view
 	);
 
 
-	// Callers must hold inode->blockMapMutex.
+	// Callers must hold inode->blockMapMutex (shared or exclusive).
 	async::result<std::vector<ExtentBlockRange>> lookupBlocksUsingExtent(Inode *inode,
 			uint64_t block_offset, size_t num_blocks, bool errorIfNotFound);
 
-	// Callers must hold inode->blockMapMutex.
+	// Callers must hold inode->blockMapMutex (exclusive).
 	async::result<void> assignDataBlocksUsingExtents(Inode *inode,
 			uint64_t block_offset, size_t num_blocks);
 
-	// Callers must hold inode->blockMapMutex.
+	// Callers must hold inode->blockMapMutex (shared or exclusive).
 	async::result<void> readDataBlocksUsingExtents(std::shared_ptr<Inode> inode, uint64_t block_offset,
 			arch::dma_buffer_view buf);
-	// Callers must hold inode->blockMapMutex.
+	// Callers must hold inode->blockMapMutex (shared or exclusive).
 	async::result<void> writeDataBlocksUsingExtents(std::shared_ptr<Inode> inode, uint64_t block_offset,
 			arch::dma_buffer_view buf);
 
