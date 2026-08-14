@@ -1,9 +1,9 @@
 
 #include <memory>
-#include <queue>
 
 #include <blockfs.hpp>
 #include <core/virtio/core.hpp>
+#include <async/mutex.hpp>
 #include <async/oneshot-event.hpp>
 
 namespace block {
@@ -69,17 +69,18 @@ struct Device : blockfs::BlockDevice {
 	async::result<size_t> getSize() override;
 
 private:
-	// Submits requests from _pendingQueue to the device.
-	async::detached _processRequests();
+	// Sets up the descriptor chain of the request and posts it to the device.
+	// Returns after submission without waiting for the request's completion.
+	async::result<void> _submitRequest(UserRequest *request);
 
 	std::unique_ptr<virtio_core::Transport> _transport;
 
 	// The single virtq of this device.
 	virtio_core::Queue *_requestQueue;
 
-	// Stores UserRequest objects that have not been submitted yet.
-	std::queue<UserRequest *> _pendingQueue;
-	async::recurring_event _pendingDoorbell;
+	// Serializes descriptor acquisition; two requests that interleave partial
+	// acquisition could deadlock once the virtq runs out of descriptors.
+	async::mutex _submitMutex;
 
 	// these two buffer store virtio-block request header and status bytes
 	// they are indexed by the index of the request's first descriptor
