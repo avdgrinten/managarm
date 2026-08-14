@@ -323,6 +323,11 @@ public:
 		return _queueSize;
 	}
 
+	// Returns the number of descriptors that are currently unused.
+	size_t numFreeDescriptors() {
+		return _descriptorStack.size();
+	}
+
 	// Allocates a single descriptor.
 	// The descriptor is automatically freed when the device returns it.
 	async::result<Handle> obtainDescriptor();
