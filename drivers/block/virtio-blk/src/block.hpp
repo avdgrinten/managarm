@@ -45,6 +45,13 @@ struct UserRequest : virtio_core::Request {
 	arch::dma_buffer_view view;
 
 	async::oneshot_primitive event;
+
+	// Timestamps and durations used for ostrace instrumentation.
+	uint64_t enqueueTs = 0;
+	uint64_t dequeueTs = 0;
+	uint64_t submitTs = 0;
+	uint64_t completeTs = 0;
+	uint64_t obtainTime = 0;
 };
 
 // --------------------------------------------------------

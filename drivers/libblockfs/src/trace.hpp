@@ -21,12 +21,19 @@ inline constinit protocols::ostrace::Event ostEvtExt2WriteDataBlocks{"ext2.write
 inline constinit protocols::ostrace::Event ostEvtExt2ManageBlockBitmap{"ext2.manageBlockBitmap"};
 inline constinit protocols::ostrace::Event ostEvtExt2AllocateBlocks{"ext2.allocateBlocks"};
 inline constinit protocols::ostrace::Event ostEvtExt2AllocateInode{"ext2.allocateInode"};
+inline constinit protocols::ostrace::Event ostEvtVirtioBlkReadSectors{"virtio-blk.readSectors"};
+inline constinit protocols::ostrace::Event ostEvtVirtioBlkWriteSectors{"virtio-blk.writeSectors"};
+inline constinit protocols::ostrace::Event ostEvtVirtioBlkRequest{"virtio-blk.request"};
 inline constinit protocols::ostrace::UintAttribute ostAttrTime{"time"};
 inline constinit protocols::ostrace::UintAttribute ostAttrNumBytes{"numBytes"};
+inline constinit protocols::ostrace::UintAttribute ostAttrIsWrite{"isWrite"};
 inline constinit protocols::ostrace::UintAttribute ostAttrTimeImport{"timeImport"};
 inline constinit protocols::ostrace::UintAttribute ostAttrTimeMapCheck{"timeMapCheck"};
 inline constinit protocols::ostrace::UintAttribute ostAttrTimeAssign{"timeAssign"};
 inline constinit protocols::ostrace::UintAttribute ostAttrTimeWrite{"timeWrite"};
+inline constinit protocols::ostrace::UintAttribute ostAttrTimeQueue{"timeQueue"};
+inline constinit protocols::ostrace::UintAttribute ostAttrTimeSetup{"timeSetup"};
+inline constinit protocols::ostrace::UintAttribute ostAttrTimeObtain{"timeObtain"};
 inline constinit protocols::ostrace::UintAttribute ostAttrTimeDevice{"timeDevice"};
 
 inline protocols::ostrace::Vocabulary ostVocabulary{
@@ -45,12 +52,19 @@ inline protocols::ostrace::Vocabulary ostVocabulary{
 	ostEvtExt2ManageBlockBitmap,
 	ostEvtExt2AllocateBlocks,
 	ostEvtExt2AllocateInode,
+	ostEvtVirtioBlkReadSectors,
+	ostEvtVirtioBlkWriteSectors,
+	ostEvtVirtioBlkRequest,
 	ostAttrTime,
 	ostAttrNumBytes,
+	ostAttrIsWrite,
 	ostAttrTimeImport,
 	ostAttrTimeMapCheck,
 	ostAttrTimeAssign,
 	ostAttrTimeWrite,
+	ostAttrTimeQueue,
+	ostAttrTimeSetup,
+	ostAttrTimeObtain,
 	ostAttrTimeDevice,
 };
 
