@@ -103,8 +103,8 @@ inline int getEndpointIndex(int endpoint, proto::PipeType dir) {
 
 struct EndpointState;
 
-struct Device final : proto::DeviceData, std::enable_shared_from_this<Device> {
-	Device(Controller *controller);
+struct Device final : proto::DeviceServerData, std::enable_shared_from_this<Device> {
+	Device(Controller *controller, proto::DeviceSpeed speed, std::shared_ptr<proto::Hub> parent, int port);
 
 	// Public API inherited from DeviceData.
 	arch::dma_pool *setupPool() override;

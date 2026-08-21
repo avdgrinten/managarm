@@ -322,23 +322,13 @@ void Controller::ringDoorbell(uint8_t doorbell, uint8_t target, uint16_t stream_
 
 async::result<frg::expected<proto::UsbError>>
 Controller::enumerateDevice(std::shared_ptr<proto::Hub> parentHub, int port, proto::DeviceSpeed speed) {
-	uint32_t route = 0;
+	auto device = std::make_shared<Device>(this, speed, parentHub, port);
+	auto [route, rootHub, rootHubPort] = device->routeString();
 
-	std::shared_ptr<proto::Hub> curHub = parentHub;
-	int curPort = port;
-	while (curHub->parent()) {
-		route <<= 4;
-		route |= curPort > 15 ? 15 : curPort;
+	SupportedProtocol *proto = std::static_pointer_cast<RootHub>(rootHub)->protocol();
 
-		curPort = curHub->port();
-		curHub = curHub->parent();
-	}
+	auto rootPort = rootHubPort + proto->compatiblePortStart - 1;
 
-	SupportedProtocol *proto = std::static_pointer_cast<RootHub>(curHub)->protocol();
-
-	auto rootPort = curPort + proto->compatiblePortStart - 1;
-
-	auto device = std::make_shared<Device>(this);
 	FRG_CO_TRY(co_await device->enumerate(rootPort, port, route, parentHub, speed, proto->slotType));
 	_devices[device->slot()] = device;
 
@@ -381,7 +371,7 @@ Controller::enumerateDevice(std::shared_ptr<proto::Hub> parentHub, int port, pro
 
 	std::string mbps = protocols::usb::getSpeedMbps(speed);
 
-	auto entity_id = std::static_pointer_cast<RootHub>(curHub)->entityId();
+	auto entity_id = std::static_pointer_cast<RootHub>(rootHub)->entityId();
 
 	mbus_ng::Properties mbusDescriptor{
 		{"usb.type", mbus_ng::StringItem{"device"}},
@@ -799,8 +789,8 @@ async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> Controller::Ro
 // Device
 // ------------------------------------------------------------------------
 
-Device::Device(Controller *controller)
-: _slotId{-1}, _controller{controller} {
+Device::Device(Controller *controller, proto::DeviceSpeed speed, std::shared_ptr<proto::Hub> parent, int port)
+: proto::DeviceServerData{speed, parent, port}, _slotId{-1}, _controller{controller} {
 }
 
 arch::dma_pool *Device::setupPool() {
@@ -956,36 +946,19 @@ Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<
 	slotCtx |= SlotFields::ctxEntries(1);
 	slotCtx |= SlotFields::speed(getHcdSpeedId(speed));
 
-	// For LS/FS devices not on the root hub ...
-	if ((speed == proto::DeviceSpeed::lowSpeed || speed == proto::DeviceSpeed::fullSpeed) && hub->parent()) {
-		// ... look for a hub with a TT.
+	// For LS/FS devices, look for a TT in the path, and fill out the appropriate fields if one exists.
+	// TODO(qookie): These fields should also be filled out for USB 3 hubs, when a device is plugged
+	// into a higher rank hub, e.g. Gen1x1 device in a Gen1x2 hub or Gen1x2 device in Gen2x2 hub.
+	auto ttHub = nearestTTHub();
+	if (ttHub) {
+		auto hubDevice = std::static_pointer_cast<Device>(
+			ttHub->associatedDevice()->state());
 
-		// TODO(qookie): This could probably be tracked by the generic hub code.
-		auto curHub = hub;
-		while (curHub->parent()) {
-			auto hubDevice = std::static_pointer_cast<Device>(
-				curHub->associatedDevice()->state());
+		assert(hubDevice->_speed == proto::DeviceSpeed::highSpeed);
 
-			if (hubDevice->_speed == proto::DeviceSpeed::highSpeed)
-				break;
-
-			assert(hubDevice->_speed == proto::DeviceSpeed::lowSpeed
-					|| hubDevice->_speed == proto::DeviceSpeed::fullSpeed);
-
-			curHub = curHub->parent();
-		}
-
-		// Non-root high speed hub found in the path.
-		if (curHub->parent()) {
-			auto hubDevice = std::static_pointer_cast<Device>(
-				curHub->associatedDevice()->state());
-
-			assert(hubDevice->_speed == proto::DeviceSpeed::highSpeed);
-
-			// We need to fill these fields out for split transactions.
-			slotCtx |= SlotFields::parentHubPort(curHub->port());
-			slotCtx |= SlotFields::parentHubSlot(hubDevice->_slotId);
-		}
+		// We need to fill these fields out for split transactions.
+		slotCtx |= SlotFields::parentHubPort(ttHub->port());
+		slotCtx |= SlotFields::parentHubSlot(hubDevice->_slotId);
 	}
 
 	slotCtx |= SlotFields::rootHubPort(rootPort);
