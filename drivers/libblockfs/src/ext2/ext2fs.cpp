@@ -1660,12 +1660,15 @@ async::result<void> FileSystem::assignDataBlocksUsingExtents(Inode *inode,
 	auto diskInode = inode->diskInode();
 	auto blockRanges = co_await lookupBlocksUsingExtent(inode, block_offset, num_blocks, false);
 
+	bool anyAllocated = false;
+
 	for(auto &range : blockRanges) {
 		if(range.found)
 			continue;
 
 		auto allocated = co_await allocateBlocks(range.size, inode->number);
 		assert(!allocated.empty() && "Out of disk space");
+		anyAllocated = true;
 
 		// Merge the allocated blocks to a vector of
 		// [begin, end] pairs.
@@ -1896,10 +1899,12 @@ async::result<void> FileSystem::assignDataBlocksUsingExtents(Inode *inode,
 		diskInode->blocks += allocated.size() * (blockSize / 512);
 	}
 
-	updateInodeChecksum(*this, diskInode, inode->number);
+	if(anyAllocated) {
+		updateInodeChecksum(*this, diskInode, inode->number);
 
-	bgdtWriteback.raise();
-	inode->diskInodeWindow.markDirty();
+		bgdtWriteback.raise();
+		inode->diskInodeWindow.markDirty();
+	}
 
 	ostContext.emit(
 		ostEvtExt2AssignDataBlocks,
@@ -2001,6 +2006,8 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 
 	auto disk_inode = inode->diskInode();
 
+	bool anyAllocated = false;
+
 	size_t prg = 0;
 	while(prg < num_blocks) {
 		if(block_offset + prg < i_range) {
@@ -2029,6 +2036,7 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 					disk_inode->data.blocks.direct[idx + blocknum] = block;
 
 				disk_inode->blocks += allocated.size() * (blockSize / 512);
+				anyAllocated = true;
 				prg += allocated.size();
 			}
 		}else if(block_offset + prg < s_range) {
@@ -2039,6 +2047,7 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 				auto block = co_await allocateBlocks(1, inode->number);
 				assert(!block.empty() && "Out of disk space"); // TODO: Fix this.
 				disk_inode->blocks += (blockSize / 512);
+				anyAllocated = true;
 				disk_inode->data.blocks.singleIndirect = block[0];
 				needsReset = true;
 			}
@@ -2075,6 +2084,7 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 					window[idx + blocknum] = block;
 
 				disk_inode->blocks += allocated.size() * (blockSize / 512);
+				anyAllocated = true;
 				prg += allocated.size();
 			}
 		}else if(block_offset + prg < d_range) {
@@ -2083,6 +2093,7 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 				auto block = co_await allocateBlocks(1, inode->number);
 				assert(!block.empty() && "Out of disk space"); // TODO: Fix this.
 				disk_inode->blocks += (blockSize / 512);
+				anyAllocated = true;
 				disk_inode->data.blocks.doubleIndirect = block[0];
 				doubleNeedsReset = true;
 			}
@@ -2105,6 +2116,7 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 					auto block = co_await allocateBlocks(1, inode->number);
 					assert(!block.empty() && "Out of disk space"); // TODO: Fix this.
 					disk_inode->blocks += (blockSize / 512);
+					anyAllocated = true;
 					double_window[indirect_frame] = block[0];
 					needsReset = true;
 				}
@@ -2137,6 +2149,7 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 					window[indirect_index + blocknum] = block;
 
 				disk_inode->blocks += allocated.size() * (blockSize / 512);
+				anyAllocated = true;
 				prg += allocated.size();
 			}
 		}else{
@@ -2144,10 +2157,12 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 		}
 	}
 
-	updateInodeChecksum(*this, inode->diskInode(), inode->number);
+	if(anyAllocated) {
+		updateInodeChecksum(*this, inode->diskInode(), inode->number);
 
-	bgdtWriteback.raise();
-	inode->diskInodeWindow.markDirty();
+		bgdtWriteback.raise();
+		inode->diskInodeWindow.markDirty();
+	}
 
 	ostContext.emit(
 		ostEvtExt2AssignDataBlocks,
