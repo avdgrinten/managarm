@@ -10,6 +10,9 @@
 
 namespace protocols::usb {
 
+struct Hub;
+
+
 enum class UsbError {
 	none,
 	stall,
@@ -169,6 +172,36 @@ public:
 	virtual async::result<frg::expected<UsbError, size_t>> transfer(ControlTransfer info) = 0;
 };
 
+struct DeviceServerData : DeviceData {
+protected:
+	~DeviceServerData() = default;
+	DeviceServerData(DeviceSpeed speed, std::shared_ptr<Hub> parent, int port)
+	: speed_{speed}, parent_{parent}, port_{port} { }
+
+public:
+	DeviceSpeed speed() const {
+		return speed_;
+	}
+
+	std::shared_ptr<Hub> parent() const {
+		return parent_;
+	}
+
+	int port() const {
+		return port_;
+	}
+
+	std::shared_ptr<Hub> nearestTTHub() const;
+
+	std::tuple<uint32_t, std::shared_ptr<Hub>, int>
+	routeString() const;
+
+private:
+	DeviceSpeed speed_;
+	std::shared_ptr<Hub> parent_;
+	int port_;
+};
+
 struct Device {
 	Device(std::shared_ptr<DeviceData> state);
 
@@ -193,8 +226,6 @@ private:
 // ----------------------------------------------------------------
 // BaseController.
 // ----------------------------------------------------------------
-
-struct Hub;
 
 struct BaseController {
 protected:
