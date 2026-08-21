@@ -951,8 +951,7 @@ Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<
 	// into a higher rank hub, e.g. Gen1x1 device in a Gen1x2 hub or Gen1x2 device in Gen2x2 hub.
 	auto ttHub = nearestTTHub();
 	if (ttHub) {
-		auto hubDevice = std::static_pointer_cast<Device>(
-			ttHub->associatedDevice()->state());
+		auto hubDevice = std::static_pointer_cast<Device>(ttHub->associatedState());
 
 		assert(hubDevice->_speed == proto::DeviceSpeed::highSpeed);
 

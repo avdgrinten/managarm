@@ -48,8 +48,8 @@ public:
 		return UsbError::unsupported;
 	}
 
-	virtual std::optional<Device> associatedDevice() {
-		return std::nullopt;
+	virtual std::shared_ptr<DeviceServerData> associatedState() {
+		return nullptr;
 	}
 
 	std::shared_ptr<Hub> parent() const {

@@ -89,8 +89,7 @@ std::shared_ptr<Hub> DeviceServerData::nearestTTHub() const {
 
 	auto curHub = parent();
 	while (curHub->parent()) {
-		auto hubDevice = std::static_pointer_cast<DeviceServerData>(
-			curHub->associatedDevice()->state());
+		auto hubDevice = curHub->associatedState();
 
 		if (hubDevice->speed() == DeviceSpeed::highSpeed)
 			break;
@@ -106,8 +105,7 @@ std::shared_ptr<Hub> DeviceServerData::nearestTTHub() const {
 		return nullptr;
 	}
 
-	auto hubDevice = std::static_pointer_cast<DeviceServerData>(
-		curHub->associatedDevice()->state());
+	auto hubDevice = curHub->associatedState();
 	assert(hubDevice->speed() == DeviceSpeed::highSpeed);
 	return curHub;
 }

@@ -135,8 +135,8 @@ public:
 		return characteristics_;
 	}
 
-	std::optional<Device> associatedDevice() override {
-		return device_;
+	std::shared_ptr<DeviceServerData> associatedState() override {
+		return std::static_pointer_cast<DeviceServerData>(device_.state());
 	}
 
 private:
