@@ -10,6 +10,8 @@
 #include "usb.hpp"
 #include "api.hpp"
 
+#include <protocols/mbus/client.hpp>
+
 namespace protocols::usb {
 
 // ----------------------------------------------------------------
@@ -60,6 +62,10 @@ public:
 		return port_;
 	}
 
+	virtual mbus_ng::EntityId mbusEntityId() {
+		assert(!"Unimplemented");
+	}
+
 private:
 	std::shared_ptr<Hub> parent_;
 	size_t port_;
@@ -81,6 +87,9 @@ struct Enumerator {
 private:
 	async::detached observePort_(std::shared_ptr<Hub> hub, int port);
 	async::result<void> observationCycle_(std::shared_ptr<Hub> hub, int port);
+
+	async::result<frg::expected<UsbError>>
+	enumerateDevice_(std::shared_ptr<DeviceServerData> device);
 
 	BaseController *controller_;
 	async::mutex enumerateMutex_;

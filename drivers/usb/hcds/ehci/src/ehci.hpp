@@ -32,6 +32,8 @@ struct EndpointState;
 // ----------------------------------------------------------------
 
 struct Controller final : proto::BaseController, std::enable_shared_from_this<Controller> {
+	friend struct DeviceState;
+
 	Controller(protocols::hw::Device hw_device,
 			mbus_ng::EntityManager entity,
 			helix::Mapping mapping,
@@ -40,8 +42,9 @@ struct Controller final : proto::BaseController, std::enable_shared_from_this<Co
 
 	async::detached initialize();
 	async::detached handleIrqs();
-	async::result<frg::expected<proto::UsbError>>
-	enumerateDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) override;
+
+	std::shared_ptr<proto::DeviceServerData>
+	createDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) override;
 
 	// ------------------------------------------------------------------------
 	// Schedule classes.
@@ -136,6 +139,10 @@ struct Controller final : proto::BaseController, std::enable_shared_from_this<Co
 			return *_ports[portnr];
 		}
 
+		mbus_ng::EntityId mbusEntityId() override {
+			return _controller->_entity.id();
+		}
+
 	private:
 		Controller *_controller;
 		std::vector<std::unique_ptr<Port>> _ports;
@@ -176,8 +183,7 @@ public:
 
 private:
 	async::result<frg::expected<proto::UsbError, size_t>> _directTransfer(proto::ControlTransfer info,
-			QueueEntity *queue, size_t max_packet_size);
-
+			QueueEntity *queue, size_t maxPacketSize);
 
 	// ------------------------------------------------------------------------
 	// Schedule management.
@@ -240,8 +246,9 @@ private:
 // DeviceState
 // ----------------------------------------------------------------------------
 
-struct DeviceState final : proto::DeviceData {
-	explicit DeviceState(std::shared_ptr<Controller> controller, int device);
+struct DeviceState final : proto::DeviceServerData {
+	explicit DeviceState(std::shared_ptr<Controller> controller, int device,
+			std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed);
 
 	arch::dma_pool *setupPool() override;
 	arch::dma_pool *bufferPool() override;
@@ -250,6 +257,22 @@ struct DeviceState final : proto::DeviceData {
 	async::result<frg::expected<proto::UsbError, std::string>> configurationDescriptor(uint8_t configuration) override;
 	async::result<frg::expected<proto::UsbError, proto::Configuration>> useConfiguration(uint8_t index, uint8_t value) override;
 	async::result<frg::expected<proto::UsbError, size_t>> transfer(proto::ControlTransfer info) override;
+
+	async::result<frg::expected<proto::UsbError>>
+	initialize() override;
+
+	async::result<frg::expected<proto::UsbError>>
+	updateEp0MaxPacketSize(size_t maxPacketSize) override;
+
+	async::result<frg::expected<proto::UsbError>>
+	configureAsHub(std::shared_ptr<proto::Hub> hub) override {
+		(void)hub;
+		co_return frg::success;
+	}
+
+	int address() override {
+		return _device;
+	}
 
 private:
 	std::shared_ptr<Controller> _controller;

@@ -320,83 +320,9 @@ void Controller::ringDoorbell(uint8_t doorbell, uint8_t target, uint16_t stream_
 }
 
 
-async::result<frg::expected<proto::UsbError>>
-Controller::enumerateDevice(std::shared_ptr<proto::Hub> parentHub, int port, proto::DeviceSpeed speed) {
-	auto device = std::make_shared<Device>(this, speed, parentHub, port);
-
-	FRG_CO_TRY(co_await device->enumerate());
-
-	// If this is full speed, our guess for MPS might be wrong,
-	// get the first 8 bytes of the device descriptor to check.
-	if (speed == proto::DeviceSpeed::fullSpeed) {
-		arch::dma_object<proto::DeviceDescriptor> descriptor{&_memoryPool};
-		FRG_CO_TRY(co_await device->readDescriptor(descriptor.view_buffer().subview(0, 8), 0x0100));
-
-		std::println("{} Full-speed device on port {} has bMaxPacketSize0 = {}",
-				this, port, int{descriptor->maxPacketSize});
-
-		FRG_CO_TRY(co_await device->updateEp0PacketSize(descriptor->maxPacketSize));
-	}
-
-	arch::dma_object<proto::DeviceDescriptor> descriptor{&_memoryPool};
-	FRG_CO_TRY(co_await device->readDescriptor(descriptor.view_buffer(), 0x0100));
-
-	arch::dma_object<proto::ConfigDescriptor> configDescriptor{&_memoryPool};
-	FRG_CO_TRY(co_await device->readDescriptor(configDescriptor.view_buffer(), 0x0200));
-	FRG_CO_TRY(co_await device->useConfiguration(0, configDescriptor->configValue));
-
-	// Advertise the USB device on mbus.
-	auto classCode = std::format("{:02x}", descriptor->deviceClass);
-	auto subClass = std::format("{:02x}", descriptor->deviceSubclass);
-	auto protocol = std::format("{:02x}", descriptor->deviceProtocol);
-	auto vendor = std::format("{:04x}", descriptor->idVendor);
-	auto product = std::format("{:04x}", descriptor->idProduct);
-	auto release = std::format("{:04x}", descriptor->bcdDevice);
-
-	if (descriptor->deviceClass == 0x09 && descriptor->deviceSubclass == 0) {
-		auto hub = FRG_CO_TRY(co_await createHubFromDevice(parentHub, proto::Device{device}, port));
-
-		FRG_CO_TRY(co_await device->configureHub(hub, speed));
-
-		_enumerator.observeHub(std::move(hub));
-	}
-
-	auto name = std::format("{:02x}", device->slot());
-
-	std::string mbps = protocols::usb::getSpeedMbps(speed);
-
-	auto [_route, rootHub, _rootPort] = device->routeString();
-	auto entity_id = std::static_pointer_cast<RootHub>(rootHub)->entityId();
-
-	mbus_ng::Properties mbusDescriptor{
-		{"usb.type", mbus_ng::StringItem{"device"}},
-		{"usb.vendor", mbus_ng::StringItem{vendor}},
-		{"usb.product", mbus_ng::StringItem{product}},
-		{"usb.class", mbus_ng::StringItem{classCode}},
-		{"usb.subclass", mbus_ng::StringItem{subClass}},
-		{"usb.protocol", mbus_ng::StringItem{protocol}},
-		{"usb.release", mbus_ng::StringItem{release}},
-		{"usb.hub_port", mbus_ng::StringItem{name}},
-		{"usb.bus", mbus_ng::StringItem{std::to_string(entity_id)}},
-		{"usb.speed", mbus_ng::StringItem{mbps}},
-		{"unix.subsystem", mbus_ng::StringItem{"usb"}},
-	};
-
-	auto usbEntity = (co_await mbus_ng::Instance::global().createEntity(
-				"usb-xhci-dev-" + std::string{name}, mbusDescriptor)).unwrap();
-
-	[] (auto device, mbus_ng::EntityManager entity) -> async::detached {
-		while (true) {
-			auto [localLane, remoteLane] = helix::createStream();
-
-			// If this fails, too bad!
-			(void)(co_await entity.serveRemoteLane(std::move(remoteLane)));
-
-			proto::serve(proto::Device{device}, std::move(localLane));
-		}
-	}(device, std::move(usbEntity));
-
-	co_return frg::success;
+std::shared_ptr<proto::DeviceServerData>
+Controller::createDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) {
+	return std::make_shared<Device>(this, speed, hub, port);
 }
 
 void Controller::processEvent(Event ev) {
@@ -920,7 +846,7 @@ static inline uint8_t getHcdSpeedId(proto::DeviceSpeed speed) {
 }
 
 async::result<frg::expected<proto::UsbError>>
-Device::enumerate() {
+Device::initialize() {
 	auto [route, rootHub, rootHubPort] = routeString();
 
 	SupportedProtocol *proto = std::static_pointer_cast<RootHub>(rootHub)->protocol();
@@ -1050,7 +976,7 @@ Device::setupEndpoint(int endpoint, proto::PipeType dir, size_t maxPacketSize, p
 }
 
 async::result<frg::expected<proto::UsbError>>
-Device::configureHub(std::shared_ptr<proto::Hub> hub, proto::DeviceSpeed speed) {
+Device::configureAsHub(std::shared_ptr<proto::Hub> hub) {
 	InputContext inputCtx{_controller->largeCtx(), _controller->memoryPool()};
 
 	inputCtx.get(inputCtxCtrl) |= InputControlFields::add(0); // Slot Context
@@ -1061,7 +987,7 @@ Device::configureHub(std::shared_ptr<proto::Hub> hub, proto::DeviceSpeed speed) 
 	inputCtx.get(inputCtxSlot) |= SlotFields::hub(true);
 	inputCtx.get(inputCtxSlot) |= SlotFields::portCount(hub->numPorts());
 
-	if (speed == proto::DeviceSpeed::highSpeed)
+	if (speed() == proto::DeviceSpeed::highSpeed)
 		inputCtx.get(inputCtxSlot) |= SlotFields::ttThinkTime(
 				hub->getCharacteristics().unwrap().ttThinkTime / 8 - 1);
 
@@ -1105,7 +1031,7 @@ async::result<void> Device::_initEpCtx(InputContext &ctx, int endpoint, proto::P
 }
 
 async::result<frg::expected<proto::UsbError>>
-Device::updateEp0PacketSize(size_t maxPacketSize) {
+Device::updateEp0MaxPacketSize(size_t maxPacketSize) {
 	InputContext inputCtx{_controller->largeCtx(), _controller->memoryPool()};
 	int endpointId = getEndpointIndex(0, proto::PipeType::control);
 

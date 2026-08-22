@@ -1,6 +1,8 @@
 #include <vector>
 
 #include <protocols/usb/hub.hpp>
+#include <protocols/usb/server.hpp>
+#include <protocols/mbus/client.hpp>
 
 #include <async/recurring-event.hpp>
 
@@ -66,7 +68,9 @@ async::result<void> Enumerator::observationCycle_(std::shared_ptr<Hub> hub, int 
 		speed = v.value();
 	}
 
-	if (auto v = co_await controller_->enumerateDevice(hub, port, speed); !v) {
+	auto device = controller_->createDevice(hub, port, speed);
+
+	if (auto v = co_await enumerateDevice_(device); !v) {
 		std::cout << "usb: Device on port " << port << " failed to enumerate: "
 			<< (int)v.error() << std::endl;
 		co_return;
@@ -81,6 +85,83 @@ async::result<void> Enumerator::observationCycle_(std::shared_ptr<Hub> hub, int 
 		if(!(s.status & HubStatus::connect))
 			break;
 	}
+}
+
+async::result<frg::expected<UsbError>>
+Enumerator::enumerateDevice_(std::shared_ptr<DeviceServerData> device) {
+	FRG_CO_TRY(co_await device->initialize());
+
+	// If this is full speed, our guess for MPS might be wrong,
+	// get the first 8 bytes of the device descriptor to check.
+	if (device->speed() == DeviceSpeed::fullSpeed) {
+		arch::dma_object<DeviceDescriptor> descriptor{device->bufferPool()};
+		FRG_CO_TRY(co_await device->readDescriptor(descriptor.view_buffer().subview(0, 8), 0x0100));
+
+		std::println("usb: Full-speed device on port {} has bMaxPacketSize0 = {}",
+				device->port(), int{descriptor->maxPacketSize});
+
+		FRG_CO_TRY(co_await device->updateEp0MaxPacketSize(descriptor->maxPacketSize));
+	}
+
+	arch::dma_object<DeviceDescriptor> descriptor{device->bufferPool()};
+	FRG_CO_TRY(co_await device->readDescriptor(descriptor.view_buffer(), 0x0100));
+
+	arch::dma_object<ConfigDescriptor> configDescriptor{device->bufferPool()};
+	FRG_CO_TRY(co_await device->readDescriptor(configDescriptor.view_buffer(), 0x0200));
+	FRG_CO_TRY(co_await device->useConfiguration(0, configDescriptor->configValue));
+
+	// Advertise the USB device on mbus.
+	auto classCode = std::format("{:02x}", descriptor->deviceClass);
+	auto subClass = std::format("{:02x}", descriptor->deviceSubclass);
+	auto protocol = std::format("{:02x}", descriptor->deviceProtocol);
+	auto vendor = std::format("{:04x}", descriptor->idVendor);
+	auto product = std::format("{:04x}", descriptor->idProduct);
+	auto release = std::format("{:04x}", descriptor->bcdDevice);
+
+	if (descriptor->deviceClass == 0x09 && descriptor->deviceSubclass == 0) {
+		auto hub = FRG_CO_TRY(co_await createHubFromDevice(device->parent(), Device{device}, device->port()));
+
+		FRG_CO_TRY(co_await device->configureAsHub(hub));
+
+		observeHub(std::move(hub));
+	}
+
+	auto address = std::format("{:02x}", device->address());
+
+	std::string mbps = getSpeedMbps(device->speed());
+
+	auto [_route, rootHub, _rootPort] = device->routeString();
+	auto rootEntityId = rootHub->mbusEntityId();
+
+	mbus_ng::Properties mbusDescriptor{
+		{"usb.type", mbus_ng::StringItem{"device"}},
+		{"usb.vendor", mbus_ng::StringItem{vendor}},
+		{"usb.product", mbus_ng::StringItem{product}},
+		{"usb.class", mbus_ng::StringItem{classCode}},
+		{"usb.subclass", mbus_ng::StringItem{subClass}},
+		{"usb.protocol", mbus_ng::StringItem{protocol}},
+		{"usb.release", mbus_ng::StringItem{release}},
+		{"usb.hub_port", mbus_ng::StringItem{address}},
+		{"usb.bus", mbus_ng::StringItem{std::to_string(rootEntityId)}},
+		{"usb.speed", mbus_ng::StringItem{mbps}},
+		{"unix.subsystem", mbus_ng::StringItem{"usb"}},
+	};
+
+	auto usbEntity = (co_await mbus_ng::Instance::global().createEntity(
+				"usb-dev-" + std::string{address}, mbusDescriptor)).unwrap();
+
+	[] (auto device, mbus_ng::EntityManager entity) -> async::detached {
+		while (true) {
+			auto [localLane, remoteLane] = helix::createStream();
+
+			// If this fails, too bad!
+			(void)(co_await entity.serveRemoteLane(std::move(remoteLane)));
+
+			serve(Device{device}, std::move(localLane));
+		}
+	}(device, std::move(usbEntity));
+
+	co_return frg::success;
 }
 
 // ----------------------------------------------------------------

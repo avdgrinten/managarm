@@ -38,8 +38,9 @@ std::vector<std::shared_ptr<Controller>> globalControllers;
 // DeviceState
 // ----------------------------------------------------------------
 
-DeviceState::DeviceState(std::shared_ptr<Controller> controller, int device)
-: _controller{std::move(controller)}, _device(device) { }
+DeviceState::DeviceState(std::shared_ptr<Controller> controller, int device,
+		std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed)
+: proto::DeviceServerData{speed, hub, port}, _controller{std::move(controller)}, _device(device) { }
 
 arch::dma_pool *DeviceState::setupPool() {
 	return _controller->memoryPool();
@@ -50,21 +51,84 @@ arch::dma_pool *DeviceState::bufferPool() {
 }
 
 async::result<frg::expected<proto::UsbError, std::string>> DeviceState::deviceDescriptor() {
+	assert(_device != -1);
 	return _controller->deviceDescriptor(_device);
 }
 
 async::result<frg::expected<proto::UsbError, std::string>> DeviceState::configurationDescriptor(uint8_t configuration) {
+	assert(_device != -1);
 	return _controller->configurationDescriptor(_device, configuration);
 }
 
 async::result<frg::expected<proto::UsbError, proto::Configuration>> DeviceState::useConfiguration(uint8_t index, uint8_t value) {
+	assert(_device != -1);
 	FRG_CO_TRY(co_await _controller->useConfiguration(_device, value));
 	co_return proto::Configuration{std::make_shared<ConfigurationState>(_controller,
 				_device, index, value)};
 }
 
 async::result<frg::expected<proto::UsbError, size_t>> DeviceState::transfer(proto::ControlTransfer info) {
+	assert(_device != -1);
 	return _controller->transfer(_device, 0, info);
+}
+
+async::result<frg::expected<proto::UsbError>> DeviceState::initialize() {
+	// Requires split TX support
+	if (speed() != proto::DeviceSpeed::highSpeed)
+		co_return proto::UsbError::other;
+
+	// This queue will become the default control pipe of our new device.
+	auto dmaObj = arch::dma_object<QueueHead>{_controller->memoryPool()};
+	auto queue = new Controller::QueueEntity{std::move(dmaObj), 0, 0, proto::PipeType::control, 64};
+	co_await queue->initialize(_controller->dmaSpace_);
+	_controller->_linkAsync(queue);
+
+	// Allocate an address for the device.
+	assert(!_controller->_addressStack.empty());
+	auto address = _controller->_addressStack.front();
+	_controller->_addressStack.pop();
+
+	if(logDeviceEnumeration)
+		std::cout << "ehci: Setting device address" << std::endl;
+
+	arch::dma_object<proto::SetupPacket> setAddress{setupPool()};
+	setAddress->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
+			| proto::setup_type::toDevice;
+	setAddress->request = proto::request_type::setAddress;
+	setAddress->value = address;
+	setAddress->index = 0;
+	setAddress->length = 0;
+
+	(co_await _controller->_directTransfer(proto::ControlTransfer{proto::kXferToDevice,
+			setAddress, arch::dma_buffer_view{}}, queue, 0)).unwrap();
+
+	queue->setAddress(address);
+	_device = address;
+
+	// Initial guess at the EP0 max packet size
+	size_t packetSize = 0;
+	switch (speed()) {
+		using enum proto::DeviceSpeed;
+
+		case lowSpeed:
+		case fullSpeed: packetSize = 8; break;
+		case highSpeed: packetSize = 64; break;
+		default:
+			std::cout << "ehci: Unexpected device speed " << (int)speed() << std::endl;
+			co_return proto::UsbError::other;
+	}
+
+	_controller->_activeDevices[address].controlStates[0].queueEntity = queue;
+	_controller->_activeDevices[address].controlStates[0].maxPacketSize = packetSize;
+
+	co_return frg::success;
+}
+
+async::result<frg::expected<proto::UsbError>>
+DeviceState::updateEp0MaxPacketSize(size_t maxPacketSize) {
+	_controller->_activeDevices[_device].controlStates[0].maxPacketSize = maxPacketSize;
+
+	co_return frg::success;
 }
 
 // ----------------------------------------------------------------------------
@@ -265,166 +329,9 @@ void Controller::_checkPorts() {
 	}
 }
 
-async::result<frg::expected<proto::UsbError>>
-Controller::enumerateDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) {
-	(void) port;
-
-	// Requires split TX support
-	if (speed != proto::DeviceSpeed::highSpeed)
-		co_return proto::UsbError::other;
-
-	// This queue will become the default control pipe of our new device.
-	auto dma_obj = arch::dma_object<QueueHead>{memoryPool()};
-	auto queue = new QueueEntity{std::move(dma_obj), 0, 0, proto::PipeType::control, 64};
-	co_await queue->initialize(dmaSpace_);
-	_linkAsync(queue);
-
-	// Allocate an address for the device.
-	assert(!_addressStack.empty());
-	auto address = _addressStack.front();
-	_addressStack.pop();
-
-	if(logDeviceEnumeration)
-		std::cout << "ehci: Setting device address" << std::endl;
-
-	arch::dma_object<proto::SetupPacket> set_address{memoryPool()};
-	set_address->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
-			| proto::setup_type::toDevice;
-	set_address->request = proto::request_type::setAddress;
-	set_address->value = address;
-	set_address->index = 0;
-	set_address->length = 0;
-
-	(co_await _directTransfer(proto::ControlTransfer{proto::kXferToDevice,
-			set_address, arch::dma_buffer_view{}}, queue, 0)).unwrap();
-
-	queue->setAddress(address);
-
-	// Enquire the maximum packet size of the default control pipe.
-	if(logDeviceEnumeration)
-		std::cout << "ehci: Getting device descriptor header" << std::endl;
-
-	arch::dma_object<proto::SetupPacket> get_header{memoryPool()};
-	get_header->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
-			| proto::setup_type::toHost;
-	get_header->request = proto::request_type::getDescriptor;
-	get_header->value = proto::descriptor_type::device << 8;
-	get_header->index = 0;
-	get_header->length = 8;
-
-	arch::dma_object<proto::DeviceDescriptor> descriptor{memoryPool()};
-	auto transfer0 = co_await _directTransfer(proto::ControlTransfer{proto::kXferToHost,
-			get_header, descriptor.view_buffer().subview(0, 8)}, queue, 8);
-	if (!transfer0) {
-		std::println("ehci: failed to get device descriptor header");
-		co_return transfer0.error();
-	}
-
-	_activeDevices[address].controlStates[0].queueEntity = queue;
-	_activeDevices[address].controlStates[0].maxPacketSize = descriptor->maxPacketSize;
-
-	// Read the rest of the device descriptor.
-	if(logDeviceEnumeration)
-		std::cout << "ehci: Getting full device descriptor" << std::endl;
-
-	arch::dma_object<proto::SetupPacket> get_descriptor{memoryPool()};
-	get_descriptor->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
-			| proto::setup_type::toHost;
-	get_descriptor->request = proto::request_type::getDescriptor;
-	get_descriptor->value = proto::descriptor_type::device << 8;
-	get_descriptor->index = 0;
-	get_descriptor->length = sizeof(proto::DeviceDescriptor);
-
-	auto transfer1 = co_await transfer(address, 0, proto::ControlTransfer{proto::kXferToHost,
-			get_descriptor, descriptor.view_buffer()});
-	if (!transfer1) {
-		std::println("ehci: failed to get device descriptor");
-		co_return transfer1.error();
-	}
-	assert(descriptor->length == sizeof(proto::DeviceDescriptor));
-
-	// Read the configuration descriptor
-	arch::dma_object<proto::SetupPacket> getConfigDescriptor{memoryPool()};
-	arch::dma_object<proto::ConfigDescriptor> configDescriptor{memoryPool()};
-
-	getConfigDescriptor->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
-			| proto::setup_type::toHost;
-	getConfigDescriptor->request = proto::request_type::getDescriptor;
-	getConfigDescriptor->value = proto::descriptor_type::configuration << 8;
-	getConfigDescriptor->index = 0;
-	getConfigDescriptor->length = sizeof(proto::ConfigDescriptor);
-
-	auto transfer2 = co_await transfer(address, 0, proto::ControlTransfer{proto::kXferToHost,
-			getConfigDescriptor, configDescriptor.view_buffer()});
-	if (!transfer2) {
-		std::println("ehci: failed to get configuration descriptor");
-		co_return transfer2.error();
-	}
-	assert(configDescriptor->length == sizeof(proto::ConfigDescriptor));
-
-	// Select the first configuration in order to exit the addressing state
-	arch::dma_object<proto::SetupPacket> setConfig{memoryPool()};
-	setConfig->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
-			| proto::setup_type::toDevice;
-	setConfig->request = proto::request_type::setConfig;
-	setConfig->value = configDescriptor->configValue;
-	setConfig->index = 0;
-	setConfig->length = 0;
-	auto transfer3 = co_await transfer(address, 0, proto::ControlTransfer{proto::kXferToDevice,
-			setConfig, {}});
-	if (!transfer3) {
-		std::println("ehci: failed to set device configuration");
-		co_return transfer3.error();
-	}
-
-	char class_code[3], sub_class[3], protocol[3];
-	char vendor[5], product[5], release[5];
-	snprintf(class_code, 3, "%.2x", descriptor->deviceClass);
-	snprintf(sub_class, 3, "%.2x", descriptor->deviceSubclass);
-	snprintf(protocol, 3, "%.2x", descriptor->deviceProtocol);
-	snprintf(vendor, 5, "%.4x", descriptor->idVendor);
-	snprintf(product, 5, "%.4x", descriptor->idProduct);
-	snprintf(release, 5, "%.4x", descriptor->bcdDevice);
-
-	char name[3];
-	snprintf(name, 3, "%.2x", address);
-
-	if(descriptor->deviceClass == 0x09 && descriptor->deviceSubclass == 0) {
-		auto state = std::make_shared<DeviceState>(shared_from_this(), address);
-		auto newHub = (co_await createHubFromDevice(hub, proto::Device{std::move(state)}, port)).unwrap();
-		_enumerator.observeHub(std::move(newHub));
-	}
-
-	mbus_ng::Properties mbusDescriptor{
-		{"usb.type", mbus_ng::StringItem{"device"}},
-		{"usb.vendor", mbus_ng::StringItem{vendor}},
-		{"usb.product", mbus_ng::StringItem{product}},
-		{"usb.class", mbus_ng::StringItem{class_code}},
-		{"usb.subclass", mbus_ng::StringItem{sub_class}},
-		{"usb.protocol", mbus_ng::StringItem{protocol}},
-		{"usb.release", mbus_ng::StringItem{release}},
-		{"usb.hub_port", mbus_ng::StringItem{name}},
-		{"usb.bus", mbus_ng::StringItem{std::to_string(_entity.id())}},
-		{"usb.speed", mbus_ng::StringItem{"480"}},
-		{"unix.subsystem", mbus_ng::StringItem{"usb"}},
-	};
-
-	auto usbEntity = (co_await mbus_ng::Instance::global().createEntity(
-				"usb-ehci-dev-" + std::string{name}, mbusDescriptor)).unwrap();
-
-	[] (auto self, auto address, mbus_ng::EntityManager entity) -> async::detached {
-		while (true) {
-			auto [localLane, remoteLane] = helix::createStream();
-
-			// If this fails, too bad!
-			(void)(co_await entity.serveRemoteLane(std::move(remoteLane)));
-
-			auto state = std::make_shared<DeviceState>(self->shared_from_this(), address);
-			proto::serve(proto::Device{std::move(state)}, std::move(localLane));
-		}
-	}(this, address, std::move(usbEntity));
-
-	co_return frg::success;
+std::shared_ptr<proto::DeviceServerData>
+Controller::createDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) {
+	return std::make_shared<DeviceState>(shared_from_this(), -1, hub, port, speed);
 }
 
 async::detached Controller::handleIrqs() {

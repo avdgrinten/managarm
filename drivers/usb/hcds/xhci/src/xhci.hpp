@@ -126,7 +126,7 @@ struct Device final : proto::DeviceServerData, std::enable_shared_from_this<Devi
 	void submit(int endpoint);
 
 	async::result<frg::expected<proto::UsbError>>
-	enumerate();
+	initialize() override;
 
 	async::result<frg::expected<proto::UsbError>>
 	readDescriptor(arch::dma_buffer_view dest, uint16_t desc);
@@ -135,10 +135,10 @@ struct Device final : proto::DeviceServerData, std::enable_shared_from_this<Devi
 	setupEndpoint(int endpoint, proto::PipeType dir, size_t maxPacketSize, proto::EndpointType type, int interval);
 
 	async::result<frg::expected<proto::UsbError>>
-	configureHub(std::shared_ptr<proto::Hub> hub, proto::DeviceSpeed speed);
+	configureAsHub(std::shared_ptr<proto::Hub> hub) override;
 
 	async::result<frg::expected<proto::UsbError>>
-	updateEp0PacketSize(size_t maxPacketSize);
+	updateEp0MaxPacketSize(size_t maxPacketSize) override;
 
 
 	size_t slot() const {
@@ -151,6 +151,11 @@ struct Device final : proto::DeviceServerData, std::enable_shared_from_this<Devi
 
 	std::shared_ptr<EndpointState> endpoint(int endpointId) {
 		return _endpoints[endpointId - 1];
+	}
+
+	int address() override {
+		// TODO(qookie): This is wrong.
+		return _slotId;
 	}
 
 private:
@@ -307,7 +312,7 @@ struct RootHub final : proto::Hub {
 		return _proto;
 	}
 
-	auto entityId() {
+	mbus_ng::EntityId mbusEntityId() override {
 		return _entity.id();
 	}
 
@@ -336,8 +341,8 @@ struct Controller final : proto::BaseController {
 
 	async::detached initialize();
 
-	async::result<frg::expected<proto::UsbError>>
-	enumerateDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) override;
+	std::shared_ptr<proto::DeviceServerData>
+	createDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) override;
 
 	arch::contiguous_pool *memoryPool() {
 		return &_memoryPool;
