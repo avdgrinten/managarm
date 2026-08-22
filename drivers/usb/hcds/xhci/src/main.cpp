@@ -323,14 +323,8 @@ void Controller::ringDoorbell(uint8_t doorbell, uint8_t target, uint16_t stream_
 async::result<frg::expected<proto::UsbError>>
 Controller::enumerateDevice(std::shared_ptr<proto::Hub> parentHub, int port, proto::DeviceSpeed speed) {
 	auto device = std::make_shared<Device>(this, speed, parentHub, port);
-	auto [route, rootHub, rootHubPort] = device->routeString();
 
-	SupportedProtocol *proto = std::static_pointer_cast<RootHub>(rootHub)->protocol();
-
-	auto rootPort = rootHubPort + proto->compatiblePortStart - 1;
-
-	FRG_CO_TRY(co_await device->enumerate(rootPort, port, route, parentHub, speed, proto->slotType));
-	_devices[device->slot()] = device;
+	FRG_CO_TRY(co_await device->enumerate());
 
 	// If this is full speed, our guess for MPS might be wrong,
 	// get the first 8 bytes of the device descriptor to check.
@@ -371,6 +365,7 @@ Controller::enumerateDevice(std::shared_ptr<proto::Hub> parentHub, int port, pro
 
 	std::string mbps = protocols::usb::getSpeedMbps(speed);
 
+	auto [_route, rootHub, _rootPort] = device->routeString();
 	auto entity_id = std::static_pointer_cast<RootHub>(rootHub)->entityId();
 
 	mbus_ng::Properties mbusDescriptor{
@@ -925,10 +920,16 @@ static inline uint8_t getHcdSpeedId(proto::DeviceSpeed speed) {
 }
 
 async::result<frg::expected<proto::UsbError>>
-Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<proto::Hub> hub, proto::DeviceSpeed speed, int slotType) {
-	_slotId = FRG_CO_TRY(co_await _controller->enableSlot(slotType));
+Device::enumerate() {
+	auto [route, rootHub, rootHubPort] = routeString();
 
-	std::println("{} Slot {} allocated for port {} (route {:x})", _controller, _slotId, port, route);
+	SupportedProtocol *proto = std::static_pointer_cast<RootHub>(rootHub)->protocol();
+
+	auto rootPort = rootHubPort + proto->compatiblePortStart - 1;
+
+	_slotId = FRG_CO_TRY(co_await _controller->enableSlot(proto->slotType));
+
+	std::println("{} Slot {} allocated for port {} (route {:x})", _controller, _slotId, port(), route);
 
 	// Initialize slot context
 
@@ -943,7 +944,7 @@ Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<
 
 	slotCtx |= SlotFields::routeString(route);
 	slotCtx |= SlotFields::ctxEntries(1);
-	slotCtx |= SlotFields::speed(getHcdSpeedId(speed));
+	slotCtx |= SlotFields::speed(getHcdSpeedId(speed()));
 
 	// For LS/FS devices, look for a TT in the path, and fill out the appropriate fields if one exists.
 	// TODO(qookie): These fields should also be filled out for USB 3 hubs, when a device is plugged
@@ -952,7 +953,7 @@ Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<
 	if (ttHub) {
 		auto hubDevice = std::static_pointer_cast<Device>(ttHub->associatedState());
 
-		assert(hubDevice->_speed == proto::DeviceSpeed::highSpeed);
+		assert(hubDevice->speed() == proto::DeviceSpeed::highSpeed);
 
 		// We need to fill these fields out for split transactions.
 		slotCtx |= SlotFields::parentHubPort(ttHub->port());
@@ -962,7 +963,7 @@ Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<
 	slotCtx |= SlotFields::rootHubPort(rootPort);
 
 	size_t packetSize = 0;
-	switch (speed) {
+	switch (speed()) {
 		using enum proto::DeviceSpeed;
 
 		case lowSpeed:
@@ -970,13 +971,14 @@ Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<
 		case highSpeed: packetSize = 64; break;
 		case superSpeed: packetSize = 512; break;
 	}
-	_speed = speed;
 
 	co_await _initEpCtx(inputCtx, 0, proto::PipeType::control, packetSize, proto::EndpointType::control, 0);
 
 	_controller->setDeviceContext(_slotId, _devCtx);
 
 	FRG_CO_TRY(co_await _controller->addressDevice(_slotId, inputCtx));
+
+	_controller->linkDevice(shared_from_this());
 
 	std::println("{} Device successfully addressed", _controller);
 

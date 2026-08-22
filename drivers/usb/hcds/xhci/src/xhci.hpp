@@ -126,7 +126,7 @@ struct Device final : proto::DeviceServerData, std::enable_shared_from_this<Devi
 	void submit(int endpoint);
 
 	async::result<frg::expected<proto::UsbError>>
-	enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<proto::Hub> hub, proto::DeviceSpeed speed, int slotType);
+	enumerate();
 
 	async::result<frg::expected<proto::UsbError>>
 	readDescriptor(arch::dma_buffer_view dest, uint16_t desc);
@@ -149,10 +149,6 @@ struct Device final : proto::DeviceServerData, std::enable_shared_from_this<Devi
 		return _controller;
 	}
 
-	proto::DeviceSpeed speed() const {
-		return _speed;
-	}
-
 	std::shared_ptr<EndpointState> endpoint(int endpointId) {
 		return _endpoints[endpointId - 1];
 	}
@@ -167,8 +163,6 @@ private:
 	async::result<void> _initEpCtx(InputContext &ctx, int endpoint, proto::PipeType dir, size_t maxPacketSize, proto::EndpointType type, int interval);
 
 	std::array<std::shared_ptr<EndpointState>, 31> _endpoints;
-
-	proto::DeviceSpeed _speed{};
 };
 
 
@@ -371,6 +365,11 @@ struct Controller final : proto::BaseController {
 	void setDeviceContext(size_t slot, DeviceContext &ctx) {
 		_dcbaa[slot] = ctx.iova();
 		barrier.writeback(_dcbaa.view_buffer());
+	}
+
+	void linkDevice(std::shared_ptr<Device> device) {
+		assert(_devices[device->slot()] == nullptr);
+		_devices[device->slot()] = device;
 	}
 
 	void addRootPort(Port *port) {
