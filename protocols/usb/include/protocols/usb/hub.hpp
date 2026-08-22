@@ -38,8 +38,8 @@ protected:
 	~Hub() = default;
 
 public:
-	Hub(std::shared_ptr<Hub> parent, size_t port)
-	: parent_{parent}, port_{port} { }
+	Hub(std::shared_ptr<DeviceServerData> state)
+	: state_{state} { }
 
 	virtual size_t numPorts() = 0;
 	virtual async::result<PortState> pollState(int port) = 0;
@@ -50,16 +50,12 @@ public:
 		return UsbError::unsupported;
 	}
 
-	virtual std::shared_ptr<DeviceServerData> associatedState() {
-		return nullptr;
+	std::shared_ptr<DeviceServerData> state() const {
+		return state_;
 	}
 
-	std::shared_ptr<Hub> parent() const {
-		return parent_;
-	}
-
-	size_t port() const {
-		return port_;
+	bool rootHub() const {
+		return state_ == nullptr;
 	}
 
 	virtual mbus_ng::EntityId mbusEntityId() {
@@ -67,12 +63,11 @@ public:
 	}
 
 private:
-	std::shared_ptr<Hub> parent_;
-	size_t port_;
+	std::shared_ptr<DeviceServerData> state_;
 };
 
 async::result<frg::expected<UsbError, std::shared_ptr<Hub>>>
-createHubFromDevice(std::shared_ptr<Hub> parentHub, Device device, size_t port);
+createHubFromDevice(std::shared_ptr<DeviceServerData> device);
 
 // ----------------------------------------------------------------
 // Enumerator.

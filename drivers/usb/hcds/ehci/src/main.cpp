@@ -1094,7 +1094,7 @@ void Controller::_dump(QueueEntity *entity) {
 // ----------------------------------------------------------------
 
 Controller::RootHub::RootHub(Controller *controller)
-: Hub{nullptr, 0}, _controller{controller} {
+: Hub{nullptr}, _controller{controller} {
 	for (int i = 0; i < _controller->_numPorts; i++) {
 		_ports.push_back(std::make_unique<Port>());
 	}

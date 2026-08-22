@@ -28,7 +28,7 @@ struct Controller final : std::enable_shared_from_this<Controller>, proto::BaseC
 
 	struct RootHub final : proto::Hub {
 		RootHub(Controller *controller)
-		: Hub{nullptr, 0}, _controller{controller} { }
+		: Hub{nullptr}, _controller{controller} { }
 
 		size_t numPorts() override;
 		async::result<proto::PortState> pollState(int port) override;

@@ -88,8 +88,8 @@ std::shared_ptr<Hub> DeviceServerData::nearestTTHub() const {
 		return nullptr;
 
 	auto curHub = parent();
-	while (curHub->parent()) {
-		auto hubDevice = curHub->associatedState();
+	while (!curHub->rootHub()) {
+		auto hubDevice = curHub->state();
 
 		if (hubDevice->speed() == DeviceSpeed::highSpeed)
 			break;
@@ -97,15 +97,15 @@ std::shared_ptr<Hub> DeviceServerData::nearestTTHub() const {
 		assert(hubDevice->speed() == DeviceSpeed::lowSpeed
 				|| hubDevice->speed() == DeviceSpeed::fullSpeed);
 
-		curHub = curHub->parent();
+		curHub = hubDevice->parent();
 	}
 
 	// Root hubs don't count as TTs.
-	if (!curHub->parent()) {
+	if (curHub->rootHub()) {
 		return nullptr;
 	}
 
-	auto hubDevice = curHub->associatedState();
+	auto hubDevice = curHub->state();
 	assert(hubDevice->speed() == DeviceSpeed::highSpeed);
 	return curHub;
 }
@@ -116,7 +116,9 @@ DeviceServerData::routeString() const {
 
 	std::shared_ptr<Hub> curHub = parent();
 	int curPort = port();
-	while (curHub->parent()) {
+	while (!curHub->rootHub()) {
+		auto hubDevice = curHub->state();
+
 		// XHCI 6.2.2 Slot Context:
 		// If HS or FS hub in the path supports more than 14 ports the
 		// associated Route String Port field shall be set to 15.
@@ -126,8 +128,8 @@ DeviceServerData::routeString() const {
 		route <<= 4;
 		route |= curPort;
 
-		curPort = curHub->port();
-		curHub = curHub->parent();
+		curPort = hubDevice->port();
+		curHub = hubDevice->parent();
 	}
 
 	return std::make_tuple(route, curHub, curPort);
