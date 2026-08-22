@@ -593,23 +593,23 @@ void Interrupter::_clearPending() {
 }
 
 // ------------------------------------------------------------------------
-// Controller::Port
+// Port
 // ------------------------------------------------------------------------
 
-Controller::Port::Port(int id, arch::mem_space space, Controller *controller, SupportedProtocol *proto)
+Port::Port(int id, arch::mem_space space, Controller *controller, SupportedProtocol *proto)
 : _id{id}, _controller{controller}, _proto{proto}, _space{space} {
 }
 
-void Controller::Port::reset() {
+void Port::reset() {
 	std::println("{} Resetting port {}", _controller, _id);
 	_space.store(port::portsc, portsc::portPower(true) | portsc::portReset(true));
 }
 
-void Controller::Port::disable() {
+void Port::disable() {
 	_space.store(port::portsc, portsc::portPower(true) | portsc::portEnable(true));
 }
 
-void Controller::Port::resetChangeBits() {
+void Port::resetChangeBits() {
 	_space.store(port::portsc, portsc::portPower(true)
 			| portsc::connectStatusChange(true)
 			| portsc::portResetChange(true)
@@ -620,35 +620,35 @@ void Controller::Port::resetChangeBits() {
 			| portsc::portConfigErrorChange(true));
 }
 
-bool Controller::Port::isConnected() {
+bool Port::isConnected() {
 	auto portsc = _space.load(port::portsc);
 	return portsc & portsc::connectStatus;
 }
 
-bool Controller::Port::isPowered() {
+bool Port::isPowered() {
 	auto portsc = _space.load(port::portsc);
 	return portsc & portsc::portPower;
 }
 
-bool Controller::Port::isEnabled() {
+bool Port::isEnabled() {
 	return _space.load(port::portsc) & portsc::portEnable;
 }
 
-uint8_t Controller::Port::getLinkStatus() {
+uint8_t Port::getLinkStatus() {
 	return _space.load(port::portsc) & portsc::portLinkStatus;
 }
 
-uint8_t Controller::Port::getSpeed() {
+uint8_t Port::getSpeed() {
 	return _space.load(port::portsc) & portsc::portSpeed;
 }
 
-void Controller::Port::transitionToLinkStatus(uint8_t status) {
+void Port::transitionToLinkStatus(uint8_t status) {
 	_space.store(port::portsc, portsc::portPower(true)
 			| portsc::portLinkStatus(status)
 			| portsc::portLinkStatusStrobe(true));
 }
 
-async::result<void> Controller::Port::setPower(bool on) {
+async::result<void> Port::setPower(bool on) {
 	_space.store(port::portsc, portsc::portPower(on));
 
 	// From the XHCI spec: "After modifying PP, software shall read PP
@@ -657,7 +657,7 @@ async::result<void> Controller::Port::setPower(bool on) {
 		co_await helix_ng::sleepFor(1'000'000);
 }
 
-async::detached Controller::Port::initPort() {
+async::detached Port::initPort() {
 	// Power good delay of Linux' xHCI root hubs (bPwrOn2PwrGood: 20 ms for USB 2, 100 ms for USB 3).
 	uint64_t powerGoodDelay = _proto->major == 3 ? 100'000'000 : 20'000'000;
 
@@ -680,12 +680,12 @@ async::detached Controller::Port::initPort() {
 	_pollEv.raise();
 }
 
-async::result<proto::PortState> Controller::Port::pollState() {
+async::result<proto::PortState> Port::pollState() {
 	_pollSeq = co_await _pollEv.async_wait(_pollSeq);
 	co_return _state;
 }
 
-async::result<frg::expected<proto::UsbError, void>> Controller::Port::issueReset() {
+async::result<frg::expected<proto::UsbError, void>> Port::issueReset() {
 	// We know something is connected if we're here (CCS=1)
 
 	// Reset the port only for USB 2 devices.
@@ -718,7 +718,7 @@ async::result<frg::expected<proto::UsbError, void>> Controller::Port::issueReset
 	co_return frg::success;
 }
 
-async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> Controller::Port::querySpeed() {
+async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> Port::querySpeed() {
 	uint8_t speedId = getSpeed();
 
 	std::optional<proto::DeviceSpeed> speed;
@@ -752,10 +752,10 @@ async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> Controller::Po
 }
 
 // ------------------------------------------------------------------------
-// Controller::RootHub
+// RootHub
 // ------------------------------------------------------------------------
 
-Controller::RootHub::RootHub(Controller *controller, SupportedProtocol &proto, arch::mem_space portSpace, mbus_ng::EntityManager entity)
+RootHub::RootHub(Controller *controller, SupportedProtocol &proto, arch::mem_space portSpace, mbus_ng::EntityManager entity)
 : Hub{nullptr, 0}, _controller{controller}, _proto{&proto}, _entity{std::move(entity)} {
 	for (size_t i = 0; i < proto.compatiblePortCount; i++) {
 		_ports.push_back(std::make_unique<Port>(
@@ -763,25 +763,24 @@ Controller::RootHub::RootHub(Controller *controller, SupportedProtocol &proto, a
 					port::spaceForIndex(portSpace, i),
 					controller, &proto));
 		_ports.back()->initPort();
-		_controller->_ports[(i + proto.compatiblePortStart - 1)] =
-				_ports.back().get();
+		_controller->addRootPort(_ports.back().get());
 	}
 }
 
-size_t Controller::RootHub::numPorts() {
+size_t RootHub::numPorts() {
 	return _proto->compatiblePortCount;
 }
 
-async::result<proto::PortState> Controller::RootHub::pollState(int port) {
+async::result<proto::PortState> RootHub::pollState(int port) {
 	co_return co_await _ports[port - 1]->pollState();
 }
 
-async::result<frg::expected<proto::UsbError, void>> Controller::RootHub::issueReset(int port) {
+async::result<frg::expected<proto::UsbError, void>> RootHub::issueReset(int port) {
         FRG_CO_TRY(co_await _ports[port - 1]->issueReset());
 	co_return frg::success;
 }
 
-async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> Controller::RootHub::querySpeed(int port) {
+async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> RootHub::querySpeed(int port) {
 	co_return FRG_CO_TRY(co_await _ports[port - 1]->querySpeed());
 }
 
