@@ -973,11 +973,17 @@ ManagedSpace::ManagedPage::detachMonitor(MonitorType type) {
 	return {frg::adopt_rc, ptr};
 }
 
+bool ManagedSpace::ManagedPage::hasMonitor(MonitorType type) {
+	auto bit = uint8_t{1} << static_cast<unsigned int>(type);
+	return attachedMonitors & bit;
+}
+
 bool ManagedSpace::ManagedPage::hasUnwrittenData() {
 	return transactionState == TxState::dirty
 			|| transactionState == TxState::pendingWriteback
 			|| transactionState == TxState::wantWriteback
-			|| transactionState == TxState::writeback;
+			|| transactionState == TxState::writeback
+			|| stillDirty;
 }
 
 std::expected<smarter::shared_ptr<ManagedSpace>, Error> ManagedSpace::create(
@@ -1078,6 +1084,9 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 						assert(!page->stillDirty || page->discardMode == DiscardMode::dropDirty);
 						// The frame is being discarded so it doesn't need to be written back.
 						page->stillDirty = false;
+						auto writebackMonitor = page->detachMonitor(MonitorType::writeback);
+						if(writebackMonitor)
+							pendingMonitors.push_back(writebackMonitor.release());
 						page->transactionState = TxState::none;
 						anyDiscardQueued |= _disposeDiscarded(page);
 					}
@@ -1136,6 +1145,10 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 						anyDirty = true;
 					} else {
 						assert(!page->stillDirty || page->discardMode == DiscardMode::dropDirty);
+						page->stillDirty = false;
+						auto writebackMonitor = page->detachMonitor(MonitorType::writeback);
+						if(writebackMonitor)
+							pendingMonitors.push_back(writebackMonitor.release());
 						page->transactionState = TxState::none;
 						anyDiscardQueued |= _disposeDiscarded(page);
 					}
@@ -1328,6 +1341,7 @@ coroutine<void> ManagedSpace::_runInvalidationLoop() {
 		bool raiseDiscard = false;
 		bool anyDirty = false;
 		bool anyExpedite = false;
+		MonitorPendingList pendingMonitors;
 		{
 			auto irqLock = frg::guard(&irqMutex());
 			auto lock = frg::guard(&mutex);
@@ -1344,11 +1358,16 @@ coroutine<void> ManagedSpace::_runInvalidationLoop() {
 					anyDirty = true;
 				} else {
 					assert(!page->stillDirty || page->discardMode == DiscardMode::dropDirty);
+					page->stillDirty = false;
+					auto writebackMonitor = page->detachMonitor(MonitorType::writeback);
+					if(writebackMonitor)
+						pendingMonitors.push_back(writebackMonitor.release());
 					page->transactionState = TxState::none;
 					raiseDiscard |= _disposeDiscarded(page);
 				}
 			}
 		}
+		_raiseMonitors(pendingMonitors);
 		if(raiseDiscard)
 			_discardEvent.raise();
 		if(anyDirty)
@@ -1456,8 +1475,9 @@ void ManagedSpace::_enqueueDirty(ManagedPage *page, bool &raiseExpedite) {
 	_dirtyList.push_back(&page->cachePage);
 	if(!_writebackDeadline)
 		_writebackDeadline = getClockNanos() + writebackDelayNanos;
-	// Discard waiters must not sit out the writeback delay; see discardPage().
-	if(page->discarded && !_writebackExpedited) {
+	// Discard and writebackFence() waiters must not sit out the writeback delay.
+	if((page->discarded || page->hasMonitor(MonitorType::writeback))
+			&& !_writebackExpedited) {
 		_writebackExpedited = true;
 		raiseExpedite = true;
 	}
@@ -2072,8 +2092,8 @@ coroutine<frg::expected<Error>> BackingMemory::writebackFence(uintptr_t offset, 
 				if(pit && pit->hasUnwrittenData()) {
 					monitor = pit->requireMonitor(ManagedSpace::MonitorType::writeback);
 					needSecond = pit->transactionState == ManagedSpace::TxState::writeback;
-					if(pit->transactionState == ManagedSpace::TxState::dirty
-							&& !_managed->_writebackExpedited) {
+					// Later pages in the range can be in TxState::dirty; expedite regardless.
+					if(!_managed->_writebackExpedited) {
 						_managed->_writebackExpedited = true;
 						raiseExpedite = true;
 					}

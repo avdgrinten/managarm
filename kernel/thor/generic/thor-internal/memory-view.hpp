@@ -768,6 +768,8 @@ struct ManagedSpace : CacheBundle {
 		frg::intrusive_shared_ptr<TransactionMonitor, Allocator> requireMonitor(MonitorType type);
 		// Detaches and returns the monitor of the given type, or null.
 		frg::intrusive_shared_ptr<TransactionMonitor, Allocator> detachMonitor(MonitorType type);
+		// Whether a monitor of the given type is attached.
+		bool hasMonitor(MonitorType type);
 		// Whether the page holds data that has not reached the backing store yet.
 		bool hasUnwrittenData();
 
