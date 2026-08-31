@@ -973,6 +973,13 @@ ManagedSpace::ManagedPage::detachMonitor(MonitorType type) {
 	return {frg::adopt_rc, ptr};
 }
 
+bool ManagedSpace::ManagedPage::hasUnwrittenData() {
+	return transactionState == TxState::dirty
+			|| transactionState == TxState::pendingWriteback
+			|| transactionState == TxState::wantWriteback
+			|| transactionState == TxState::writeback;
+}
+
 std::expected<smarter::shared_ptr<ManagedSpace>, Error> ManagedSpace::create(
 		size_t length, bool readahead) {
 	if(length > backingMemoryLength)
@@ -2062,22 +2069,15 @@ coroutine<frg::expected<Error>> BackingMemory::writebackFence(uintptr_t offset, 
 			while(pg < size) {
 				size_t index = (offset + pg) >> kPageShift;
 				auto pit = _managed->pages.find(index);
-				if(pit) {
+				if(pit && pit->hasUnwrittenData()) {
+					monitor = pit->requireMonitor(ManagedSpace::MonitorType::writeback);
+					needSecond = pit->transactionState == ManagedSpace::TxState::writeback;
 					if(pit->transactionState == ManagedSpace::TxState::dirty
-							|| pit->transactionState == ManagedSpace::TxState::pendingWriteback
-							|| pit->transactionState == ManagedSpace::TxState::wantWriteback) {
-						monitor = pit->requireMonitor(ManagedSpace::MonitorType::writeback);
-						if(pit->transactionState == ManagedSpace::TxState::dirty
-								&& !_managed->_writebackExpedited) {
-							_managed->_writebackExpedited = true;
-							raiseExpedite = true;
-						}
-						break;
-					} else if(pit->transactionState == ManagedSpace::TxState::writeback) {
-						monitor = pit->requireMonitor(ManagedSpace::MonitorType::writeback);
-						needSecond = true;
-						break;
+							&& !_managed->_writebackExpedited) {
+						_managed->_writebackExpedited = true;
+						raiseExpedite = true;
 					}
+					break;
 				}
 				pg += kPageSize;
 			}

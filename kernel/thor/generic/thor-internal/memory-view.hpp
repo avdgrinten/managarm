@@ -724,7 +724,7 @@ struct ManagedSpace : CacheBundle {
 	// * Attached by a waiter in TxState::wantInitialization or TxState::initialization.
 	// * Completed when leaving TxState::initialization.
 	// For MonitorType::writeback:
-	// * Attached by a waiter in TxState::dirty, pendingWriteback, wantWriteback or writeback.
+	// * Attached by a waiter to any page with unwritten data; see ManagedPage::hasUnwrittenData().
 	// * Completed when leaving TxState::writeback (or when the dirty data is dropped).
 	// For MonitorType::discard (waiting for a discarded page's entry to be erased):
 	// * Attached by a waiter to any page that has `discarded` set, in any TxState;
@@ -768,6 +768,8 @@ struct ManagedSpace : CacheBundle {
 		frg::intrusive_shared_ptr<TransactionMonitor, Allocator> requireMonitor(MonitorType type);
 		// Detaches and returns the monitor of the given type, or null.
 		frg::intrusive_shared_ptr<TransactionMonitor, Allocator> detachMonitor(MonitorType type);
+		// Whether the page holds data that has not reached the backing store yet.
+		bool hasUnwrittenData();
 
 		PhysicalAddr physical = PhysicalAddr(-1);
 		LoadState loadState{LoadState::missing};
