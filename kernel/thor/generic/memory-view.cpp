@@ -23,6 +23,9 @@ namespace {
 
 	// Number of pages that BackingMemory::invalidateRange() discards per critical section.
 	constexpr size_t discardChunkSize = 512;
+
+	// Number of page entries that BackingMemory::writebackFence() scans per critical section.
+	constexpr size_t fenceChunkSize = 512;
 }
 
 // --------------------------------------------------------
@@ -2069,45 +2072,62 @@ Error BackingMemory::updateRange(ManageRequest type, size_t offset, size_t lengt
 }
 
 coroutine<frg::expected<Error>> BackingMemory::writebackFence(uintptr_t offset, size_t size) {
+	assert(currentIpl() == ipl::exceptionalWork);
 	if (offset & (kPageSize - 1))
 		co_return Error::illegalArgs;
 	if (size & (kPageSize - 1))
 		co_return Error::illegalArgs;
+	if (offset > backingMemoryLength || size > backingMemoryLength - offset)
+		co_return Error::bufferTooSmall;
 
 	// Note that writebackFence() expedites writeback
 	// (otherwise, callers would need to wait for the full writebackDelayNanos).
 
-	size_t pg = 0;
-	while(pg < size) {
+	auto limitPage = (offset + size) >> kPageShift;
+
+	uint64_t cursor = offset >> kPageShift;
+	while(cursor < limitPage) {
+		uint64_t index;
 		frg::intrusive_shared_ptr<ManagedSpace::TransactionMonitor, Allocator> monitor;
 		bool needSecond = false;
 		bool raiseExpedite = false;
+		bool exhausted = false;
 		{
 			auto irqLock = frg::guard(&irqMutex());
 			auto lock = frg::guard(&_managed->mutex);
 
-			while(pg < size) {
-				size_t index = (offset + pg) >> kPageShift;
-				auto pit = _managed->pages.find(index);
-				if(pit && pit->hasUnwrittenData()) {
-					monitor = pit->requireMonitor(ManagedSpace::MonitorType::writeback);
-					needSecond = pit->transactionState == ManagedSpace::TxState::writeback;
-					// Later pages in the range can be in TxState::dirty; expedite regardless.
-					if(!_managed->_writebackExpedited) {
-						_managed->_writebackExpedited = true;
-						raiseExpedite = true;
-					}
+			// Skip over absent entries and scan in chunks
+			// so that the spinlock is not held for an unbounded time.
+			auto it = _managed->pages.lower_bound(cursor);
+			for(size_t i = 0; i < fenceChunkSize; ++i) {
+				if(it == _managed->pages.end() || it->cachePage.identity >= limitPage) {
+					exhausted = true;
 					break;
 				}
-				pg += kPageSize;
+				auto *pit = &*it;
+				++it;
+				index = pit->cachePage.identity;
+				cursor = index + 1;
+				if(!pit->hasUnwrittenData())
+					continue;
+				monitor = pit->requireMonitor(ManagedSpace::MonitorType::writeback);
+				needSecond = pit->transactionState == ManagedSpace::TxState::writeback;
+				// Later pages in the range can be in TxState::dirty; expedite regardless.
+				if(!_managed->_writebackExpedited) {
+					_managed->_writebackExpedited = true;
+					raiseExpedite = true;
+				}
+				break;
 			}
 		}
 		if(raiseExpedite)
 			_managed->_expediteEvent.raise();
 
-		if(!monitor)
+		if(exhausted)
 			break;
 
+		if(!monitor)
+			continue;
 		co_await monitor->event.wait();
 
 		// If the writeback was already in progress, it is not guaranteed that it did write
@@ -2119,7 +2139,6 @@ coroutine<frg::expected<Error>> BackingMemory::writebackFence(uintptr_t offset, 
 				auto irqLock = frg::guard(&irqMutex());
 				auto lock = frg::guard(&_managed->mutex);
 
-				size_t index = (offset + pg) >> kPageShift;
 				auto pit = _managed->pages.find(index);
 				if(pit && (pit->transactionState == ManagedSpace::TxState::wantWriteback
 						|| pit->transactionState == ManagedSpace::TxState::writeback))
@@ -2129,8 +2148,6 @@ coroutine<frg::expected<Error>> BackingMemory::writebackFence(uintptr_t offset, 
 			if(monitor)
 				co_await monitor->event.wait();
 		}
-
-		pg += kPageSize;
 	}
 
 	co_return {};
