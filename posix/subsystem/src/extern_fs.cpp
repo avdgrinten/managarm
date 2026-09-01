@@ -45,6 +45,11 @@ struct Superblock final : FsSuperblock {
 	smarter::shared_ptr<FsLink> internalizeLink(FsLink *parent, std::string name,
 			smarter::shared_ptr<Node> target);
 
+	// Called from destructors. The entry may already belong to a newer object with the same key.
+	void forgetStructural(uint64_t id);
+	void forgetPeripheralNode(uint64_t id);
+	void forgetLink(uint64_t ownerId, const std::string &name, uint64_t targetId);
+
 private:
 	helix::UniqueLane _lane;
 	std::map<uint64_t, smarter::weak_ptr<DirectoryNode>> _activeStructural;
@@ -187,10 +192,12 @@ struct Node : FsNode {
 
 public:
 	Node(uint64_t inode, helix::UniqueLane lane, Superblock *sb)
-	: FsNode{sb}, _inode{inode}, _lane{std::move(lane)} { }
+	: FsNode{sb}, _sb{sb}, _inode{inode}, _lane{std::move(lane)} { }
 
 protected:
 	~Node() = default;
+
+	Superblock *_sb;
 
 public:
 	uint64_t getInode() {
@@ -360,6 +367,10 @@ private:
 public:
 	RegularNode(Superblock *sb, uint64_t inode, helix::UniqueLane lane)
 	: Node{inode, std::move(lane), sb} { }
+
+	~RegularNode() {
+		_sb->forgetPeripheralNode(getInode());
+	}
 };
 
 struct SymlinkNode final : Node {
@@ -397,6 +408,10 @@ private:
 public:
 	SymlinkNode(Superblock *sb, uint64_t inode, helix::UniqueLane lane)
 	: Node{inode, std::move(lane), sb} { }
+
+	~SymlinkNode() {
+		_sb->forgetPeripheralNode(getInode());
+	}
 };
 
 struct Link final : FsLink {
@@ -442,23 +457,30 @@ public:
 		_name = std::move(name);
 	}
 
-private:
 	std::string getName() override {
 		assert(_owner);
 		return _name;
 	}
 
-public:
 	// Constructs the root link of the mount, which has neither an owner nor a name.
-	explicit Link(smarter::shared_ptr<FsNode> target)
-	: _target{std::move(target)} { }
+	Link(Superblock *sb, smarter::shared_ptr<FsNode> target)
+	: _sb{sb}, _target{std::move(target)} { }
 
-	Link(smarter::shared_ptr<FsLink> owner, std::string name, smarter::shared_ptr<FsNode> target)
-	: _owner{std::move(owner)}, _name{std::move(name)}, _target{std::move(target)} {
+	Link(Superblock *sb, smarter::shared_ptr<FsLink> owner, std::string name,
+			smarter::shared_ptr<FsNode> target)
+	: _sb{sb}, _owner{std::move(owner)}, _name{std::move(name)}, _target{std::move(target)} {
 		assert(_owner);
 	}
 
+	~Link() {
+		// The root link is not interned.
+		if(_owner)
+			_sb->forgetLink(static_cast<Node *>(_owner->getTarget().get())->getInode(),
+					_name, static_cast<Node *>(_target.get())->getInode());
+	}
+
 private:
+	Superblock *_sb;
 	smarter::shared_ptr<FsLink> _owner;
 	std::string _name;
 	smarter::shared_ptr<FsNode> _target;
@@ -880,10 +902,11 @@ private:
 
 public:
 	DirectoryNode(Superblock *sb, uint64_t inode, helix::UniqueLane lane)
-	: Node{inode, std::move(lane), sb}, _sb{sb} { }
+	: Node{inode, std::move(lane), sb} { }
 
-private:
-	Superblock *_sb;
+	~DirectoryNode() {
+		_sb->forgetStructural(getInode());
+	}
 };
 
 Superblock::Superblock(helix::UniqueLane lane, std::shared_ptr<UnixDevice> device)
@@ -960,7 +983,7 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
 }
 
 smarter::shared_ptr<FsLink> Superblock::internalizeRoot(uint64_t id, helix::UniqueLane lane) {
-	return makeFsShared<Link>(internalizeDirectory(id, std::move(lane)));
+	return makeFsShared<Link>(this, internalizeDirectory(id, std::move(lane)));
 }
 
 smarter::shared_ptr<Node> Superblock::internalizeDirectory(uint64_t id, helix::UniqueLane lane) {
@@ -1008,9 +1031,28 @@ smarter::shared_ptr<FsLink> Superblock::internalizeLink(FsLink *parent,
 	if(auto intern = entry->lock(); intern)
 		return intern;
 
-	auto link = makeFsShared<Link>(parent->sharedFromThis(), std::move(name), std::move(target));
+	auto link = makeFsShared<Link>(this, parent->sharedFromThis(),
+			std::move(name), std::move(target));
 	*entry = link;
 	return link;
+}
+
+void Superblock::forgetStructural(uint64_t id) {
+	auto it = _activeStructural.find(id);
+	if(it != _activeStructural.end() && !it->second.lock())
+		_activeStructural.erase(it);
+}
+
+void Superblock::forgetPeripheralNode(uint64_t id) {
+	auto it = _activePeripheralNodes.find(id);
+	if(it != _activePeripheralNodes.end() && !it->second.lock())
+		_activePeripheralNodes.erase(it);
+}
+
+void Superblock::forgetLink(uint64_t ownerId, const std::string &name, uint64_t targetId) {
+	auto it = _activeLinks.find({ownerId, name, targetId});
+	if(it != _activeLinks.end() && !it->second.lock())
+		_activeLinks.erase(it);
 }
 
 async::result<frg::expected<Error, FsStats>> Superblock::getFsStats() {
