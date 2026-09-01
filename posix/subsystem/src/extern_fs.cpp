@@ -491,6 +491,9 @@ private:
 	}
 
 	expected<std::string> readSymlink(FsLink *, Process *) override {
+		if(_cachedTarget)
+			co_return *_cachedTarget;
+
 		managarm::fs::CntRequest req;
 		req.set_req_type(managarm::fs::CntReqType::NODE_READ_SYMLINK);
 
@@ -513,7 +516,12 @@ private:
 		if(resp.error() != managarm::fs::Errors::SUCCESS)
 			co_return resp.error() | toPosixError;
 
-		co_return std::string{static_cast<char *>(recv_target.data()), recv_target.length()};
+		std::string target{static_cast<char *>(recv_target.data()), recv_target.length()};
+		// On client-exclusive mounts, symlink contents cannot change:
+		// there is no way to rewrite a symlink in place, and replacing it creates a new inode.
+		if(_sb->nameCacheEnabled())
+			_cachedTarget = target;
+		co_return target;
 	}
 
 public:
@@ -523,6 +531,9 @@ public:
 	~SymlinkNode() {
 		_sb->forgetPeripheralNode(getInode());
 	}
+
+private:
+	std::optional<std::string> _cachedTarget;
 };
 
 async::result<frg::expected<Error>> Link::obstruct() {
