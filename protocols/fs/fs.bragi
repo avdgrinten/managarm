@@ -70,6 +70,13 @@ consts FileCaps uint32 {
 	FC_POSIX_LANE = 2
 }
 
+consts MountCaps uint64 {
+	// The server never modifies directory entries on its own:
+	// all directory entry mutations originate from requests sent by the client.
+	// Allows the client to cache the directory hierarchy.
+	MC_CLIENT_EXCLUSIVE_NAMESPACE = 1
+}
+
 enum CntReqType {
 	NONE = 0,
 
@@ -940,6 +947,7 @@ tail:
 message MountResponse 52 {
 head(128):
 	Errors error;
+	uint64 caps;
 }
 
 message VtSetModeRequest 53 {

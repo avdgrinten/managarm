@@ -114,7 +114,7 @@ struct HandlePartition {
 			fs = std::make_unique<btrfs::FileSystem>(partition);
 			co_await static_cast<btrfs::FileSystem *>(fs.get())->init();
 		} else {
-			managarm::fs::SvrResponse resp;
+			managarm::fs::MountResponse resp;
 			resp.set_error(managarm::fs::Errors::NO_BACKING_DEVICE);
 
 			auto ser = resp.SerializeAsString();
@@ -131,8 +131,9 @@ struct HandlePartition {
 		protocols::fs::serveNode(std::move(local_lane), fs->accessRoot(),
 				fs->nodeOps());
 
-		managarm::fs::SvrResponse resp;
+		managarm::fs::MountResponse resp;
 		resp.set_error(managarm::fs::Errors::SUCCESS);
+		resp.set_caps(managarm::fs::MountCaps::MC_CLIENT_EXCLUSIVE_NAMESPACE);
 
 		auto ser = resp.SerializeAsString();
 		auto [send_resp, push_node] = co_await helix_ng::exchangeMsgs(
@@ -621,7 +622,7 @@ struct HandleDevice {
 		if(!tailRes)
 			co_return std::unexpected(tailRes.error());
 
-		managarm::fs::SvrResponse resp;
+		managarm::fs::MountResponse resp;
 		resp.set_error(managarm::fs::Errors::ILLEGAL_OPERATION_TARGET);
 
 		auto ser = resp.SerializeAsString();
