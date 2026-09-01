@@ -685,9 +685,9 @@ private:
 		if(resp.error() == managarm::fs::Errors::SUCCESS) {
 			HEL_CHECK(pullNode.error());
 
-			auto child = _sb->internalizeStructural(parent, name,
+			auto child = _sb->internalizePeripheralNode(managarm::fs::FileType::SYMLINK,
 					resp.id(), pullNode.descriptor());
-			co_return child;
+			co_return _sb->internalizeLink(parent, name, std::move(child));
 		} else {
 			co_return resp.error() | toPosixError;
 		}
