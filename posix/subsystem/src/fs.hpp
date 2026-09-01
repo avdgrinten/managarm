@@ -103,6 +103,11 @@ public:
 		return selfPtr_.lock();
 	}
 
+	smarter::borrowed_ptr<FsLink, LinkRc> selfPtr() {
+		assert(selfPtr_);
+		return selfPtr_;
+	}
+
 private:
 	smarter::borrowed_ptr<FsLink, LinkRc> selfPtr_;
 };

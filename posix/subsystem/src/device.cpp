@@ -397,9 +397,10 @@ FutureMaybe<smarter::shared_ptr<FsLink, LinkRc>> mountExternalDevice(helix::Borr
 	HEL_CHECK(pull_node.error());
 
 	managarm::fs::MountResponse resp;
-	resp.ParseFromArray(recv_resp.data(), recv_resp.length());
+	auto parsed = resp.ParseFromArray(recv_resp.data(), recv_resp.length());
 	recv_resp.reset();
+	assert(parsed);
 	assert(resp.error() == managarm::fs::Errors::SUCCESS);
-	co_return extern_fs::createRoot(lane.dup(), pull_node.descriptor(), device);
+	co_return extern_fs::createRoot(lane.dup(), pull_node.descriptor(), device, resp.caps());
 }
 
