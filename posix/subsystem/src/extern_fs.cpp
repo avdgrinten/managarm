@@ -104,6 +104,7 @@ private:
 	size_t _cacheHash = 0;
 	// Hook for the name cache's hash table chain.
 	frg::default_list_hook<Link> _cacheHashHook;
+	frg::default_list_hook<Link> _cacheOwnerHook;
 };
 
 struct Superblock final : FsSuperblock, LinkReclaimer {
@@ -151,9 +152,19 @@ struct Superblock final : FsSuperblock, LinkReclaimer {
 	void nameCacheInsert(Link *link);
 	void nameCacheInvalidate(FsNode *dir, const std::string &name);
 
+	using NameCacheOwnerList = frg::intrusive_list<Link,
+			frg::locate_member<Link, frg::default_list_hook<Link>, &Link::_cacheOwnerHook>>;
+
+	void nameCachePurge(DirectoryNode *dir);
+
+	// Called once the server reports that it removed the directory with the given inode.
+	// There may still be negative links cached for this directory; retireDirectory() removes them.
+	void retireDirectory(uint64_t inode);
+
 private:
 	using NameCacheBucket = frg::intrusive_list<Link,
 			frg::locate_member<Link, frg::default_list_hook<Link>, &Link::_cacheHashHook>>;
+
 	void onReclaim(LinkMetaObjectBase *meta) override;
 	Link *nameCacheFind(FsNode *dir, const std::string &name, size_t hash);
 	void nameCacheUnhash(Link *link);
@@ -1006,6 +1017,7 @@ private:
 			co_return resp.error() | toPosixError;
 
 		invalidateCache(name);
+		_sb->retireDirectory(resp.id());
 		co_return {};
 	}
 
@@ -1066,6 +1078,9 @@ public:
 	void cacheLink(FsLink *parent, const std::string &name, FsLink *link) {
 		if(!_sb->nameCacheEnabled())
 			return;
+		// A lookup that raced the removal of this directory must not revive it.
+		if(_removed)
+			return;
 		// PathResolver never resolves these through the cache.
 		if(name == "." || name == "..")
 			return;
@@ -1096,8 +1111,17 @@ public:
 	: Node{inode, std::move(lane), sb} { }
 
 	~DirectoryNode() {
+		assert(_cacheEntries.empty());
 		_sb->forgetStructural(getInode());
 	}
+
+private:
+	friend struct Superblock;
+
+	// Entries that a directory owns, so that they can be dropped when the directory itself is removed.
+	Superblock::NameCacheOwnerList _cacheEntries;
+	// Set once the server removed the directory, see Superblock::retireDirectory().
+	bool _removed = false;
 };
 
 Superblock::Superblock(helix::UniqueLane lane, std::shared_ptr<UnixDevice> device,
@@ -1178,6 +1202,9 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	_activeLinks.erase({source_node->getInode(), source->getName(), shared_node->getInode()});
 	slink->renameTo(directory->sharedFromThis(), name);
 	_activeLinks[{target_node->getInode(), name, shared_node->getInode()}] = source->sharedFromThis();
+
+	if(resp.id() && resp.file_type() == managarm::fs::FileType::DIRECTORY)
+		retireDirectory(resp.id());
 	co_return source->sharedFromThis();
 }
 
@@ -1292,6 +1319,9 @@ void Superblock::nameCacheInsert(Link *link) {
 	// The link stays alive on its own: the reclaimer holds a reference from construction on.
 	link->_cacheHash = hash;
 	_nameCacheBuckets[hash & (nameCacheBuckets - 1)].push_front(link);
+	// Let the containing directory remember the link such that we can purge it on rmdir().
+	assert(link->ownerNode()->getType() == VfsType::directory);
+	static_cast<DirectoryNode *>(link->ownerNode())->_cacheEntries.push_front(link);
 }
 
 void Superblock::nameCacheInvalidate(FsNode *dir, const std::string &name) {
@@ -1302,6 +1332,8 @@ void Superblock::nameCacheInvalidate(FsNode *dir, const std::string &name) {
 void Superblock::nameCacheUnhash(Link *link) {
 	auto &bucket = _nameCacheBuckets[link->_cacheHash & (nameCacheBuckets - 1)];
 	bucket.erase(bucket.iterator_to(link));
+	auto &owned = static_cast<DirectoryNode *>(link->ownerNode())->_cacheEntries;
+	owned.erase(owned.iterator_to(link));
 }
 
 // Drops an entry from the cache: it cannot be found by name anymore, hence it is only worth
@@ -1313,8 +1345,29 @@ void Superblock::nameCacheEvict(Link *link) {
 
 void Superblock::onReclaim(LinkMetaObjectBase *meta) {
 	auto link = static_cast<LinkMetaObject<Link> *>(meta)->get();
+	// Entries reference the link of the directory that owns them; hence a directory
+	// with cache entries is never reclaimable here.
+	assert(!link->_target || link->_target->getType() != VfsType::directory
+			|| static_cast<DirectoryNode *>(link->_target.get())->_cacheEntries.empty());
 	if(link->_cacheHashHook.in_list)
 		nameCacheUnhash(link);
+}
+
+void Superblock::nameCachePurge(DirectoryNode *dir) {
+	// Evicting an entry removes it from the list, so re-read the list on every step.
+	while(!dir->_cacheEntries.empty())
+		nameCacheEvict(dir->_cacheEntries.front());
+}
+
+void Superblock::retireDirectory(uint64_t inode) {
+	// There is nothing to drop for a directory that we never interned.
+	smarter::shared_ptr<DirectoryNode> dir;
+	if(auto it = _activeStructural.find(inode); it != _activeStructural.end())
+		dir = it->second.lock();
+	if(dir) {
+		dir->_removed = true;
+		nameCachePurge(dir.get());
+	}
 }
 
 async::result<frg::expected<Error, FsStats>> Superblock::getFsStats() {
