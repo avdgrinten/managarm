@@ -2092,7 +2092,8 @@ struct HandleNodeRequest {
 			co_return {};
 		}
 		resp.set_error(managarm::fs::Errors::SUCCESS);
-		resp.set_serial(result.value());
+		resp.set_id(std::get<0>(result.value()));
+		resp.set_serial(std::get<1>(result.value()));
 
 		auto ser = resp.SerializeAsString();
 		auto [send_resp] = co_await helix_ng::exchangeMsgs(

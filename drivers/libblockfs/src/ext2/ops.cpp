@@ -182,7 +182,8 @@ async::result<std::expected<uint64_t, protocols::fs::Error>> unlink(std::shared_
 	co_return self->dirSerial;
 }
 
-async::result<std::expected<uint64_t, protocols::fs::Error>> rmdir(std::shared_ptr<void> object, std::string name) {
+async::result<std::expected<protocols::fs::RmdirResult, protocols::fs::Error>>
+rmdir(std::shared_ptr<void> object, std::string name) {
 	auto self = std::static_pointer_cast<ext2fs::Inode>(object);
 
 	protocols::ostrace::Timer timer;
@@ -222,7 +223,7 @@ async::result<std::expected<uint64_t, protocols::fs::Error>> rmdir(std::shared_p
 	auto result = co_await self->removeEntry(std::move(name));
 	if (!result)
 		co_return std::unexpected{result.error()};
-	co_return self->dirSerial;
+	co_return protocols::fs::RmdirResult{target->number, self->dirSerial};
 }
 
 async::result<protocols::fs::FileStats>

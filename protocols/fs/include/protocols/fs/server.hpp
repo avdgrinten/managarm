@@ -75,6 +75,7 @@ using AcceptResult = std::pair<helix::UniqueLane, helix::UniqueLane>;
 
 using MkdirResult = std::tuple<std::shared_ptr<void>, int64_t, uint64_t>;
 using SymlinkResult = std::tuple<std::shared_ptr<void>, int64_t, uint64_t>;
+using RmdirResult = std::tuple<int64_t, uint64_t>;
 
 struct TraversedLink {
 	std::shared_ptr<void> node;
@@ -254,11 +255,11 @@ struct NodeOperations {
 	async::result<std::expected<GetLinkResult, protocols::fs::Error>> (*link)(std::shared_ptr<void> object,
 			std::string name, int64_t ino);
 
-	// unlink() and rmdir() return the mutation serial of the directory.
+	// unlink() returns the mutation serial of the directory.
 	async::result<std::expected<uint64_t, protocols::fs::Error>> (*unlink)(std::shared_ptr<void> object,
 			std::string name);
 
-	async::result<std::expected<uint64_t, protocols::fs::Error>> (*rmdir)(std::shared_ptr<void> object,
+	async::result<std::expected<RmdirResult, protocols::fs::Error>> (*rmdir)(std::shared_ptr<void> object,
 			std::string name);
 
 	async::result<OpenResult> (*open)(std::shared_ptr<void> object, bool write, bool read, bool append);

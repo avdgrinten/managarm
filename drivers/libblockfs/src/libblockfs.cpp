@@ -259,6 +259,8 @@ struct HandlePartition {
 		std::shared_ptr<ext2fs::Inode> movedInode, victimInode;
 		// These locks are taken below for the moved and victim inodes.
 		std::optional<frg::unique_lock<async::shared_mutex>> thirdLock, fourthLock;
+		// Entry that the rename replaces, reported once the rename succeeded.
+		std::optional<ext2fs::DirEntry> replacedEntry;
 
 		if(old_file) {
 			// Reject moving a directory into itself or one of its own
@@ -410,6 +412,7 @@ struct HandlePartition {
 				HEL_CHECK(send_resp.error());
 				co_return {};
 			}
+			replacedEntry = new_entry.value();
 			protocols::ostrace::Timer linkTimer;
 			auto link_result = co_await newInode->link(req.new_name(),
 					old_file.value().inode, old_file.value().fileType);
@@ -467,6 +470,23 @@ struct HandlePartition {
 				helix_ng::sendBuffer(ser.data(), ser.size()));
 			HEL_CHECK(send_resp.error());
 			co_return {};
+		}
+		// Report the replaced entry so that the client can drop its state for it.
+		if(replacedEntry) {
+			resp.set_id(replacedEntry->inode);
+			switch(replacedEntry->fileType) {
+			case kTypeDirectory:
+				resp.set_file_type(managarm::fs::FileType::DIRECTORY);
+				break;
+			case kTypeRegular:
+				resp.set_file_type(managarm::fs::FileType::REGULAR);
+				break;
+			case kTypeSymlink:
+				resp.set_file_type(managarm::fs::FileType::SYMLINK);
+				break;
+			default:
+				throw std::runtime_error("Unexpected file type");
+			}
 		}
 		// Report one serial for both directories, so that the client can order this
 		// rename against the mutations it observes on either directory.
