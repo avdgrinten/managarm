@@ -1081,8 +1081,10 @@ namespace posix {
 					panicLogger() << "thor: Failed to resume server" << frg::endlog;
 			}else if(interrupt == kIntrSuperCall + ::posix::superGetProcessData) {
 				uintptr_t dataAddr;
+				size_t dataSize;
 				auto readOutcome = info.thread->accessRegisters([&](Executor *executor) {
 					dataAddr = *executor->arg0();
+					dataSize = *executor->arg1();
 				});
 				if(!readOutcome)
 					panicLogger() << "thor: Failed to access server registers" << frg::endlog;
@@ -1095,8 +1097,9 @@ namespace posix {
 					nullptr
 				};
 
+				auto writeSize = frg::min(dataSize, sizeof(::posix::ManagarmProcessData));
 				auto outcome = co_await info.thread->getAddressSpace()->writeSpace(
-						dataAddr, &data, sizeof(::posix::ManagarmProcessData));
+						dataAddr, &data, writeSize);
 				auto writeOutcome = info.thread->accessRegisters([&](Executor *executor) {
 					if(!outcome) {
 						*executor->result0() = kHelErrFault;

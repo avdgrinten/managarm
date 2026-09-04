@@ -43,9 +43,10 @@ static PROCESS_DATA: LazyLock<ManagarmProcessData> = LazyLock::new(|| {
     // TODO: Create wrapper in `hel`.
     let mut process_data: MaybeUninit<ManagarmProcessData> = MaybeUninit::uninit();
     let result = unsafe {
-        hel_sys::helSyscall1(
+        hel_sys::helSyscall2(
             hel_sys::kHelCallSuper as i32 + PosixSupercall::GetProcessData as i32,
             process_data.as_mut_ptr() as u64,
+            std::mem::size_of::<ManagarmProcessData>() as u64,
         )
     };
 
