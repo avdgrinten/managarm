@@ -747,18 +747,29 @@ async fn handle_traverse_links(
     let result = match node.traverse_links(req.path_segments()).await {
         Ok(result) => result,
         Err(e) => {
-            let resp =
-                bindings::NodeTraverseLinksResponse::new(e, 0, FileType::REGULAR, Vec::new());
+            let resp = bindings::NodeTraverseLinksResponse::new(
+                e,
+                0,
+                FileType::REGULAR,
+                0,
+                Vec::new(),
+                Vec::new(),
+            );
             return send_response_with_tail(&conversation, &resp).await;
         }
     };
 
     let ids: Vec<i64> = result.nodes.iter().map(|&(_, id)| id).collect();
+    // We do not track directory mutation serials. This server never advertises
+    // MC_CLIENT_EXCLUSIVE_NAMESPACE, hence no client caches these lookups.
+    let serials = vec![0; ids.len()];
     let resp = bindings::NodeTraverseLinksResponse::new(
         Error::Success,
         result.links_traversed,
         result.file_type,
+        0,
         ids,
+        serials,
     );
 
     // The node lanes are pushed onto a dedicated lane so that the client can
@@ -918,6 +929,7 @@ async fn handle_get_link_or_create(
     let resp = bindings::GetLinkOrCreateResponse::new(
         Error::IllegalOperationTarget,
         FileType::REGULAR,
+        0,
         0,
     );
     send_response(&conversation, &resp).await

@@ -471,6 +471,7 @@ async::result<frg::expected<protocols::fs::Error>> Inode::removeEntry(std::strin
 				diskInodeWindow.markDirty();
 			}
 
+			fs.recordMutation({this});
 			co_return {};
 		}
 
@@ -600,6 +601,7 @@ async::result<frg::expected<protocols::fs::Error>> Inode::updateDotDot(uint32_t 
 			HEL_CHECK(syncDir.error());
 			cleanDirTime += cleanDirTimer.elapsed();
 
+			fs.recordMutation({this});
 			co_return {};
 		}
 
@@ -647,6 +649,7 @@ Inode::link(std::string name, int64_t ino, blockfs::FileType type) {
 	auto result = co_await insertEntry(name, ino, type);
 	if(!result)
 		co_return std::unexpected{result.error()};
+	fs.recordMutation({this});
 	co_return result.value();
 }
 
@@ -730,6 +733,7 @@ async::result<std::expected<DirEntry, protocols::fs::Error>> Inode::mkdir(std::s
 	auto result = co_await insertEntry(name, dirNode->number, kTypeDirectory);
 	if(!result)
 		co_return std::unexpected{result.error()};
+	fs.recordMutation({this});
 	co_return result.value();
 }
 
@@ -807,6 +811,7 @@ async::result<std::expected<DirEntry, protocols::fs::Error>> Inode::symlink(std:
 	auto result = co_await insertEntry(name, newNode->number, kTypeSymlink);
 	if(!result)
 		co_return std::unexpected{result.error()};
+	fs.recordMutation({this});
 	co_return result.value();
 }
 

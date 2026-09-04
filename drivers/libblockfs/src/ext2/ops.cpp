@@ -77,7 +77,7 @@ getLink(std::shared_ptr<void> object,
 	found = entry.has_value();
 	if(!entry)
 		co_return protocols::fs::GetLinkResult{nullptr, -1,
-				protocols::fs::FileType::unknown};
+				protocols::fs::FileType::unknown, self->dirSerial};
 
 	protocols::fs::FileType type;
 	switch(entry->fileType) {
@@ -95,7 +95,8 @@ getLink(std::shared_ptr<void> object,
 	}
 
 	assert(entry->inode);
-	co_return protocols::fs::GetLinkResult{self->fs.accessInode(entry->inode), entry->inode, type};
+	co_return protocols::fs::GetLinkResult{self->fs.accessInode(entry->inode), entry->inode, type,
+			self->dirSerial};
 }
 
 async::result<std::expected<protocols::fs::GetLinkResult, protocols::fs::Error>> link(std::shared_ptr<void> object,
@@ -138,10 +139,11 @@ async::result<std::expected<protocols::fs::GetLinkResult, protocols::fs::Error>>
 	}
 
 	assert(entry->inode);
-	co_return protocols::fs::GetLinkResult{self->fs.accessInode(entry->inode), entry->inode, type};
+	co_return protocols::fs::GetLinkResult{self->fs.accessInode(entry->inode), entry->inode, type,
+			self->dirSerial};
 }
 
-async::result<std::expected<void, protocols::fs::Error>> unlink(std::shared_ptr<void> object, std::string name) {
+async::result<std::expected<uint64_t, protocols::fs::Error>> unlink(std::shared_ptr<void> object, std::string name) {
 	auto self = std::static_pointer_cast<ext2fs::Inode>(object);
 
 	protocols::ostrace::Timer timer;
@@ -177,10 +179,10 @@ async::result<std::expected<void, protocols::fs::Error>> unlink(std::shared_ptr<
 	auto result = co_await self->removeEntry(std::move(name));
 	if (!result)
 		co_return std::unexpected{result.error()};
-	co_return {};
+	co_return self->dirSerial;
 }
 
-async::result<std::expected<void, protocols::fs::Error>> rmdir(std::shared_ptr<void> object, std::string name) {
+async::result<std::expected<uint64_t, protocols::fs::Error>> rmdir(std::shared_ptr<void> object, std::string name) {
 	auto self = std::static_pointer_cast<ext2fs::Inode>(object);
 
 	protocols::ostrace::Timer timer;
@@ -220,7 +222,7 @@ async::result<std::expected<void, protocols::fs::Error>> rmdir(std::shared_ptr<v
 	auto result = co_await self->removeEntry(std::move(name));
 	if (!result)
 		co_return std::unexpected{result.error()};
-	co_return {};
+	co_return self->dirSerial;
 }
 
 async::result<protocols::fs::FileStats>
@@ -310,7 +312,8 @@ mkdir(std::shared_ptr<void> object, std::string name, uid_t uid, gid_t gid, mode
 		co_return std::unexpected{entry.error()};
 
 	assert(entry->inode);
-	co_return protocols::fs::MkdirResult{self->fs.accessInode(entry->inode), entry->inode};
+	co_return protocols::fs::MkdirResult{self->fs.accessInode(entry->inode), entry->inode,
+			self->dirSerial};
 }
 
 async::result<std::expected<protocols::fs::SymlinkResult, protocols::fs::Error>>
@@ -340,7 +343,8 @@ symlink(std::shared_ptr<void> object, std::string name, std::string target) {
 		co_return std::unexpected{entry.error()};
 
 	assert(entry->inode);
-	co_return protocols::fs::SymlinkResult{self->fs.accessInode(entry->inode), entry->inode};
+	co_return protocols::fs::SymlinkResult{self->fs.accessInode(entry->inode), entry->inode,
+			self->dirSerial};
 }
 
 async::result<protocols::fs::Error> chmod(std::shared_ptr<void> object, int mode) {
@@ -423,7 +427,8 @@ getLinkOrCreate(std::shared_ptr<void> object, std::string name, mode_t mode, boo
 		default:
 			throw std::runtime_error("Unexpected file type");
 		}
-		co_return protocols::fs::GetLinkResult{self->fs.accessInode(e.inode), e.inode, type};
+		co_return protocols::fs::GetLinkResult{self->fs.accessInode(e.inode), e.inode, type,
+				self->dirSerial};
 	}
 
 	auto baseInode = co_await self->fs.createRegular(uid, gid, self->number);
@@ -443,7 +448,8 @@ getLinkOrCreate(std::shared_ptr<void> object, std::string name, mode_t mode, boo
 	if (!linkResult)
 		co_return std::unexpected{protocols::fs::Error::internalError};
 
-	co_return protocols::fs::GetLinkResult{inode, inode->number, protocols::fs::FileType::regular};
+	co_return protocols::fs::GetLinkResult{inode, inode->number, protocols::fs::FileType::regular,
+			self->dirSerial};
 }
 
 } // namespace anonymous

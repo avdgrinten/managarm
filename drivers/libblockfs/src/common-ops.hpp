@@ -343,8 +343,7 @@ doTraverseLinks(std::shared_ptr<void> object, std::deque<std::string> components
 	std::optional<DirEntry> entry;
 	size_t allComponents = components.size();
 
-	// (inode, inode number) pair for all resolved path components.
-	std::vector<std::pair<std::shared_ptr<void>, int64_t>> nodes;
+	std::vector<protocols::fs::TraversedLink> nodes;
 
 	protocols::ostrace::Timer timer;
 	uint64_t timeLock = 0;
@@ -370,7 +369,8 @@ doTraverseLinks(std::shared_ptr<void> object, std::deque<std::string> components
 
 		if (component == ".") {
 			components.pop_front();
-			nodes.push_back({dirStack.back().first, dirStack.back().second});
+			// "." and ".." are not entries that a client may cache, so they carry no serial.
+			nodes.push_back({dirStack.back().first, dirStack.back().second, 0});
 		} else if (component == "..") {
 			// Break before popping the component: we must not ascend past the initial directory.
 			if (dirStack.size() == 1)
@@ -379,9 +379,10 @@ doTraverseLinks(std::shared_ptr<void> object, std::deque<std::string> components
 			dirStack.pop_back();
 
 			components.pop_front();
-			nodes.push_back({dirStack.back().first, dirStack.back().second});
+			nodes.push_back({dirStack.back().first, dirStack.back().second, 0});
 		} else {
 			auto parent = dirStack.back().first;
+			uint64_t serial;
 			{
 				protocols::ostrace::Timer lockTimer;
 				co_await parent->inodeMutex.async_lock_shared();
@@ -389,17 +390,22 @@ doTraverseLinks(std::shared_ptr<void> object, std::deque<std::string> components
 				timeLock += lockTimer.elapsed();
 
 				protocols::ostrace::Timer findTimer;
-				entry = FRG_CO_TRY(co_await parent->findEntry(component));
+				auto found = co_await parent->findEntry(component);
 				timeFind += findTimer.elapsed();
+				if (!found)
+					co_return std::unexpected{protocols::fs::TraverseLinksError{found.error()}};
+				entry = found.value();
+				serial = parent->dirSerial;
 			}
 
 			if (!entry) {
-				co_return protocols::fs::Error::fileNotFound;
+				co_return std::unexpected{protocols::fs::TraverseLinksError{
+						protocols::fs::Error::fileNotFound, serial}};
 			}
 			assert(entry->inode);
 
 			components.pop_front();
-			nodes.push_back({self->fs.accessInode(entry->inode), entry->inode});
+			nodes.push_back({self->fs.accessInode(entry->inode), entry->inode, serial});
 
 			if (!components.empty()) {
 				bool obstructed;
@@ -417,7 +423,8 @@ doTraverseLinks(std::shared_ptr<void> object, std::deque<std::string> components
 					break;
 
 				if (entry->fileType != kTypeDirectory)
-					co_return protocols::fs::Error::notDirectory;
+					co_return std::unexpected{protocols::fs::TraverseLinksError{
+							protocols::fs::Error::notDirectory}};
 
 				// Push the directory that we just entered.
 				dirStack.push_back({std::static_pointer_cast<Inode>(ino), entry->inode});
@@ -426,7 +433,7 @@ doTraverseLinks(std::shared_ptr<void> object, std::deque<std::string> components
 	}
 
 	if (!entry)
-		co_return protocols::fs::Error::fileNotFound;
+		co_return std::unexpected{protocols::fs::TraverseLinksError{protocols::fs::Error::fileNotFound}};
 
 	protocols::fs::FileType type;
 	switch (entry->fileType) {

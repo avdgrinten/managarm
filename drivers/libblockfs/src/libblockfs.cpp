@@ -415,6 +415,8 @@ struct HandlePartition {
 					old_file.value().inode, old_file.value().fileType);
 			linkTime += linkTimer.elapsed();
 			if(!link_result) {
+				// We already mutated the directory, so report a serial.
+				resp.set_serial(fs->recordMutation({oldInode.get(), newInode.get()}));
 				resp.set_error(link_result.error() | protocols::fs::toFsError);
 
 				auto ser = resp.SerializeAsString();
@@ -431,6 +433,8 @@ struct HandlePartition {
 					&& oldInode->number != newInode->number) {
 				auto reparent = co_await movedInode->updateDotDot(newInode->number);
 				if(!reparent) {
+					// We already mutated the directory, so report a serial.
+					resp.set_serial(fs->recordMutation({oldInode.get(), newInode.get()}));
 					resp.set_error(reparent.error() | protocols::fs::toFsError);
 
 					auto ser = resp.SerializeAsString();
@@ -454,6 +458,8 @@ struct HandlePartition {
 		auto result = co_await oldInode->removeEntry(req.old_name());
 		removeTime += removeOldTimer.elapsed();
 		if(!result) {
+			// We already mutated the directory, so report a serial.
+			resp.set_serial(fs->recordMutation({oldInode.get(), newInode.get()}));
 			resp.set_error(result.error() | protocols::fs::toFsError);
 
 			auto ser = resp.SerializeAsString();
@@ -462,6 +468,9 @@ struct HandlePartition {
 			HEL_CHECK(send_resp.error());
 			co_return {};
 		}
+		// Report one serial for both directories, so that the client can order this
+		// rename against the mutations it observes on either directory.
+		resp.set_serial(fs->recordMutation({oldInode.get(), newInode.get()}));
 		resp.set_error(managarm::fs::Errors::SUCCESS);
 
 		auto ser = resp.SerializeAsString();

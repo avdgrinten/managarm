@@ -1667,6 +1667,7 @@ struct HandleNodeRequest {
 				managarm::fs::SvrResponse resp;
 				resp.set_error(managarm::fs::Errors::SUCCESS);
 				resp.set_id(std::get<1>(result.value()));
+				resp.set_serial(std::get<2>(result.value()));
 
 				auto ser = resp.SerializeAsString();
 				auto [sendResp, pushNode] = co_await helix_ng::exchangeMsgs(
@@ -1795,6 +1796,7 @@ struct HandleNodeRequest {
 			managarm::fs::SvrResponse resp;
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 			resp.set_id(std::get<1>(result.value()));
+			resp.set_serial(std::get<3>(result.value()));
 			switch(std::get<2>(result.value())) {
 			case FileType::directory:
 				resp.set_file_type(managarm::fs::FileType::DIRECTORY);
@@ -1821,6 +1823,7 @@ struct HandleNodeRequest {
 		}else{
 			managarm::fs::SvrResponse resp;
 			resp.set_error(managarm::fs::Errors::FILE_NOT_FOUND);
+			resp.set_serial(std::get<3>(result.value()));
 
 			auto ser = resp.SerializeAsString();
 			auto [send_resp] = co_await helix_ng::exchangeMsgs(
@@ -1848,11 +1851,12 @@ struct HandleNodeRequest {
 
 		if (!result) {
 			managarm::fs::NodeTraverseLinksResponse resp;
-			if (result.error() == protocols::fs::Error::notDirectory) {
+			if (result.error().error == protocols::fs::Error::notDirectory) {
 				resp.set_error(managarm::fs::Errors::NOT_DIRECTORY);
 			} else {
-				assert(result.error() == protocols::fs::Error::fileNotFound);
+				assert(result.error().error == protocols::fs::Error::fileNotFound);
 				resp.set_error(managarm::fs::Errors::FILE_NOT_FOUND);
+				resp.set_serial(result.error().serial);
 			}
 
 			auto [send_resp, send_tail] = co_await helix_ng::exchangeMsgs(
@@ -1889,8 +1893,9 @@ struct HandleNodeRequest {
 		helix::UniqueLane local_push, remote_push;
 		std::tie(local_push, remote_push) = helix::createStream();
 
-		for (auto &[_, id] : nodes) {
-			resp.add_ids(id);
+		for (auto &link : nodes) {
+			resp.add_ids(link.id);
+			resp.add_serials(link.serial);
 		}
 
 		auto [send_resp, send_tail, push_desc] = co_await helix_ng::exchangeMsgs(
@@ -1904,10 +1909,10 @@ struct HandleNodeRequest {
 		HEL_CHECK(push_desc.error());
 		logBragiReply(resp);
 
-		for (auto &[node, _] : nodes) {
+		for (auto &link : nodes) {
 			helix::UniqueLane local_lane, remote_lane;
 			std::tie(local_lane, remote_lane) = helix::createStream();
-			serveNode(std::move(local_lane), std::move(node), node_ops);
+			serveNode(std::move(local_lane), std::move(link.node), node_ops);
 
 			auto [push_node] = co_await helix_ng::exchangeMsgs(
 				local_push,
@@ -1940,6 +1945,7 @@ struct HandleNodeRequest {
 			managarm::fs::SvrResponse resp;
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 			resp.set_id(std::get<1>(result.value()));
+			resp.set_serial(std::get<2>(result.value()));
 
 			auto ser = resp.SerializeAsString();
 			auto [send_resp, push_node] = co_await helix_ng::exchangeMsgs(
@@ -1985,6 +1991,7 @@ struct HandleNodeRequest {
 			managarm::fs::SvrResponse resp;
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 			resp.set_id(std::get<1>(result.value()));
+			resp.set_serial(std::get<3>(result.value()));
 			switch(std::get<2>(result.value())) {
 			case FileType::directory:
 				resp.set_file_type(managarm::fs::FileType::DIRECTORY);
@@ -2048,6 +2055,7 @@ struct HandleNodeRequest {
 			co_return {};
 		}
 		resp.set_error(managarm::fs::Errors::SUCCESS);
+		resp.set_serial(result.value());
 
 		auto ser = resp.SerializeAsString();
 		auto [send_resp] = co_await helix_ng::exchangeMsgs(
@@ -2084,6 +2092,7 @@ struct HandleNodeRequest {
 			co_return {};
 		}
 		resp.set_error(managarm::fs::Errors::SUCCESS);
+		resp.set_serial(result.value());
 
 		auto ser = resp.SerializeAsString();
 		auto [send_resp] = co_await helix_ng::exchangeMsgs(
@@ -2196,6 +2205,7 @@ struct HandleNodeRequest {
 
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 			resp.set_id(std::get<1>(result.value()));
+			resp.set_serial(std::get<3>(result.value()));
 			switch(std::get<2>(result.value())) {
 				case FileType::directory:
 					resp.set_file_type(managarm::fs::FileType::DIRECTORY);

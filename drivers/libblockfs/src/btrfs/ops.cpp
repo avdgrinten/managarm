@@ -68,7 +68,8 @@ getLink(std::shared_ptr<void> object, std::string name) {
 	assert(!name.empty() && name != "." && name != "..");
 	auto entry = FRG_CO_TRY(co_await self->findEntry(name));
 	if (!entry)
-		co_return protocols::fs::GetLinkResult{nullptr, -1, protocols::fs::FileType::unknown};
+		co_return protocols::fs::GetLinkResult{nullptr, -1, protocols::fs::FileType::unknown,
+				self->dirSerial};
 
 	protocols::fs::FileType type;
 	switch (entry->fileType) {
@@ -86,7 +87,8 @@ getLink(std::shared_ptr<void> object, std::string name) {
 	}
 
 	assert(entry->inode);
-	co_return protocols::fs::GetLinkResult{self->fs.accessInode(entry->inode), entry->inode, type};
+	co_return protocols::fs::GetLinkResult{self->fs.accessInode(entry->inode), entry->inode, type,
+			self->dirSerial};
 }
 
 async::result<std::expected<protocols::fs::GetLinkResult, protocols::fs::Error>>
@@ -98,7 +100,7 @@ link(std::shared_ptr<void> object, std::string name, int64_t ino) {
 	co_return std::unexpected{protocols::fs::Error::internalError};
 }
 
-async::result<std::expected<void, protocols::fs::Error>>
+async::result<std::expected<uint64_t, protocols::fs::Error>>
 unlink(std::shared_ptr<void> object, std::string name) {
 	(void)object;
 	(void)name;
@@ -217,7 +219,8 @@ async::result<std::expected<protocols::fs::GetLinkResult, protocols::fs::Error>>
 		default:
 			throw std::runtime_error("Unexpected file type");
 		}
-		co_return protocols::fs::GetLinkResult{self->fs.accessInode(e.inode), e.inode, type};
+		co_return protocols::fs::GetLinkResult{self->fs.accessInode(e.inode), e.inode, type,
+				self->dirSerial};
 	}
 
 	(void)mode;
