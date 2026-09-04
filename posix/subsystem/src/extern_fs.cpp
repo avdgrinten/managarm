@@ -1,5 +1,6 @@
 #include <async/cancellation.hpp>
 #include <sys/epoll.h>
+#include <algorithm>
 #include <map>
 #include <vector>
 
@@ -100,6 +101,10 @@ private:
 	smarter::shared_ptr<FsNode> _target;
 	bool _obstructed = false;
 
+	// Serial of the last rename applied to this link, so that renames whose responses
+	// are processed out of order do not leave the link with an older name.
+	uint64_t _renameSerial = 0;
+
 	// Name cache state.
 	size_t _cacheHash = 0;
 	// Hook for the name cache's hash table chain.
@@ -150,7 +155,15 @@ struct Superblock final : FsSuperblock, LinkReclaimer {
 
 	std::optional<smarter::shared_ptr<FsLink, LinkRc>> nameCacheLookup(FsNode *dir, const std::string &name);
 	void nameCacheInsert(Link *link);
-	void nameCacheInvalidate(FsNode *dir, const std::string &name);
+
+	// Brackets a mutation of a directory entry.
+	// Until endMutation(), lookups of the name bypass the cache and are not cached,
+	// since the server may already have applied the mutation.
+	void beginMutation(DirectoryNode *dir, const std::string &name);
+	// Counterpart of beginMutation(). Always invalidates the cached link.
+	void endMutation(DirectoryNode *dir, const std::string &name);
+	// Counterpart of beginMutation(). Invalidates the cached link unless the server reports serial zero.
+	void endMutation(DirectoryNode *dir, const std::string &name, uint64_t serial);
 
 	using NameCacheOwnerList = frg::intrusive_list<Link,
 			frg::locate_member<Link, frg::default_list_hook<Link>, &Link::_cacheOwnerHook>>;
@@ -166,6 +179,7 @@ private:
 			frg::locate_member<Link, frg::default_list_hook<Link>, &Link::_cacheHashHook>>;
 
 	void onReclaim(LinkMetaObjectBase *meta) override;
+	void popMutation(DirectoryNode *dir, const std::string &name);
 	Link *nameCacheFind(FsNode *dir, const std::string &name, size_t hash);
 	void nameCacheUnhash(Link *link);
 	void nameCacheEvict(Link *link);
@@ -179,6 +193,35 @@ private:
 	std::vector<NameCacheBucket> _nameCacheBuckets;
 
 	std::shared_ptr<UnixDevice> device_;
+};
+
+// Marks a directory entry as being mutated by an in-flight request, see Superblock::beginMutation().
+struct PendingMutation {
+	PendingMutation(Superblock *sb, DirectoryNode *dir, std::string name)
+	: _sb{sb}, _dir{dir}, _name{std::move(name)} {
+		_sb->beginMutation(_dir, _name);
+	}
+
+	PendingMutation(const PendingMutation &) = delete;
+	PendingMutation &operator=(const PendingMutation &) = delete;
+
+	// A mutation that is never completed did not produce a response at all, so the server
+	// may have applied it and the cached entry has to go.
+	~PendingMutation() {
+		if(_dir)
+			_sb->endMutation(_dir, _name);
+	}
+
+	// Mirrors the serial that the server reported, or zero if it did not mutate the directory.
+	void complete(uint64_t serial) {
+		_sb->endMutation(_dir, _name, serial);
+		_dir = nullptr;
+	}
+
+private:
+	Superblock *_sb;
+	DirectoryNode *_dir;
+	std::string _name;
 };
 
 struct Node : FsNode {
@@ -605,6 +648,7 @@ private:
 		req.set_name(name);
 		req.set_uid(process->threadGroup()->uid());
 		req.set_gid(process->threadGroup()->gid());
+		PendingMutation pending{_sb, this, name};
 
 		auto [offer, send_head, send_tail, recv_resp, pull_node] = co_await helix_ng::exchangeMsgs(
 			getLane(),
@@ -634,9 +678,11 @@ private:
 						pull_node.descriptor());
 				result = _sb->internalizeLink(parent, name, std::move(child));
 			}
-			recacheLink(parent, name, result.get());
+			pending.complete(resp.serial());
+			cacheLink(parent, name, result.get(), resp.serial());
 			co_return result;
 		} else {
+			pending.complete(resp.serial());
 			co_return std::unexpected{resp.error() | toPosixError};
 		}
 	}
@@ -739,7 +785,7 @@ private:
 		if(resp.error() != managarm::fs::Errors::SUCCESS) {
 			// Only a single-component traversal identifies which name is absent.
 			if(resp.error() == managarm::fs::Errors::FILE_NOT_FOUND && path.size() == 1)
-				cacheLink(parent, path.front(), nullptr);
+				cacheLink(parent, path.front(), nullptr, resp.serial());
 			co_return resp.error() | toPosixError;
 		}
 
@@ -748,6 +794,7 @@ private:
 
 		assert(resp.links_traversed());
 		assert(resp.links_traversed() <= path.size());
+		assert(resp.serials().size() == resp.ids().size());
 
 		// The reply only reports inodes, so we cannot immediately tell which link they correspond to.
 		// We replay the resolution rules to associate each link with the proper parent.
@@ -782,7 +829,7 @@ private:
 				link = _sb->internalizeLink(dirStack.back().get(), path[i], std::move(child));
 			}
 			static_cast<DirectoryNode *>(dirStack.back()->getTarget().get())
-					->cacheLink(dirStack.back().get(), path[i], link.get());
+					->cacheLink(dirStack.back().get(), path[i], link.get(), resp.serials()[i]);
 
 			if (!last)
 				dirStack.push_back(link);
@@ -800,6 +847,7 @@ private:
 		req.set_mode(mode & ~umask);
 		req.set_uid(proc ? proc->threadGroup()->uid() : 0);
 		req.set_gid(proc ? proc->threadGroup()->gid() : 0);
+		PendingMutation pending{_sb, this, name};
 
 		auto [offer, sendReq, sendTail, recvResp, pullNode] = co_await helix_ng::exchangeMsgs(
 			getLane(),
@@ -822,9 +870,11 @@ private:
 
 			auto result = _sb->internalizeStructural(parent, name,
 					resp.id(), pullNode.descriptor());
-			recacheLink(parent, name, result.get());
+			pending.complete(resp.serial());
+			cacheLink(parent, name, result.get(), resp.serial());
 			co_return result;
 		} else {
+			pending.complete(resp.serial());
 			co_return resp.error() | toPosixError;
 		}
 	}
@@ -835,6 +885,7 @@ private:
 		req.set_req_type(managarm::fs::CntReqType::NODE_SYMLINK);
 		req.set_name_length(name.size());
 		req.set_target_length(path.size());
+		PendingMutation pending{_sb, this, name};
 
 		auto ser = req.SerializeAsString();
 		auto [offer, sendReq, sendName, sendTarget, recvResp, pullNode]
@@ -862,9 +913,11 @@ private:
 			auto child = _sb->internalizePeripheralNode(managarm::fs::FileType::SYMLINK,
 					resp.id(), pullNode.descriptor());
 			auto result = _sb->internalizeLink(parent, name, std::move(child));
-			recacheLink(parent, name, result.get());
+			pending.complete(resp.serial());
+			cacheLink(parent, name, result.get(), resp.serial());
 			co_return result;
 		} else {
+			pending.complete(resp.serial());
 			co_return resp.error() | toPosixError;
 		}
 	}
@@ -917,11 +970,11 @@ private:
 						pull_node.descriptor());
 				result = _sb->internalizeLink(parent, name, std::move(child));
 			}
-			cacheLink(parent, name, result.get());
+			cacheLink(parent, name, result.get(), resp.serial());
 			co_return result;
 		}else{
 			if(resp.error() == managarm::fs::Errors::FILE_NOT_FOUND)
-				cacheLink(parent, name, nullptr);
+				cacheLink(parent, name, nullptr, resp.serial());
 			co_return resp.error() | toPosixError;
 		}
 	}
@@ -931,6 +984,7 @@ private:
 		managarm::fs::LinkRequest req;
 		req.set_path(name);
 		req.set_fd(static_cast<Node *>(target.get())->getInode());
+		PendingMutation pending{_sb, this, name};
 
 		auto [offer, send_req, send_tail, recv_resp, pull_node] = co_await helix_ng::exchangeMsgs(
 			getLane(),
@@ -960,9 +1014,11 @@ private:
 						pull_node.descriptor());
 				result = _sb->internalizeLink(parent, name, std::move(child));
 			}
-			recacheLink(parent, name, result.get());
+			pending.complete(resp.serial());
+			cacheLink(parent, name, result.get(), resp.serial());
 			co_return result;
 		}else{
+			pending.complete(resp.serial());
 			co_return resp.error() | toPosixError;
 		}
 	}
@@ -970,6 +1026,7 @@ private:
 	async::result<frg::expected<Error>> unlink(std::string name) override {
 		managarm::fs::UnlinkRequest req;
 		req.set_path(name);
+		PendingMutation pending{_sb, this, name};
 
 		auto [offer, send_req, send_tail, recv_resp] = co_await helix_ng::exchangeMsgs(
 			getLane(),
@@ -986,16 +1043,17 @@ private:
 		managarm::fs::SvrResponse resp;
 		resp.ParseFromArray(recv_resp.data(), recv_resp.length());
 		recv_resp.reset();
+		pending.complete(resp.serial());
 		if(resp.error() != managarm::fs::Errors::SUCCESS)
 			co_return resp.error() | toPosixError;
 
-		invalidateCache(name);
 		co_return {};
 	}
 
 	async::result<frg::expected<Error>> rmdir(std::string name) override {
 		managarm::fs::RmdirRequest req;
 		req.set_path(name);
+		PendingMutation pending{_sb, this, name};
 
 		auto [offer, send_req, send_tail, recv_resp] = co_await helix_ng::exchangeMsgs(
 			getLane(),
@@ -1013,10 +1071,10 @@ private:
 		resp.ParseFromArray(recv_resp.data(), recv_resp.length());
 		recv_resp.reset();
 
+		pending.complete(resp.serial());
 		if(resp.error() != managarm::fs::Errors::SUCCESS)
 			co_return resp.error() | toPosixError;
 
-		invalidateCache(name);
 		_sb->retireDirectory(resp.id());
 		co_return {};
 	}
@@ -1071,15 +1129,30 @@ private:
 
 public:
 	std::optional<smarter::shared_ptr<FsLink, LinkRc>> lookupCache(const std::string &name) {
+		// The server may already have applied an in-flight mutation of the name.
+		if(hasPendingMutation(name))
+			return std::nullopt;
 		return _sb->nameCacheLookup(this, name);
 	}
 
+	bool hasPendingMutation(const std::string &name) {
+		return std::find(_pendingMutations.begin(), _pendingMutations.end(), name)
+				!= _pendingMutations.end();
+	}
+
+	// Caches the result of a lookup that the server stamped with serial (see fs.bragi).
 	// Passing nullptr for link creates a negative cache entry.
-	void cacheLink(FsLink *parent, const std::string &name, FsLink *link) {
+	void cacheLink(FsLink *parent, const std::string &name, FsLink *link, uint64_t serial) {
 		if(!_sb->nameCacheEnabled())
 			return;
 		// A lookup that raced the removal of this directory must not revive it.
 		if(_removed)
+			return;
+		// The lookup observed a state older than a mutation that we already mirrored.
+		if(serial < _mutationSerial)
+			return;
+		// The lookup might predate a mutation that the server already applied.
+		if(hasPendingMutation(name))
 			return;
 		// PathResolver never resolves these through the cache.
 		if(name == "." || name == "..")
@@ -1097,14 +1170,9 @@ public:
 		_sb->nameCacheInsert(entry);
 	}
 
-	void invalidateCache(const std::string &name) {
-		_sb->nameCacheInvalidate(this, name);
-	}
-
-	// Replaces the cache entry for name by a link that we just obtained authoritatively.
-	void recacheLink(FsLink *parent, const std::string &name, FsLink *link) {
-		invalidateCache(name);
-		cacheLink(parent, name, link);
+	// Records that a mutation of this directory with the given serial completed.
+	void observeMutation(uint64_t serial) {
+		_mutationSerial = std::max(_mutationSerial, serial);
 	}
 
 	DirectoryNode(Superblock *sb, uint64_t inode, helix::UniqueLane lane)
@@ -1112,6 +1180,7 @@ public:
 
 	~DirectoryNode() {
 		assert(_cacheEntries.empty());
+		assert(_pendingMutations.empty());
 		_sb->forgetStructural(getInode());
 	}
 
@@ -1122,6 +1191,12 @@ private:
 	Superblock::NameCacheOwnerList _cacheEntries;
 	// Set once the server removed the directory, see Superblock::retireDirectory().
 	bool _removed = false;
+	// Highest serial of a mutation of this directory that we have mirrored into the cache.
+	// Lookups stamped with an older serial may have observed the state before it.
+	uint64_t _mutationSerial = 0;
+	// Holds names of link that in-flight mutations of this directory may be changing.
+	// Lookups of them bypass the cache.
+	std::vector<std::string> _pendingMutations;
 };
 
 Superblock::Superblock(helix::UniqueLane lane, std::shared_ptr<UnixDevice> device,
@@ -1168,13 +1243,17 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 
 	managarm::fs::RenameRequest req;
 	Link *slink = static_cast<Link *>(source);
-	Node *source_node = static_cast<Node *>(slink->getParentNode().get());
-	Node *target_node = static_cast<Node *>(directory->getTarget().get());
+	auto oldName = source->getName();
+	// Hold the directories: a concurrent rename of the same link may drop its owner.
+	auto source_node = smarter::static_pointer_cast<DirectoryNode>(slink->getParentNode());
+	auto target_node = smarter::static_pointer_cast<DirectoryNode>(directory->getTarget());
 	smarter::shared_ptr<Node> shared_node = smarter::static_pointer_cast<Node>(source->getTarget());
 	req.set_inode_source(source_node->getInode());
 	req.set_inode_target(target_node->getInode());
-	req.set_old_name(source->getName());
+	req.set_old_name(oldName);
 	req.set_new_name(name);
+	PendingMutation sourcePending{this, source_node.get(), oldName};
+	PendingMutation targetPending{this, target_node.get(), name};
 
 	auto [offer, send_head, send_tail, recv_resp] = co_await helix_ng::exchangeMsgs(
 		_lane,
@@ -1192,16 +1271,23 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	managarm::fs::SvrResponse resp;
 	resp.ParseFromArray(recv_resp.data(), recv_resp.length());
 	recv_resp.reset();
+	// Complete the pending mutations before slink->renameTo()
+	// such that the old name does not persist in the cache.
+	sourcePending.complete(resp.serial());
+	targetPending.complete(resp.serial());
 	if(resp.error() != managarm::fs::Errors::SUCCESS)
 		co_return resp.error() | toPosixError;
+	// A rename of a name onto another name of the same inode changes nothing.
+	if(!resp.serial())
+		co_return source->sharedFromThis();
 
-	// Both the name cache and _activeLinks are keyed by the owner and name, so the entries
-	// have to go before the link is renamed.
-	nameCacheInvalidate(source_node, source->getName());
-	nameCacheInvalidate(target_node, name);
-	_activeLinks.erase({source_node->getInode(), source->getName(), shared_node->getInode()});
-	slink->renameTo(directory->sharedFromThis(), name);
-	_activeLinks[{target_node->getInode(), name, shared_node->getInode()}] = source->sharedFromThis();
+	// Skip the rename if a later one of the same link was mirrored before this one.
+	if(resp.serial() > slink->_renameSerial) {
+		_activeLinks.erase({source_node->getInode(), oldName, shared_node->getInode()});
+		slink->renameTo(directory->sharedFromThis(), name);
+		_activeLinks[{target_node->getInode(), name, shared_node->getInode()}] = source->sharedFromThis();
+		slink->_renameSerial = resp.serial();
+	}
 
 	if(resp.id() && resp.file_type() == managarm::fs::FileType::DIRECTORY)
 		retireDirectory(resp.id());
@@ -1324,9 +1410,31 @@ void Superblock::nameCacheInsert(Link *link) {
 	static_cast<DirectoryNode *>(link->ownerNode())->_cacheEntries.push_front(link);
 }
 
-void Superblock::nameCacheInvalidate(FsNode *dir, const std::string &name) {
+void Superblock::beginMutation(DirectoryNode *dir, const std::string &name) {
+	dir->_pendingMutations.push_back(name);
+}
+
+void Superblock::popMutation(DirectoryNode *dir, const std::string &name) {
+	auto &pending = dir->_pendingMutations;
+	auto it = std::find(pending.begin(), pending.end(), name);
+	assert(it != pending.end());
+	pending.erase(it);
+}
+
+void Superblock::endMutation(DirectoryNode *dir, const std::string &name) {
+	popMutation(dir, name);
 	if(auto link = nameCacheFind(dir, name, nameCacheHash(dir, name)))
 		nameCacheEvict(link);
+}
+
+void Superblock::endMutation(DirectoryNode *dir, const std::string &name, uint64_t serial) {
+	// The server did not mutate the directory, hence the cached entry is still valid.
+	if(!serial) {
+		popMutation(dir, name);
+		return;
+	}
+	endMutation(dir, name);
+	dir->observeMutation(serial);
 }
 
 void Superblock::nameCacheUnhash(Link *link) {
