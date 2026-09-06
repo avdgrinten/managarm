@@ -40,7 +40,7 @@ public:
 				file, &fileOperations, file->_cancelServe));
 	}
 
-	ZeroFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link)
+	ZeroFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 	: FileWithDefaults{FileKind::unknown,  StructName::get("zero-file"), std::move(mount), std::move(link),
 			defaultMapsAnonymously} { }
 };
@@ -56,7 +56,7 @@ struct ZeroDevice final : UnixDevice {
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		if(semantic_flags & ~(semanticRead | semanticWrite)){
 			std::cout << "\e[31mposix: ZeroFile open() received illegal arguments:"

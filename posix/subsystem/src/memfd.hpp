@@ -14,7 +14,7 @@ public:
 				file, &fileOperations, file->_cancelServe));
 	}
 
-	MemoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link, bool allowSealing)
+	MemoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link, bool allowSealing)
 	: FileWithDefaults{FileKind::unknown,  StructName::get("memfd-file"), mount, link}, _offset{0} {
 		if(!allowSealing) {
 			_seals = F_SEAL_SEAL;
@@ -71,7 +71,7 @@ private:
 	struct PrivateTag { }; // To tag-dispatch to private methods.
 
 public:
-	static smarter::shared_ptr<MemoryFileLink> makeMemoryFileLink(int mode) {
+	static smarter::shared_ptr<MemoryFileLink, LinkRc> makeMemoryFileLink(int mode) {
 		return makeFsShared<MemoryFileLink>(PrivateTag{}, mode);
 	}
 
@@ -87,7 +87,7 @@ public:
 		return node_;
 	}
 
-	smarter::shared_ptr<FsLink> getParent() override {
+	smarter::shared_ptr<FsLink, LinkRc> getParent() override {
 		return nullptr;
 	}
 

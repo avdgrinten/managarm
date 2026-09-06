@@ -24,12 +24,12 @@ struct Device final : UnixDevice, std::enable_shared_from_this<Device> {
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		return openExternalDevice(_lane, std::move(mount), std::move(link), semantic_flags);
 	}
 
-	FutureMaybe<smarter::shared_ptr<FsLink>> mount(std::string fs_type) override {
+	FutureMaybe<smarter::shared_ptr<FsLink, LinkRc>> mount(std::string fs_type) override {
 		return mountExternalDevice(_lane, shared_from_this(), fs_type);
 	}
 

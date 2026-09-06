@@ -31,10 +31,10 @@ public:
 	virtual std::string nodePath() = 0;
 
 	virtual async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) = 0;
 
-	virtual FutureMaybe<smarter::shared_ptr<FsLink>> mount(std::string fs_type);
+	virtual FutureMaybe<smarter::shared_ptr<FsLink, LinkRc>> mount(std::string fs_type);
 
 private:
 	VfsType _type;
@@ -73,14 +73,14 @@ extern UnixDeviceRegistry charRegistry;
 extern UnixDeviceRegistry blockRegistry;
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-openDevice(Process *, VfsType type, DeviceId id, std::shared_ptr<MountView> mont, smarter::shared_ptr<FsLink> link,
+openDevice(Process *, VfsType type, DeviceId id, std::shared_ptr<MountView> mont, smarter::shared_ptr<FsLink, LinkRc> link,
 		SemanticFlags semantic_flags);
 
 // --------------------------------------------------------
 // devtmpfs functions.
 // --------------------------------------------------------
 
-smarter::shared_ptr<FsLink> getDevtmpfs();
+smarter::shared_ptr<FsLink, LinkRc> getDevtmpfs();
 
 async::result<void> createDeviceNode(std::string path, VfsType type, DeviceId id);
 
@@ -90,9 +90,9 @@ async::result<void> createDeviceNode(std::string path, VfsType type, DeviceId id
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
 openExternalDevice(helix::BorrowedLane lane,
-		std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+		std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		SemanticFlags semantic_flags);
 
-FutureMaybe<smarter::shared_ptr<FsLink>> mountExternalDevice(helix::BorrowedLane lane, std::shared_ptr<UnixDevice> device, std::string fs_type);
+FutureMaybe<smarter::shared_ptr<FsLink, LinkRc>> mountExternalDevice(helix::BorrowedLane lane, std::shared_ptr<UnixDevice> device, std::string fs_type);
 
 async::result<void> serveServerLane(helix::UniqueDescriptor lane);

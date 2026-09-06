@@ -23,15 +23,15 @@ SuperBlock procfsSuperblock;
 // LinkCompare implementation.
 // ----------------------------------------------------------------------------
 
-bool LinkCompare::operator() (const smarter::shared_ptr<Link> &a, const smarter::shared_ptr<Link> &b) const {
+bool LinkCompare::operator() (const smarter::shared_ptr<Link, LinkRc> &a, const smarter::shared_ptr<Link, LinkRc> &b) const {
 	return a->getName() < b->getName();
 }
 
-bool LinkCompare::operator() (const smarter::shared_ptr<Link> &link, const std::string &name) const {
+bool LinkCompare::operator() (const smarter::shared_ptr<Link, LinkRc> &link, const std::string &name) const {
 	return link->getName() < name;
 }
 
-bool LinkCompare::operator() (const std::string &name, const smarter::shared_ptr<Link> &link) const {
+bool LinkCompare::operator() (const std::string &name, const smarter::shared_ptr<Link, LinkRc> &link) const {
 	return name < link->getName();
 }
 
@@ -48,7 +48,7 @@ void RegularFile::serve(smarter::shared_ptr<RegularFile> file) {
 			file, &File::fileOperations, file->_cancelServe));
 }
 
-RegularFile::RegularFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link)
+RegularFile::RegularFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 : FileWithDefaults{FileKind::unknown,  StructName::get("procfs.attr"), std::move(mount), std::move(link)},
 		_cached{false}, _offset{0} { }
 
@@ -139,7 +139,7 @@ void DirectoryFile::serve(smarter::shared_ptr<DirectoryFile> file) {
 			file, &File::fileOperations, file->_cancelServe));
 }
 
-DirectoryFile::DirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link)
+DirectoryFile::DirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 : FileWithDefaults{FileKind::unknown,  StructName::get("procfs.dir"), std::move(mount), std::move(link)},
 		_node{static_cast<DirectoryNode *>(associatedLink()->getTarget().get())},
 		_iter{_node->_entries.begin()} { }
@@ -178,13 +178,13 @@ helix::BorrowedDescriptor DirectoryFile::getPassthroughLane() {
 Link::Link(smarter::shared_ptr<FsNode> target)
 : _target{std::move(target)} { }
 
-Link::Link(smarter::shared_ptr<FsLink> owner, std::string name, smarter::shared_ptr<FsNode> target)
+Link::Link(smarter::shared_ptr<FsLink, LinkRc> owner, std::string name, smarter::shared_ptr<FsNode> target)
 : _owner{std::move(owner)}, _name{std::move(name)}, _target{std::move(target)} {
 	assert(_owner);
 	assert(!_name.empty());
 }
 
-smarter::shared_ptr<FsLink> Link::getParent() {
+smarter::shared_ptr<FsLink, LinkRc> Link::getParent() {
 	return _owner;
 }
 
@@ -257,7 +257,7 @@ async::result<frg::expected<Error, FileStats>> RegularNode::getStatsInternal(Thr
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-RegularNode::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+RegularNode::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		SemanticFlags semantic_flags) {
 	if(semantic_flags & ~(semanticNonBlock | semanticRead | semanticWrite)){
 		std::cout << "\e[31mposix: procfs RegularNode open() received illegal arguments:"
@@ -278,7 +278,7 @@ FutureMaybe<smarter::shared_ptr<FsNode>> SuperBlock::createRegular(Process *) {
 	co_return nullptr;
 }
 
-async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
+async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 SuperBlock::rename(FsLink *, FsLink *, std::string) {
 	co_return Error::noSuchFile;
 };
@@ -293,7 +293,7 @@ async::result<frg::expected<Error, FsStats>> SuperBlock::getFsStats() {
 // DirectoryNode implementation.
 // ----------------------------------------------------------------------------
 
-smarter::shared_ptr<Link> DirectoryNode::createRootDirectory() {
+smarter::shared_ptr<Link, LinkRc> DirectoryNode::createRootDirectory() {
 	auto node = makeFsShared<DirectoryNode>();
 	auto the_node = node.get();
 	auto link = makeFsShared<Link>(std::move(node));
@@ -327,7 +327,7 @@ smarter::shared_ptr<Link> DirectoryNode::createRootDirectory() {
 DirectoryNode::DirectoryNode()
 : FsNode{&procfsSuperblock} { }
 
-smarter::shared_ptr<Link> DirectoryNode::directMkregular(FsLink *parent, std::string name,
+smarter::shared_ptr<Link, LinkRc> DirectoryNode::directMkregular(FsLink *parent, std::string name,
 		smarter::shared_ptr<RegularNode> regular) {
 	assert(_entries.find(name) == _entries.end());
 	auto link = makeFsShared<Link>(parent->sharedFromThis(), name, std::move(regular));
@@ -335,7 +335,7 @@ smarter::shared_ptr<Link> DirectoryNode::directMkregular(FsLink *parent, std::st
 	return link;
 }
 
-smarter::shared_ptr<Link> DirectoryNode::directMkdir(FsLink *parent, std::string name) {
+smarter::shared_ptr<Link, LinkRc> DirectoryNode::directMkdir(FsLink *parent, std::string name) {
 	assert(_entries.find(name) == _entries.end());
 	auto node = makeFsShared<DirectoryNode>();
 	auto link = makeFsShared<Link>(parent->sharedFromThis(), std::move(name), std::move(node));
@@ -343,14 +343,14 @@ smarter::shared_ptr<Link> DirectoryNode::directMkdir(FsLink *parent, std::string
 	return link;
 }
 
-smarter::shared_ptr<Link> DirectoryNode::directMknode(FsLink *parent, std::string name, smarter::shared_ptr<FsNode> node) {
+smarter::shared_ptr<Link, LinkRc> DirectoryNode::directMknode(FsLink *parent, std::string name, smarter::shared_ptr<FsNode> node) {
 	assert(_entries.find(name) == _entries.end());
 	auto link = makeFsShared<Link>(parent->sharedFromThis(), name, std::move(node));
 	_entries.insert(link);
 	return link;
 }
 
-smarter::shared_ptr<Link> DirectoryNode::createProcDirectory(FsLink *parent, Process *process) {
+smarter::shared_ptr<Link, LinkRc> DirectoryNode::createProcDirectory(FsLink *parent, Process *process) {
 	auto link = directMkdir(parent, std::to_string(process->pid()));
 	auto proc_dir = static_cast<DirectoryNode*>(link->getTarget().get());
 
@@ -373,7 +373,7 @@ smarter::shared_ptr<Link> DirectoryNode::createProcDirectory(FsLink *parent, Pro
 	return link;
 }
 
-smarter::shared_ptr<Link> DirectoryNode::createProcTaskDirectory(FsLink *parent, Process *process) {
+smarter::shared_ptr<Link, LinkRc> DirectoryNode::createProcTaskDirectory(FsLink *parent, Process *process) {
 	auto pidProcfsLink = process->threadGroup()->procfsLink();
 	// Create /proc/[pid] on demand to minimize observable states of /proc/[pid] being visible
 	// without any /proc/[pid]/task/[tid] attached.
@@ -403,7 +403,7 @@ VfsType DirectoryNode::getType() {
 	return VfsType::directory;
 }
 
-async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> DirectoryNode::link(FsLink *, std::string,
+async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> DirectoryNode::link(FsLink *, std::string,
 		smarter::shared_ptr<FsNode>) {
 	co_return Error::noSuchFile;
 }
@@ -414,7 +414,7 @@ async::result<frg::expected<Error, FileStats>> DirectoryNode::getStats() {
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-DirectoryNode::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+DirectoryNode::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		SemanticFlags semantic_flags) {
 	if(semantic_flags & ~(semanticNonBlock | semanticRead | semanticWrite)){
 		std::cout << "\e[31mposix: procfs DirectoryNode open() received illegal arguments:"
@@ -430,7 +430,7 @@ DirectoryNode::open(Process *, std::shared_ptr<MountView> mount, smarter::shared
 	co_return File::constructHandle(std::move(file));
 }
 
-async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> DirectoryNode::getLink(FsLink *, std::string name) {
+async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> DirectoryNode::getLink(FsLink *, std::string name) {
 	auto it = _entries.find(name);
 	if(it != _entries.end())
 		co_return *it;
@@ -1138,7 +1138,7 @@ void FdDirectoryFile::serve(smarter::shared_ptr<FdDirectoryFile> file) {
 			file, &File::fileOperations, file->_cancelServe));
 }
 
-FdDirectoryFile::FdDirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link, Process *process)
+FdDirectoryFile::FdDirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link, Process *process)
 : FileWithDefaults{FileKind::unknown,  StructName::get("procfs.fddir"), std::move(mount), std::move(link)},
 		_process{process->weak_from_this()}, _fileTable{process->fileContext()->fileTable()}, _iter{_fileTable.begin()} {}
 
@@ -1180,7 +1180,7 @@ async::result<frg::expected<Error, FileStats>> FdDirectoryNode::getStats() {
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-FdDirectoryNode::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+FdDirectoryNode::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		SemanticFlags semantic_flags) {
 	if(semantic_flags & ~(semanticNonBlock | semanticRead | semanticWrite)){
 		std::cout << "\e[31mposix: procfs FdDirectoryNode open() received illegal arguments:"
@@ -1200,7 +1200,7 @@ FdDirectoryNode::open(Process *, std::shared_ptr<MountView> mount, smarter::shar
 	co_return File::constructHandle(std::move(file));
 }
 
-async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> FdDirectoryNode::getLink(FsLink *parent, std::string name) {
+async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> FdDirectoryNode::getLink(FsLink *parent, std::string name) {
 	auto p = _process.lock();
 	if (!p)
 		co_return Error::noSuchProcess;
@@ -1214,7 +1214,7 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> FdDirectoryNode
 	co_return Error::noSuchFile;
 }
 
-SymlinkNode::SymlinkNode(Process* proc, std::shared_ptr<MountView> mount, smarter::weak_ptr<FsLink> link)
+SymlinkNode::SymlinkNode(Process* proc, std::shared_ptr<MountView> mount, smarter::weak_ptr<FsLink, LinkRc> link)
 : _process{proc->weak_from_this()}, _mount{std::move(mount)}, _link{std::move(link)} { }
 
 expected<std::string> SymlinkNode::readSymlink(FsLink *, Process *process) {
@@ -1379,7 +1379,7 @@ async::result<frg::expected<Error, FileStats>> FdInfoDirectoryNode::getStats() {
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-FdInfoDirectoryNode::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+FdInfoDirectoryNode::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		SemanticFlags semantic_flags) {
 	if(semantic_flags & ~(semanticNonBlock | semanticRead | semanticWrite)){
 		std::cout << "\e[31mposix: procfs FdInfoDirectoryNode open() received illegal arguments:"
@@ -1399,7 +1399,7 @@ FdInfoDirectoryNode::open(Process *, std::shared_ptr<MountView> mount, smarter::
 	co_return File::constructHandle(std::move(file));
 }
 
-async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> FdInfoDirectoryNode::getLink(FsLink *parent, std::string name) {
+async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> FdInfoDirectoryNode::getLink(FsLink *parent, std::string name) {
 	if(!std::all_of(name.begin(), name.end(), isdigit))
 		co_return Error::noSuchFile;
 
@@ -1424,7 +1424,7 @@ void FdInfoDirectoryFile::serve(smarter::shared_ptr<FdInfoDirectoryFile> file) {
 			file, &File::fileOperations, file->_cancelServe));
 }
 
-FdInfoDirectoryFile::FdInfoDirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link, Process* process)
+FdInfoDirectoryFile::FdInfoDirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link, Process* process)
 : FileWithDefaults{FileKind::unknown,  StructName::get("procfs.fdinfodir"), std::move(mount), std::move(link)},
 		_process{process->weak_from_this()}, _fileTable{process->fileContext()->fileTable()}, _iter{_fileTable.begin()} {}
 
@@ -1470,7 +1470,7 @@ async::result<void> FdInfoNode::store(std::string) {
 
 } // namespace procfs
 
-smarter::shared_ptr<FsLink> getProcfs() {
-	static smarter::shared_ptr<FsLink> procfs = procfs::DirectoryNode::createRootDirectory();
+smarter::shared_ptr<FsLink, LinkRc> getProcfs() {
+	static smarter::shared_ptr<FsLink, LinkRc> procfs = procfs::DirectoryNode::createRootDirectory();
 	return procfs;
 }

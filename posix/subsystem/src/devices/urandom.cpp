@@ -60,7 +60,7 @@ public:
 				file, &fileOperations, file->_cancelServe));
 	}
 
-	UrandomFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link)
+	UrandomFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 	: FileWithDefaults{FileKind::unknown,  StructName::get("urandom-file"), std::move(mount), std::move(link)} { }
 };
 
@@ -75,7 +75,7 @@ struct UrandomDevice final : UnixDevice {
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		if(semantic_flags & ~(semanticNonBlock | semanticRead | semanticWrite)){
 			std::cout << "\e[31mposix: UrandomFile open() received illegal arguments:"

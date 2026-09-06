@@ -40,12 +40,12 @@ inline constexpr ResolveFlags resolveOpenCreate = (1 << 5);
 // If the last component does not exist, resolution fails with ENOENT. Otherwise, it fails with EEXIST.
 inline constexpr ResolveFlags resolveCreatesNonDirectory = (1 << 6);
 
-using ViewPathPair = std::pair<std::shared_ptr<MountView>, smarter::shared_ptr<FsLink>>;
+using ViewPathPair = std::pair<std::shared_ptr<MountView>, smarter::shared_ptr<FsLink, LinkRc>>;
 
 struct ViewPath : public ViewPathPair {
 	ViewPath() = default;
 
-	ViewPath(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link)
+	ViewPath(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 	: ViewPathPair(mount, link) {}
 
 	// smarter::shared_ptr does not compare, hence std::pair's operator== does not apply.
@@ -59,11 +59,11 @@ struct ViewPath : public ViewPathPair {
 //! Represents a virtual view of the file system.
 //! We handle all mount point related logic in this class.
 struct MountView : std::enable_shared_from_this<MountView> {
-	static std::shared_ptr<MountView> createRoot(smarter::shared_ptr<FsLink> origin);
+	static std::shared_ptr<MountView> createRoot(smarter::shared_ptr<FsLink, LinkRc> origin);
 
 	// TODO: This is an implementation detail that could be hidden.
-	explicit MountView(uint64_t mountId, std::shared_ptr<MountView> parent, smarter::shared_ptr<FsLink> anchor,
-			smarter::shared_ptr<FsLink> origin, ViewPath deviceLink)
+	explicit MountView(uint64_t mountId, std::shared_ptr<MountView> parent, smarter::shared_ptr<FsLink, LinkRc> anchor,
+			smarter::shared_ptr<FsLink, LinkRc> origin, ViewPath deviceLink)
 	: mountId_{mountId}, _parent{std::move(parent)}, _anchor{std::move(anchor)}, _origin{std::move(origin)},
 		deviceLink_{std::move(deviceLink)}
 	{ }
@@ -73,24 +73,24 @@ struct MountView : std::enable_shared_from_this<MountView> {
 	}
 
 	std::shared_ptr<MountView> getParent() const;
-	smarter::shared_ptr<FsLink> getAnchor() const;
-	smarter::shared_ptr<FsLink> getOrigin() const;
+	smarter::shared_ptr<FsLink, LinkRc> getAnchor() const;
+	smarter::shared_ptr<FsLink, LinkRc> getOrigin() const;
 	ViewPath getDevice() const {
 		return deviceLink_;
 	}
 
-	async::result<void> mount(smarter::shared_ptr<FsLink> anchor, smarter::shared_ptr<FsLink> origin, ViewPath deviceLink = {});
+	async::result<void> mount(smarter::shared_ptr<FsLink, LinkRc> anchor, smarter::shared_ptr<FsLink, LinkRc> origin, ViewPath deviceLink = {});
 
-	std::shared_ptr<MountView> getMount(smarter::shared_ptr<FsLink> link) const;
+	std::shared_ptr<MountView> getMount(smarter::shared_ptr<FsLink, LinkRc> link) const;
 
 	struct Compare {
 		struct is_transparent { };
 
 		bool operator() (const std::shared_ptr<MountView> &a,
-				const smarter::shared_ptr<FsLink> &b) const {
+				const smarter::shared_ptr<FsLink, LinkRc> &b) const {
 			return a->getAnchor().get() < b.get();
 		}
-		bool operator() (const smarter::shared_ptr<FsLink> &a,
+		bool operator() (const smarter::shared_ptr<FsLink, LinkRc> &a,
 				const std::shared_ptr<MountView> &b) const {
 			return a.get() < b->getAnchor().get();
 		}
@@ -109,8 +109,8 @@ private:
 
 	uint64_t mountId_;
 	std::shared_ptr<MountView> _parent;
-	smarter::shared_ptr<FsLink> _anchor;
-	smarter::shared_ptr<FsLink> _origin;
+	smarter::shared_ptr<FsLink, LinkRc> _anchor;
+	smarter::shared_ptr<FsLink, LinkRc> _origin;
 	ViewPath deviceLink_;
 	std::set<std::shared_ptr<MountView>, Compare> _mounts;
 };
@@ -133,7 +133,7 @@ struct PathResolver {
 		return _currentPath.first;
 	}
 
-	smarter::shared_ptr<FsLink> currentLink() {
+	smarter::shared_ptr<FsLink, LinkRc> currentLink() {
 		return _currentPath.second;
 	}
 

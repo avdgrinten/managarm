@@ -34,7 +34,7 @@ bool logAttrs = false;
 
 int nextPtsIndex = 0;
 
-extern smarter::shared_ptr<RootLink> globalRootLink;
+extern smarter::shared_ptr<RootLink, LinkRc> globalRootLink;
 
 //-----------------------------------------------------------------------------
 
@@ -297,7 +297,7 @@ public:
 		co_return nullptr;
 	}
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 			rename(FsLink *, FsLink *, std::string) override {
 		co_return Error::noSuchFile;
 	}
@@ -339,7 +339,7 @@ struct MasterDevice final : UnixDevice {
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override;
 };
 
@@ -351,7 +351,7 @@ struct SlaveDevice final : UnixDevice, std::enable_shared_from_this<SlaveDevice>
 	}
 
 	async::result<frg::expected<Error, SharedFilePtr>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override;
 
 private:
@@ -373,7 +373,7 @@ public:
 				file, &File::fileOperations, file->cancelServe_));
 	}
 
-	MasterFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	MasterFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			bool nonBlocking);
 
 	async::result<std::expected<size_t, Error>>
@@ -444,7 +444,7 @@ public:
 				file, &File::fileOperations, file->cancelServe_));
 	}
 
-	SlaveFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	SlaveFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			std::shared_ptr<Channel> channel, bool nonBlock, bool read, bool write);
 
 	async::result<std::expected<size_t, Error>>
@@ -509,18 +509,18 @@ private:
 
 struct Link final : FsLink {
 public:
-	explicit Link(smarter::shared_ptr<FsLink> root, std::string name,
+	explicit Link(smarter::shared_ptr<FsLink, LinkRc> root, std::string name,
 			smarter::shared_ptr<DeviceNode> device)
 	: _root{std::move(root)}, _name{std::move(name)}, _device{std::move(device)} { }
 
-	smarter::shared_ptr<FsLink> getParent() override;
+	smarter::shared_ptr<FsLink, LinkRc> getParent() override;
 
 	std::string getName() override;
 
 	smarter::shared_ptr<FsNode> getTarget() override;
 
 private:
-	smarter::shared_ptr<FsLink> _root;
+	smarter::shared_ptr<FsLink, LinkRc> _root;
 	std::string _name;
 	smarter::shared_ptr<DeviceNode> _device;
 };
@@ -532,7 +532,7 @@ struct RootLink final : FsLink {
 		return _root.get();
 	}
 
-	smarter::shared_ptr<FsLink> getParent() override {
+	smarter::shared_ptr<FsLink, LinkRc> getParent() override {
 		return nullptr;
 	}
 
@@ -549,14 +549,14 @@ private:
 struct LinkCompare {
 	struct is_transparent { };
 
-	bool operator() (const smarter::shared_ptr<Link> &link, const std::string &name) const {
+	bool operator() (const smarter::shared_ptr<Link, LinkRc> &link, const std::string &name) const {
 		return link->getName() < name;
 	}
-	bool operator() (const std::string &name, const smarter::shared_ptr<Link> &link) const {
+	bool operator() (const std::string &name, const smarter::shared_ptr<Link, LinkRc> &link) const {
 		return name < link->getName();
 	}
 
-	bool operator() (const smarter::shared_ptr<Link> &a, const smarter::shared_ptr<Link> &b) const {
+	bool operator() (const smarter::shared_ptr<Link, LinkRc> &a, const smarter::shared_ptr<Link, LinkRc> &b) const {
 		return a->getName() < b->getName();
 	}
 };
@@ -584,7 +584,7 @@ public:
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *process, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *process, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		return openDevice(process, _type, _id, std::move(mount), std::move(link), semantic_flags);
 	}
@@ -628,7 +628,7 @@ public:
 		co_return FileStats{};
 	}
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	getLink(FsLink *, std::string name) override {
 		auto it = _entries.find(name);
 		if(it != _entries.end())
@@ -637,7 +637,7 @@ public:
 	}
 
 private:
-	std::set<smarter::shared_ptr<Link>, LinkCompare> _entries;
+	std::set<smarter::shared_ptr<Link, LinkRc>, LinkCompare> _entries;
 };
 
 async::result<void>
@@ -892,7 +892,7 @@ Channel::commonIoctl(managarm::fs::GenericIoctlRequest req, helix::BorrowedDescr
 //-----------------------------------------------------------------------------
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-MasterDevice::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+MasterDevice::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		SemanticFlags semantic_flags) {
 	if(semantic_flags & ~(semanticNonBlock | semanticRead | semanticWrite)){
 		std::cout << "\e[31mposix: pts MasterDevice open() received illegal arguments:"
@@ -909,7 +909,7 @@ MasterDevice::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_
 	co_return File::constructHandle(std::move(file));
 }
 
-MasterFile::MasterFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+MasterFile::MasterFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		bool nonBlocking)
 : FileWithDefaults{FileKind::unknown,  StructName::get("pts.master"), std::move(mount), std::move(link), File::defaultPipeLikeSeek},
 		_channel{std::make_shared<Channel>(nextPtsIndex++)}, _nonBlocking{nonBlocking} {
@@ -1167,7 +1167,7 @@ SlaveDevice::SlaveDevice(std::shared_ptr<Channel> channel)
 }
 
 async::result<frg::expected<Error, SharedFilePtr>>
-SlaveDevice::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+SlaveDevice::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		SemanticFlags semantic_flags) {
 	if(semantic_flags & ~(semanticNonBlock | semanticRead | semanticWrite)){
 		std::cout << "\e[31mposix: pts SlaveDevice open() received illegal arguments:"
@@ -1186,7 +1186,7 @@ SlaveDevice::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_p
 	co_return File::constructHandle(std::move(file));
 }
 
-SlaveFile::SlaveFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+SlaveFile::SlaveFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		std::shared_ptr<Channel> channel, bool nonBlock, bool read, bool write)
 : FileWithDefaults{FileKind::unknown,  StructName::get("pts.slave"), std::move(mount), std::move(link),
 		File::defaultIsTerminal | File::defaultPipeLikeSeek},
@@ -1500,7 +1500,7 @@ async::result<void> SlaveFile::ioctl(Process *, uint32_t, helix_ng::RecvInlineRe
 
 async::result<frg::expected<Error, std::string>>
 SlaveFile::ttyname() {
-	smarter::shared_ptr<FsLink> me = associatedLink();
+	smarter::shared_ptr<FsLink, LinkRc> me = associatedLink();
 	std::string name;
 	if(!isTerminal())
 		co_return Error::notTerminal;
@@ -1525,7 +1525,7 @@ void SlaveFile::handleClose() {
 // Link and RootLink implementation.
 //-----------------------------------------------------------------------------
 
-smarter::shared_ptr<FsLink> Link::getParent() {
+smarter::shared_ptr<FsLink, LinkRc> Link::getParent() {
 	return _root;
 }
 
@@ -1544,7 +1544,7 @@ smarter::shared_ptr<FsNode> RootLink::getTarget() {
 	return _root->sharedFromThis();
 }
 
-smarter::shared_ptr<RootLink> globalRootLink = makeFsShared<RootLink>();
+smarter::shared_ptr<RootLink, LinkRc> globalRootLink = makeFsShared<RootLink>();
 
 } // anonymous namespace
 
@@ -1552,7 +1552,7 @@ std::shared_ptr<UnixDevice> createMasterDevice() {
 	return std::make_shared<MasterDevice>();
 }
 
-smarter::shared_ptr<FsLink> getFsRoot() {
+smarter::shared_ptr<FsLink, LinkRc> getFsRoot() {
 	return globalRootLink;
 }
 

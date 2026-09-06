@@ -30,7 +30,7 @@ id_allocator<uint64_t> mountIdAllocator;
 // MountView implementation.
 // --------------------------------------------------------
 
-std::shared_ptr<MountView> MountView::createRoot(smarter::shared_ptr<FsLink> origin) {
+std::shared_ptr<MountView> MountView::createRoot(smarter::shared_ptr<FsLink, LinkRc> origin) {
 	return std::make_shared<MountView>(mountIdAllocator.allocate(), nullptr, nullptr, std::move(origin), ViewPath{});
 }
 
@@ -38,15 +38,15 @@ std::shared_ptr<MountView> MountView::getParent() const {
 	return _parent;
 }
 
-smarter::shared_ptr<FsLink> MountView::getAnchor() const {
+smarter::shared_ptr<FsLink, LinkRc> MountView::getAnchor() const {
 	return _anchor;
 }
 
-smarter::shared_ptr<FsLink> MountView::getOrigin() const {
+smarter::shared_ptr<FsLink, LinkRc> MountView::getOrigin() const {
 	return _origin;
 }
 
-async::result<void> MountView::mount(smarter::shared_ptr<FsLink> anchor, smarter::shared_ptr<FsLink> origin, ViewPath deviceLink) {
+async::result<void> MountView::mount(smarter::shared_ptr<FsLink, LinkRc> anchor, smarter::shared_ptr<FsLink, LinkRc> origin, ViewPath deviceLink) {
 	if (anchor) {
 		auto result = co_await anchor->obstruct();
 		(void)result;
@@ -58,7 +58,7 @@ async::result<void> MountView::mount(smarter::shared_ptr<FsLink> anchor, smarter
 	// TODO: check insert return value
 }
 
-std::shared_ptr<MountView> MountView::getMount(smarter::shared_ptr<FsLink> link) const {
+std::shared_ptr<MountView> MountView::getMount(smarter::shared_ptr<FsLink, LinkRc> link) const {
 	auto it = _mounts.find(link);
 	if(it == _mounts.end())
 		return nullptr;
@@ -79,16 +79,16 @@ async::result<void> populateRootView() {
 	co_await tree->getTarget()->mkdir(tree.get(), nullptr, "realfs", 0555);
 
 	// TODO: Check for errors from mkdir().
-	auto dev = std::get<smarter::shared_ptr<FsLink>>(co_await tree->getTarget()->mkdir(tree.get(), nullptr, "dev", 0755));
+	auto dev = std::get<smarter::shared_ptr<FsLink, LinkRc>>(co_await tree->getTarget()->mkdir(tree.get(), nullptr, "dev", 0755));
 	co_await rootView->mount(std::move(dev), getDevtmpfs());
 
-	auto sys = std::get<smarter::shared_ptr<FsLink>>(co_await tree->getTarget()->mkdir(tree.get(), nullptr, "sys", 0755));
+	auto sys = std::get<smarter::shared_ptr<FsLink, LinkRc>>(co_await tree->getTarget()->mkdir(tree.get(), nullptr, "sys", 0755));
 	co_await rootView->mount(std::move(sys), getSysfs());
 
 	// Populate the tmpfs from the fs we are running on.
 	std::vector<
 		std::pair<
-			smarter::shared_ptr<FsLink>,
+			smarter::shared_ptr<FsLink, LinkRc>,
 			std::string
 		>
 	> stack;
@@ -157,7 +157,7 @@ async::result<void> populateRootView() {
 
 			if(resp.file_type() == managarm::fs::FileType::DIRECTORY) {
 				// TODO: Check for errors from mkdir().
-				auto link = std::get<smarter::shared_ptr<FsLink>>(
+				auto link = std::get<smarter::shared_ptr<FsLink, LinkRc>>(
 				    co_await item.first->getTarget()->mkdir(item.first.get(), nullptr, resp.path(), 0755)
 				);
 				stack.push_back({link, item.second + "/" + resp.path()});

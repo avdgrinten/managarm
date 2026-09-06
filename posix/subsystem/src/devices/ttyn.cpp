@@ -297,7 +297,7 @@ public:
 				file, &fileOperations, file->_cancelServe));
 	}
 
-	TTYNFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link)
+	TTYNFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 	: FileWithDefaults{FileKind::unknown,  StructName::get("tty1-file"), std::move(mount), std::move(link), File::defaultIsTerminal | File::defaultPipeLikeSeek} {
 		memset(&_activeSettings, 0, sizeof(struct termios));
 		// cflag: Linux also stores a baud rate here.
@@ -336,7 +336,7 @@ struct TTYNDevice final : UnixDevice {
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		if(semantic_flags & ~(semanticNonBlock | semanticRead | semanticWrite)){
 			std::cout << "\e[31mposix: TTYNFile open() received illegal arguments:"

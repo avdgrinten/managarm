@@ -24,7 +24,7 @@ struct Superblock final : FsSuperblock {
 
 	FutureMaybe<smarter::shared_ptr<FsNode>> createRegular(Process *process) override;
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 			rename(FsLink *source, FsLink *directory, std::string name) override;
 	async::result<frg::expected<Error, FsStats>> getFsStats() override;
 
@@ -37,12 +37,12 @@ struct Superblock final : FsSuperblock {
 		return makedev(id.first, id.second);
 	}
 
-	smarter::shared_ptr<FsLink> internalizeRoot(uint64_t id, helix::UniqueLane lane);
-	smarter::shared_ptr<FsLink> internalizeStructural(FsLink *parent, std::string name,
+	smarter::shared_ptr<FsLink, LinkRc> internalizeRoot(uint64_t id, helix::UniqueLane lane);
+	smarter::shared_ptr<FsLink, LinkRc> internalizeStructural(FsLink *parent, std::string name,
 			uint64_t id, helix::UniqueLane lane);
 	smarter::shared_ptr<Node> internalizeDirectory(uint64_t id, helix::UniqueLane lane);
 	smarter::shared_ptr<Node> internalizePeripheralNode(int64_t type, int id, helix::UniqueLane lane);
-	smarter::shared_ptr<FsLink> internalizeLink(FsLink *parent, std::string name,
+	smarter::shared_ptr<FsLink, LinkRc> internalizeLink(FsLink *parent, std::string name,
 			smarter::shared_ptr<Node> target);
 
 	// Called from destructors. The entry may already belong to a newer object with the same key.
@@ -54,7 +54,7 @@ private:
 	helix::UniqueLane _lane;
 	std::map<uint64_t, smarter::weak_ptr<DirectoryNode>> _activeStructural;
 	std::map<uint64_t, smarter::weak_ptr<Node>> _activePeripheralNodes;
-	std::map<std::tuple<uint64_t, std::string, uint64_t>, smarter::weak_ptr<FsLink>> _activeLinks;
+	std::map<std::tuple<uint64_t, std::string, uint64_t>, smarter::weak_ptr<FsLink, LinkRc>> _activeLinks;
 
 	std::shared_ptr<UnixDevice> device_;
 };
@@ -269,7 +269,7 @@ private:
 
 public:
 	OpenFile(helix::UniqueLane control, helix::UniqueLane lane,
-			std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link)
+			std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 	: File{FileKind::unknown, StructName::get("externfs.file"), std::move(mount), std::move(link)},
 			_control{std::move(control)}, _file{std::move(lane)} { }
 
@@ -317,7 +317,7 @@ private:
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		// Regular files do not support O_NONBLOCK.
 		semantic_flags &= ~semanticNonBlock;
@@ -416,7 +416,7 @@ public:
 
 struct Link final : FsLink {
 public:
-	smarter::shared_ptr<FsLink> getParent() override {
+	smarter::shared_ptr<FsLink, LinkRc> getParent() override {
 		return _owner;
 	}
 
@@ -451,7 +451,7 @@ public:
 		return _target;
 	}
 
-	void renameTo(smarter::shared_ptr<FsLink> owner, std::string name) {
+	void renameTo(smarter::shared_ptr<FsLink, LinkRc> owner, std::string name) {
 		assert(_owner); // The root link is never renamed.
 		_owner = std::move(owner);
 		_name = std::move(name);
@@ -466,7 +466,7 @@ public:
 	Link(Superblock *sb, smarter::shared_ptr<FsNode> target)
 	: _sb{sb}, _target{std::move(target)} { }
 
-	Link(Superblock *sb, smarter::shared_ptr<FsLink> owner, std::string name,
+	Link(Superblock *sb, smarter::shared_ptr<FsLink, LinkRc> owner, std::string name,
 			smarter::shared_ptr<FsNode> target)
 	: _sb{sb}, _owner{std::move(owner)}, _name{std::move(name)}, _target{std::move(target)} {
 		assert(_owner);
@@ -481,7 +481,7 @@ public:
 
 private:
 	Superblock *_sb;
-	smarter::shared_ptr<FsLink> _owner;
+	smarter::shared_ptr<FsLink, LinkRc> _owner;
 	std::string _name;
 	smarter::shared_ptr<FsNode> _target;
 };
@@ -497,7 +497,7 @@ private:
 		return true;
 	}
 
-	async::result<std::expected<smarter::shared_ptr<FsLink>, Error>>
+	async::result<std::expected<smarter::shared_ptr<FsLink, LinkRc>, Error>>
 	getLinkOrCreate(FsLink *parent, Process *process, std::string name, mode_t mode,
 			bool exclusive) override {
 		assert(this->getType() == VfsType::directory);
@@ -542,7 +542,7 @@ private:
 		}
 	}
 
-	async::result<frg::expected<Error, std::pair<smarter::shared_ptr<FsLink>, size_t>>>
+	async::result<frg::expected<Error, std::pair<smarter::shared_ptr<FsLink, LinkRc>, size_t>>>
 	traverseLinks(FsLink *parent, std::deque<std::string> path) override {
 		managarm::fs::NodeTraverseLinksRequest req;
 		for (auto &i : path)
@@ -602,8 +602,8 @@ private:
 
 		// The reply only reports inodes, so we cannot immediately tell which link they correspond to.
 		// We replay the resolution rules to associate each link with the proper parent.
-		smarter::shared_ptr<FsLink> link = nullptr;
-		std::vector<smarter::shared_ptr<FsLink>> dirStack{parent->sharedFromThis()};
+		smarter::shared_ptr<FsLink, LinkRc> link = nullptr;
+		std::vector<smarter::shared_ptr<FsLink, LinkRc>> dirStack{parent->sharedFromThis()};
 		for (size_t i = 0; i < resp.ids().size(); i++) {
 			auto [pull_node] = co_await helix_ng::exchangeMsgs(
 				pull_lane,
@@ -640,7 +640,7 @@ private:
 		co_return std::make_pair(link, resp.links_traversed());
 	}
 
-	async::result<std::variant<Error, smarter::shared_ptr<FsLink>>>
+	async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	mkdir(FsLink *parent, Process *proc, std::string name, mode_t mode) override {
 		auto umask = proc ? proc->fsContext()->getUmask() : 0;
 
@@ -677,7 +677,7 @@ private:
 		}
 	}
 
-	async::result<std::variant<Error, smarter::shared_ptr<FsLink>>>
+	async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	symlink(FsLink *parent, std::string name, std::string path) override {
 		managarm::fs::CntRequest req;
 		req.set_req_type(managarm::fs::CntReqType::NODE_SYMLINK);
@@ -715,7 +715,7 @@ private:
 		}
 	}
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> mkdev(FsLink *parent, std::string name, VfsType type, DeviceId id) override {
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> mkdev(FsLink *parent, std::string name, VfsType type, DeviceId id) override {
 		(void)parent;
 		(void)name;
 		(void)type;
@@ -724,7 +724,7 @@ private:
 		__builtin_unreachable();
 	}
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 			getLink(FsLink *parent, std::string name) override {
 		managarm::fs::GetLinkRequest req;
 		req.set_path(name);
@@ -762,7 +762,7 @@ private:
 		}
 	}
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> link(FsLink *parent, std::string name,
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> link(FsLink *parent, std::string name,
 			smarter::shared_ptr<FsNode> target) override {
 		managarm::fs::LinkRequest req;
 		req.set_path(name);
@@ -853,7 +853,7 @@ private:
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		// Regular files do not support O_NONBLOCK.
 		semantic_flags &= ~semanticNonBlock;
@@ -943,7 +943,7 @@ FutureMaybe<smarter::shared_ptr<FsNode>> Superblock::createRegular(Process *proc
 	}
 }
 
-async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
+async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 		Superblock::rename(FsLink *source, FsLink *directory, std::string name) {
 
 	managarm::fs::RenameRequest req;
@@ -982,7 +982,7 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
 	co_return source->sharedFromThis();
 }
 
-smarter::shared_ptr<FsLink> Superblock::internalizeRoot(uint64_t id, helix::UniqueLane lane) {
+smarter::shared_ptr<FsLink, LinkRc> Superblock::internalizeRoot(uint64_t id, helix::UniqueLane lane) {
 	return makeFsShared<Link>(this, internalizeDirectory(id, std::move(lane)));
 }
 
@@ -996,7 +996,7 @@ smarter::shared_ptr<Node> Superblock::internalizeDirectory(uint64_t id, helix::U
 	return node;
 }
 
-smarter::shared_ptr<FsLink> Superblock::internalizeStructural(FsLink *parent,
+smarter::shared_ptr<FsLink, LinkRc> Superblock::internalizeStructural(FsLink *parent,
 		std::string name, uint64_t id, helix::UniqueLane lane) {
 	return internalizeLink(parent, std::move(name),
 			internalizeDirectory(id, std::move(lane)));
@@ -1024,7 +1024,7 @@ smarter::shared_ptr<Node> Superblock::internalizePeripheralNode(int64_t type,
 	return node;
 }
 
-smarter::shared_ptr<FsLink> Superblock::internalizeLink(FsLink *parent,
+smarter::shared_ptr<FsLink, LinkRc> Superblock::internalizeLink(FsLink *parent,
 		std::string name, smarter::shared_ptr<Node> target) {
 	auto parentInode = static_cast<Node *>(parent->getTarget().get())->getInode();
 	auto entry = &_activeLinks[{parentInode, name, target->getInode()}];
@@ -1097,14 +1097,14 @@ async::result<frg::expected<Error, FsStats>> Superblock::getFsStats() {
 
 } // anonymous namespace
 
-smarter::shared_ptr<FsLink> createRoot(helix::UniqueLane sb_lane, helix::UniqueLane lane, std::shared_ptr<UnixDevice> device) {
+smarter::shared_ptr<FsLink, LinkRc> createRoot(helix::UniqueLane sb_lane, helix::UniqueLane lane, std::shared_ptr<UnixDevice> device) {
 	auto sb = new Superblock{std::move(sb_lane), device};
 	// FIXME: 2 is the ext2fs root inode.
 	return sb->internalizeRoot(2, std::move(lane));
 }
 
 smarter::shared_ptr<File, FileHandle>
-createFile(helix::UniqueLane lane, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link) {
+createFile(helix::UniqueLane lane, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link) {
 	auto file = smarter::make_shared<OpenFile>(helix::UniqueLane{},
 			std::move(lane), std::move(mount), std::move(link));
 	file->setupWeakFile(file);

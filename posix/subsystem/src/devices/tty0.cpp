@@ -15,7 +15,7 @@ struct TTY0Device final : UnixDevice {
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *process, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *process, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		co_return co_await openDevice(process, VfsType::charDevice, {4, 1}, mount, link, semantic_flags);
 	}
