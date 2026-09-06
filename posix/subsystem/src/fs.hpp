@@ -8,7 +8,6 @@
 
 #include <async/result.hpp>
 #include <core/id-allocator.hpp>
-#include <frg/container_of.hpp>
 #include <hel.h>
 #include <smarter.hpp>
 #include <sys/types.h>
@@ -292,11 +291,11 @@ public:
 	}
 
 	SpecialLink(PrivateTag, VfsType fileType, int mode)
-	: fileType_{fileType}, mode_{mode} { }
+	: node_{makeFsShared<SpecialNode>(fileType, mode)} { }
 
 public:
 	smarter::shared_ptr<FsNode> getTarget() override {
-		return {sharedFromThis(), &embeddedNode_};
+		return node_;
 	}
 
 	smarter::shared_ptr<FsLink> getParent() override {
@@ -314,30 +313,31 @@ public:
 private:
 	// SpecialLinks can never be linked into "real" file systems,
 	// hence the can only ever be one link per node.
-	struct EmbeddedNode final : FsNode {
-		EmbeddedNode() : FsNode(getAnonymousSuperblock()) {}
+	struct SpecialNode final : FsNode {
+		SpecialNode(VfsType fileType, int mode)
+		: FsNode{getAnonymousSuperblock()}, fileType_{fileType}, mode_{mode} { }
 
 		VfsType getType() override {
-			auto node = frg::container_of(this, &SpecialLink::embeddedNode_);
-			return node->fileType_;
+			return fileType_;
 		}
 
 		async::result<frg::expected<Error, FileStats>> getStats() override {
-			auto node = frg::container_of(this, &SpecialLink::embeddedNode_);
 			FileStats stats{};
 			// TODO: Allocate an inode number.
 			stats.inodeNumber = 1;
 			stats.fileSize = 0;
 			stats.numLinks = 1;
-			stats.mode = node->mode_;
+			stats.mode = mode_;
 			stats.uid = 0;
 			stats.gid = 0;
 			// TODO: Linux returns the current time for all timestamps.
 			co_return stats;
 		}
+
+	private:
+		VfsType fileType_;
+		int mode_;
 	};
 
-	VfsType fileType_;
-	int mode_;
-	[[no_unique_address]] EmbeddedNode embeddedNode_;
+	smarter::shared_ptr<SpecialNode> node_;
 };
