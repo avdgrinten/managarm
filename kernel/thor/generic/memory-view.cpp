@@ -1977,6 +1977,7 @@ Error BackingMemory::updateRange(ManageRequest type, size_t offset, size_t lengt
 		return Error::illegalArgs;
 
 	ManagedSpace::MonitorPendingList pendingMonitors;
+	ManageList pendingManagement;
 	bool raiseDiscard = false;
 	{
 		auto irqLock = frg::guard(&irqMutex());
@@ -2061,12 +2062,20 @@ Error BackingMemory::updateRange(ManageRequest type, size_t offset, size_t lengt
 				}
 			}
 		}
+
+		// Re-queued writebacks must not wait for an unrelated _progressManagement() call.
+		_managed->_progressManagement(pendingManagement);
 	}
 
 	if(raiseDiscard)
 		_managed->_discardEvent.raise();
 
 	ManagedSpace::_raiseMonitors(pendingMonitors);
+
+	while(!pendingManagement.empty()) {
+		auto node = pendingManagement.pop_front();
+		node->completionEvent.raise();
+	}
 
 	return Error::success;
 }
