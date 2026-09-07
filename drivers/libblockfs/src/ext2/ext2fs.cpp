@@ -1807,7 +1807,7 @@ async::result<void> FileSystem::assignDataBlocksUsingExtents(Inode *inode,
 	protocols::ostrace::Timer timer;
 
 	auto diskInode = inode->diskInode();
-	auto blockRanges = co_await lookupBlocksUsingExtent(inode, block_offset, num_blocks);
+	auto blockRanges = co_await lookupBlocks(inode, block_offset, num_blocks);
 
 	for(auto &range : blockRanges) {
 		if(!range.hole)
