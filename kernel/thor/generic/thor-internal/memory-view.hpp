@@ -773,8 +773,9 @@ struct ManagedSpace : CacheBundle {
 		LoadState loadState{LoadState::missing};
 		TxState transactionState{TxState::none};
 		// Whether the page is dirty even after a pending writeback completes.
-		// Can only be true in LoadState::present and TxState::writeback.
-		// Eventually causes a transition to TxState::dirty (unless the page is discarded without writeback).
+		// Can only be true in LoadState::present and TxState::writeback, avertReclaim,
+		// invalidation or avertDiscard.
+		// Eventually causes another writeback (unless the page is discarded without writeback).
 		bool stillDirty{false};
 		// Whether the backing store's copy of the page matches its last in-memory contents.
 		// Maintained by markDirty()/updateRange().
