@@ -2132,9 +2132,7 @@ async::result<std::vector<BlockRange>> FileSystem::lookupBlocks(Inode *inode,
 async::result<std::vector<BlockRange>> FileSystem::lookupBlocksOnDisk(Inode *inode,
 		uint64_t block_offset, size_t num_blocks) {
 	if(inode->usesExtents) {
-		auto blockRanges = co_await lookupBlocksUsingExtent(inode, block_offset, num_blocks);
-		co_await helix_ng::asyncNop();
-		co_return blockRanges;
+		co_return co_await lookupBlocksUsingExtent(inode, block_offset, num_blocks);
 	}
 
 	size_t per_indirect = blockSize / 4;
@@ -2235,7 +2233,6 @@ async::result<void> FileSystem::assignDataBlocks(Inode *inode,
 		uint64_t block_offset, size_t num_blocks) {
 	if(inode->usesExtents) {
 		co_await assignDataBlocksUsingExtents(inode, block_offset, num_blocks);
-		co_await helix_ng::asyncNop();
 		co_return;
 	}
 
@@ -2517,7 +2514,6 @@ async::result<void> FileSystem::freeDataBlocksUsingExtents(Inode *inode, uint64_
 async::result<void> FileSystem::freeDataBlocks(Inode *inode, uint64_t firstBlock) {
 	if(inode->usesExtents) {
 		co_await freeDataBlocksUsingExtents(inode, firstBlock);
-		co_await helix_ng::asyncNop();
 		co_return;
 	}
 
