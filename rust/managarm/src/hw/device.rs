@@ -248,4 +248,60 @@ impl Device {
             })
             .collect())
     }
+
+    pub async fn enable_busmaster(&self) -> Result<()> {
+        self.simple_request(&bindings::EnableBusmasterRequest::new())
+            .await
+    }
+
+    pub async fn enable_bus_irq(&self) -> Result<()> {
+        self.simple_request(&bindings::EnableBusIrqRequest::new())
+            .await
+    }
+
+    pub async fn enable_msi(&self) -> Result<()> {
+        self.simple_request(&bindings::EnableMsiRequest::new()).await
+    }
+
+    pub async fn install_msi(&self, index: usize) -> Result<Handle> {
+        let head = bragi::head_to_bytes(&bindings::InstallMsiRequest::new(index as u32))?;
+        let (offer, (_send_head, recv)) = hel::submit_async(
+            &self.handle,
+            hel::Offer::new_with_lane((hel::SendBuffer::new(&head), hel::ReceiveInline)),
+        )
+        .await?;
+
+        let recv_data = recv?;
+        let conversation_lane = offer?.expect("No lane offered");
+        let preamble = bragi::preamble_from_bytes(&recv_data)?;
+        let mut tail_buffer = vec![0; preamble.tail_size() as usize];
+        let (_recv, pull) = hel::submit_async(
+            &conversation_lane,
+            (
+                hel::ReceiveBuffer::new(&mut tail_buffer),
+                hel::PullDescriptor::new(hel_sys::kHelRightWait | hel_sys::kHelRightSignal),
+            ),
+        )
+        .await?;
+
+        let response: bindings::SvrResponse =
+            bragi::head_tail_from_bytes(&recv_data, &tail_buffer)?;
+
+        if response.error() == bindings::Errors::Success {
+            Ok(pull?.expect("No descriptor pushed"))
+        } else {
+            Err(Error::from(response.error()))
+        }
+    }
+
+    // Sends a request that is answered by a plain SvrResponse without payload.
+    async fn simple_request<M: Message>(&self, request: &M) -> Result<()> {
+        let response: bindings::SvrResponse = self.request_tailed(request).await?;
+
+        if response.error() == bindings::Errors::Success {
+            Ok(())
+        } else {
+            Err(Error::from(response.error()))
+        }
+    }
 }
