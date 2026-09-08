@@ -90,6 +90,7 @@ add_file('usr/bin', 'usr/bin', 'block-nvme')
 add_file('usr/bin', 'usr/bin', 'storage')
 add_file('usr/bin', 'usr/bin', 'virtio-block')
 add_file('usr/bin', 'usr/bin', 'virtio-console')
+add_file('usr/bin', 'usr/bin', 'dmalog')
 add_file('usr/bin', 'usr/bin', 'snd-hda')
 
 if args.arch == 'x86_64-managarm':

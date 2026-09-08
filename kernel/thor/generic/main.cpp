@@ -352,6 +352,9 @@ extern "C" void thorMain() {
 		KernelFiber::asyncBlockCurrent(runMbus());
 		initializeKernletCtl();
 		KernelFiber::asyncBlockCurrent(runServerFromInitrd("usr/lib/managarm/server/sif.bin"));
+		// thor's own dmalog driver only sees PCI devices when thor enumerates the bus.
+		if(debugOptionsNote->useSif)
+			KernelFiber::asyncBlockCurrent(runServerFromInitrd("usr/lib/managarm/server/dmalog.bin"));
 		KernelFiber::asyncBlockCurrent(runServerFromInitrd("usr/lib/managarm/server/kernletcc.bin"));
 		KernelFiber::asyncBlockCurrent(runServerFromInitrd("usr/lib/managarm/server/posix-devserver.bin"));
 		KernelFiber::asyncBlockCurrent(runServerFromInitrd("usr/lib/managarm/server/clocktracker.bin"));
