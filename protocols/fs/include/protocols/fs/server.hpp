@@ -68,15 +68,30 @@ struct FsStats {
 
 using SeekResult = std::variant<Error, int64_t>;
 
-using GetLinkResult = std::tuple<std::shared_ptr<void>, int64_t, FileType>;
+using GetLinkResult = std::tuple<std::shared_ptr<void>, int64_t, FileType, uint64_t>;
 
 using OpenResult = std::pair<helix::UniqueLane, helix::UniqueLane>;
 using AcceptResult = std::pair<helix::UniqueLane, helix::UniqueLane>;
 
-using MkdirResult = std::pair<std::shared_ptr<void>, int64_t>;
-using SymlinkResult = std::pair<std::shared_ptr<void>, int64_t>;
+using MkdirResult = std::tuple<std::shared_ptr<void>, int64_t, uint64_t>;
+using SymlinkResult = std::tuple<std::shared_ptr<void>, int64_t, uint64_t>;
+using RmdirResult = std::tuple<int64_t, uint64_t>;
 
-using TraverseLinksResult = frg::expected<Error, std::tuple<std::vector<std::pair<std::shared_ptr<void>, int64_t>>, FileType, size_t>>;
+struct TraversedLink {
+	std::shared_ptr<void> node;
+	int64_t id;
+	// Mutation serial of the directory that the link was resolved in.
+	uint64_t serial;
+};
+
+struct TraverseLinksError {
+	Error error;
+	// Mutation serial of the directory in which the failing lookup ran. Only set for fileNotFound.
+	uint64_t serial = 0;
+};
+
+using TraverseLinksResult = std::expected<std::tuple<std::vector<TraversedLink>, FileType, size_t>,
+		TraverseLinksError>;
 
 struct FileOperations {
 	constexpr FileOperations &withSeekAbs(async::result<SeekResult> (*f)(void *object,
@@ -240,10 +255,11 @@ struct NodeOperations {
 	async::result<std::expected<GetLinkResult, protocols::fs::Error>> (*link)(std::shared_ptr<void> object,
 			std::string name, int64_t ino);
 
-	async::result<std::expected<void, protocols::fs::Error>> (*unlink)(std::shared_ptr<void> object,
+	// unlink() returns the mutation serial of the directory.
+	async::result<std::expected<uint64_t, protocols::fs::Error>> (*unlink)(std::shared_ptr<void> object,
 			std::string name);
 
-	async::result<std::expected<void, protocols::fs::Error>> (*rmdir)(std::shared_ptr<void> object,
+	async::result<std::expected<RmdirResult, protocols::fs::Error>> (*rmdir)(std::shared_ptr<void> object,
 			std::string name);
 
 	async::result<OpenResult> (*open)(std::shared_ptr<void> object, bool write, bool read, bool append);

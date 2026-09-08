@@ -70,6 +70,13 @@ consts FileCaps uint32 {
 	FC_POSIX_LANE = 2
 }
 
+consts MountCaps uint64 {
+	// The server never modifies directory entries on its own:
+	// all directory entry mutations originate from requests sent by the client.
+	// Allows the client to cache the directory hierarchy.
+	MC_CLIENT_EXCLUSIVE_NAMESPACE = 1
+}
+
 enum CntReqType {
 	NONE = 0,
 
@@ -250,6 +257,15 @@ head(128):
 		// returned by NODE_GET_LINK
 		tag(18) int64 id;
 
+		// Directory mutation serial that enables client name caches to detect lookup <-> mutation races.
+		// Every mutation of a directory's entries advances a per-superblock counter
+		// (starting at one) and records the new value as that directory's serial.
+		// A lookup reports the current serial of the directory.
+		// A mutation reports the serial that it assigned, or zero if it did not touch any directory.
+		// Note that this also applies to error responses: a request that fails after it
+		// already mutated a directory must still report a serial.
+		tag(98) uint64 serial;
+
 		// returned by FSTAT
 		tag(4) uint64 file_size;
 
@@ -409,8 +425,12 @@ head(128):
 	Errors error;
 	uint64 links_traversed;
 	FileType file_type;
+	// On FILE_NOT_FOUND: serial of the directory in which the lookup failed.
+	uint64 serial;
 tail:
 	int64[] ids;
+	// Serial of the directory that each entry of ids was resolved in.
+	uint64[] serials;
 }
 
 message RecvMsgRequest 6 {
@@ -791,6 +811,7 @@ head(128):
 	Errors error;
 	FileType file_type;
 	int64 id;
+	uint64 serial;
 }
 
 message MkdirRequest 33 {
@@ -926,6 +947,7 @@ tail:
 message MountResponse 52 {
 head(128):
 	Errors error;
+	uint64 caps;
 }
 
 message VtSetModeRequest 53 {

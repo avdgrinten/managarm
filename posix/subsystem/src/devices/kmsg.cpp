@@ -145,7 +145,7 @@ public:
 				file, &fileOperations, file->cancelServe_));
 	}
 
-	KmsgFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link, helix::UniqueLane lane, bool nonblock)
+	KmsgFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link, helix::UniqueLane lane, bool nonblock)
 	: FileWithDefaults{FileKind::unknown,  StructName::get("kmsg-file"), std::move(mount), std::move(link)},
 		lane_{std::move(lane)}, nonBlock_{nonblock} {}
 };
@@ -161,7 +161,7 @@ struct KmsgDevice final : UnixDevice {
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags flags) override {
 		bool nonblock = flags & semanticNonBlock;
 

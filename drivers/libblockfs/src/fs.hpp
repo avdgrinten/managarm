@@ -1,6 +1,8 @@
 #pragma once
 
 #include "common.hpp"
+#include <atomic>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <unordered_set>
@@ -50,6 +52,11 @@ struct BaseInode {
 
 	// Protected by obstructedLinksMutex.
 	std::unordered_set<std::string> obstructedLinks;
+
+	// Serial of the last mutation of this directory's entries.
+	// Updated to BaseFileSystem::mutationSerial_ on any mutation.
+	// Protected by inodeMutex.
+	uint64_t dirSerial = 0;
 };
 
 struct BaseFile {
@@ -94,12 +101,24 @@ struct BaseFileSystem {
 	// Ordered after BaseFile::mutex.
 	async::shared_mutex topologyMutex;
 
+	// Assigns a fresh mutation serial to the given directories and returns it.
+	// Callers must hold the inodeMutex of each directory (exclusive).
+	uint64_t recordMutation(std::initializer_list<BaseInode *> dirs) {
+		auto serial = mutationSerial_.fetch_add(1, std::memory_order_relaxed) + 1;
+		for(auto dir : dirs)
+			dir->dirSerial = serial;
+		return serial;
+	}
+
 	BaseFileSystem(const BaseFileSystem &) = delete;
 	BaseFileSystem(BaseFileSystem &&) = delete;
 	BaseFileSystem &operator=(const BaseFileSystem &) = delete;
 	BaseFileSystem &operator=(BaseFileSystem &&) = delete;
 
 	virtual ~BaseFileSystem() = default;
+
+private:
+	std::atomic<uint64_t> mutationSerial_{0};
 };
 
 template <typename T>

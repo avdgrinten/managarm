@@ -724,7 +724,7 @@ private:
 	std::shared_ptr<FsContext> _fsContext;
 	std::shared_ptr<FileContext> _fileContext;
 
-	smarter::shared_ptr<procfs::Link> procfsTaskLink_;
+	smarter::shared_ptr<procfs::Link, LinkRc> procfsTaskLink_;
 
 	std::shared_ptr<ThreadGroup> tgPointer_;
 	frg::default_list_hook<Process> tgHook_;
@@ -898,11 +898,11 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 		return _childrenUsage;
 	}
 
-	void setProcfsLink(smarter::shared_ptr<procfs::Link> link) {
+	void setProcfsLink(smarter::shared_ptr<procfs::Link, LinkRc> link) {
 		procfsLink_ = link;
 	}
 
-	smarter::shared_ptr<procfs::Link> procfsLink() const {
+	smarter::shared_ptr<procfs::Link, LinkRc> procfsLink() const {
 		return procfsLink_;
 	}
 
@@ -1046,7 +1046,7 @@ private:
 	> _notifyQueue;
 	async::recurring_event _notifyBell;
 
-	smarter::shared_ptr<procfs::Link> procfsLink_;
+	smarter::shared_ptr<procfs::Link, LinkRc> procfsLink_;
 
 	uint64_t currentSignalSeq_ = 1;
 	// ThreadGroup-wide signal queue for signals with no thread to accept them.

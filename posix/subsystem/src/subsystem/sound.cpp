@@ -45,7 +45,7 @@ struct ControlDevice final : UnixDevice, drvcore::ClassDevice {
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		return openExternalDevice(lane_, std::move(mount), std::move(link), semantic_flags);
 	}
@@ -81,7 +81,7 @@ struct PcmDevice final : UnixDevice, drvcore::ClassDevice {
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		return openExternalDevice(lane_, std::move(mount), std::move(link), semantic_flags);
 	}

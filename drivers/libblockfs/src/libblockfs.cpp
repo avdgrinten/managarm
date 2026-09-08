@@ -114,7 +114,7 @@ struct HandlePartition {
 			fs = std::make_unique<btrfs::FileSystem>(partition);
 			co_await static_cast<btrfs::FileSystem *>(fs.get())->init();
 		} else {
-			managarm::fs::SvrResponse resp;
+			managarm::fs::MountResponse resp;
 			resp.set_error(managarm::fs::Errors::NO_BACKING_DEVICE);
 
 			auto ser = resp.SerializeAsString();
@@ -131,8 +131,9 @@ struct HandlePartition {
 		protocols::fs::serveNode(std::move(local_lane), fs->accessRoot(),
 				fs->nodeOps());
 
-		managarm::fs::SvrResponse resp;
+		managarm::fs::MountResponse resp;
 		resp.set_error(managarm::fs::Errors::SUCCESS);
+		resp.set_caps(managarm::fs::MountCaps::MC_CLIENT_EXCLUSIVE_NAMESPACE);
 
 		auto ser = resp.SerializeAsString();
 		auto [send_resp, push_node] = co_await helix_ng::exchangeMsgs(
@@ -259,6 +260,8 @@ struct HandlePartition {
 		std::shared_ptr<ext2fs::Inode> movedInode, victimInode;
 		// These locks are taken below for the moved and victim inodes.
 		std::optional<frg::unique_lock<async::shared_mutex>> thirdLock, fourthLock;
+		// Entry that the rename replaces, reported once the rename succeeded.
+		std::optional<ext2fs::DirEntry> replacedEntry;
 
 		if(old_file) {
 			// Reject moving a directory into itself or one of its own
@@ -410,11 +413,14 @@ struct HandlePartition {
 				HEL_CHECK(send_resp.error());
 				co_return {};
 			}
+			replacedEntry = new_entry.value();
 			protocols::ostrace::Timer linkTimer;
 			auto link_result = co_await newInode->link(req.new_name(),
 					old_file.value().inode, old_file.value().fileType);
 			linkTime += linkTimer.elapsed();
 			if(!link_result) {
+				// We already mutated the directory, so report a serial.
+				resp.set_serial(fs->recordMutation({oldInode.get(), newInode.get()}));
 				resp.set_error(link_result.error() | protocols::fs::toFsError);
 
 				auto ser = resp.SerializeAsString();
@@ -431,6 +437,8 @@ struct HandlePartition {
 					&& oldInode->number != newInode->number) {
 				auto reparent = co_await movedInode->updateDotDot(newInode->number);
 				if(!reparent) {
+					// We already mutated the directory, so report a serial.
+					resp.set_serial(fs->recordMutation({oldInode.get(), newInode.get()}));
 					resp.set_error(reparent.error() | protocols::fs::toFsError);
 
 					auto ser = resp.SerializeAsString();
@@ -454,6 +462,8 @@ struct HandlePartition {
 		auto result = co_await oldInode->removeEntry(req.old_name());
 		removeTime += removeOldTimer.elapsed();
 		if(!result) {
+			// We already mutated the directory, so report a serial.
+			resp.set_serial(fs->recordMutation({oldInode.get(), newInode.get()}));
 			resp.set_error(result.error() | protocols::fs::toFsError);
 
 			auto ser = resp.SerializeAsString();
@@ -462,6 +472,26 @@ struct HandlePartition {
 			HEL_CHECK(send_resp.error());
 			co_return {};
 		}
+		// Report the replaced entry so that the client can drop its state for it.
+		if(replacedEntry) {
+			resp.set_id(replacedEntry->inode);
+			switch(replacedEntry->fileType) {
+			case kTypeDirectory:
+				resp.set_file_type(managarm::fs::FileType::DIRECTORY);
+				break;
+			case kTypeRegular:
+				resp.set_file_type(managarm::fs::FileType::REGULAR);
+				break;
+			case kTypeSymlink:
+				resp.set_file_type(managarm::fs::FileType::SYMLINK);
+				break;
+			default:
+				throw std::runtime_error("Unexpected file type");
+			}
+		}
+		// Report one serial for both directories, so that the client can order this
+		// rename against the mutations it observes on either directory.
+		resp.set_serial(fs->recordMutation({oldInode.get(), newInode.get()}));
 		resp.set_error(managarm::fs::Errors::SUCCESS);
 
 		auto ser = resp.SerializeAsString();
@@ -592,7 +622,7 @@ struct HandleDevice {
 		if(!tailRes)
 			co_return std::unexpected(tailRes.error());
 
-		managarm::fs::SvrResponse resp;
+		managarm::fs::MountResponse resp;
 		resp.set_error(managarm::fs::Errors::ILLEGAL_OPERATION_TARGET);
 
 		auto ser = resp.SerializeAsString();

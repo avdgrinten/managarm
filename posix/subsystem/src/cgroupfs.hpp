@@ -22,16 +22,16 @@ struct DirectoryNode;
 struct LinkCompare {
 	struct is_transparent { };
 
-	bool operator() (const smarter::shared_ptr<Link> &a, const smarter::shared_ptr<Link> &b) const;
-	bool operator() (const smarter::shared_ptr<Link> &link, const std::string &name) const;
-	bool operator() (const std::string &name, const smarter::shared_ptr<Link> &link) const;
+	bool operator() (const smarter::shared_ptr<Link, LinkRc> &a, const smarter::shared_ptr<Link, LinkRc> &b) const;
+	bool operator() (const smarter::shared_ptr<Link, LinkRc> &link, const std::string &name) const;
+	bool operator() (const std::string &name, const smarter::shared_ptr<Link, LinkRc> &link) const;
 };
 
 struct RegularFile final : FileWithDefaults {
 public:
 	static void serve(smarter::shared_ptr<RegularFile> file);
 
-	explicit RegularFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link);
+	explicit RegularFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link);
 
 	void handleClose() override;
 
@@ -58,7 +58,7 @@ struct DirectoryFile final : FileWithDefaults {
 public:
 	static void serve(smarter::shared_ptr<DirectoryFile> file);
 
-	explicit DirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link);
+	explicit DirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link);
 
 	void handleClose() override;
 
@@ -73,21 +73,21 @@ private:
 	async::cancellation_event _cancelServe;
 
 	DotEntriesPhase _dots = DotEntriesPhase::dot;
-	std::set<smarter::shared_ptr<Link>, LinkCompare>::iterator _iter;
+	std::set<smarter::shared_ptr<Link, LinkRc>, LinkCompare>::iterator _iter;
 };
 
 struct Link final : FsLink {
 	explicit Link(smarter::shared_ptr<FsNode> target);
 
-	explicit Link(smarter::shared_ptr<FsLink> owner,
+	explicit Link(smarter::shared_ptr<FsLink, LinkRc> owner,
 			std::string name, smarter::shared_ptr<FsNode> target);
 
-	smarter::shared_ptr<FsLink> getParent() override;
+	smarter::shared_ptr<FsLink, LinkRc> getParent() override;
 	std::string getName() override;
 	smarter::shared_ptr<FsNode> getTarget() override;
 
 private:
-	smarter::shared_ptr<FsLink> _owner;
+	smarter::shared_ptr<FsLink, LinkRc> _owner;
 	std::string _name;
 	smarter::shared_ptr<FsNode> _target;
 };
@@ -101,7 +101,7 @@ struct RegularNode : FsNode {
 	VfsType getType() override;
 	async::result<frg::expected<Error, FileStats>> getStats() override;
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override;
 
 	async::result<Error> chmod(int) override {
@@ -121,7 +121,7 @@ public:
 
 	FutureMaybe<smarter::shared_ptr<FsNode>> createRegular(Process *) override;
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 			rename(FsLink *source, FsLink *directory, std::string name) override;
 	async::result<frg::expected<Error, FsStats>> getFsStats() override;
 
@@ -140,39 +140,39 @@ private:
 struct DirectoryNode final : FsNode {
 	friend struct DirectoryFile;
 
-	static smarter::shared_ptr<Link> createRootDirectory();
+	static smarter::shared_ptr<Link, LinkRc> createRootDirectory();
 
 	DirectoryNode();
 
-	smarter::shared_ptr<Link> directMkregular(FsLink *parent, std::string name,
+	smarter::shared_ptr<Link, LinkRc> directMkregular(FsLink *parent, std::string name,
 			smarter::shared_ptr<RegularNode> regular);
-	smarter::shared_ptr<Link> directMknode(FsLink *parent, std::string name,
+	smarter::shared_ptr<Link, LinkRc> directMknode(FsLink *parent, std::string name,
 			smarter::shared_ptr<FsNode> node);
-	smarter::shared_ptr<Link> directMkdir(FsLink *parent, std::string name);
-	async::result<std::variant<Error, smarter::shared_ptr<FsLink>>>
+	smarter::shared_ptr<Link, LinkRc> directMkdir(FsLink *parent, std::string name);
+	async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	mkdir(FsLink *parent, Process *, std::string name, mode_t mode) override;
 
 	VfsType getType() override;
 	async::result<frg::expected<Error, FileStats>> getStats() override;
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> link(FsLink *parent, std::string name,
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> link(FsLink *parent, std::string name,
 			smarter::shared_ptr<FsNode> target) override;
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override;
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> getLink(FsLink *parent, std::string name) override;
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> getLink(FsLink *parent, std::string name) override;
 	async::result<frg::expected<Error>> unlink(std::string name) override;
 
 	async::result<Error> chmod(int) override {
 		co_return Error::success;
 	}
 
-	smarter::shared_ptr<Link> createCgroupDirectory(FsLink *parent, std::string name);
+	smarter::shared_ptr<Link, LinkRc> createCgroupDirectory(FsLink *parent, std::string name);
 	void createCgroupFiles(FsLink *parent);
 
 private:
-	std::set<smarter::shared_ptr<Link>, LinkCompare> _entries;
+	std::set<smarter::shared_ptr<Link, LinkRc>, LinkCompare> _entries;
 };
 
 struct ProcsNode final : RegularNode {
@@ -209,4 +209,4 @@ struct LinkNode : FsNode {
 
 } // namespace cgroupfs
 
-smarter::shared_ptr<FsLink> getCgroupfs();
+smarter::shared_ptr<FsLink, LinkRc> getCgroupfs();

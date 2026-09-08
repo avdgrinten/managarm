@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 
 #include "common.hpp"
+#include "link-rc.hpp"
 
 struct File;
 struct MountView;
@@ -471,7 +472,7 @@ public:
 	File(FileKind kind, StructName struct_name, DefaultOps default_ops = 0)
 	: kind_{kind}, _structName{struct_name}, _defaultOps{default_ops}, _isOpen{true} { }
 
-	File(FileKind kind, StructName struct_name, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	File(FileKind kind, StructName struct_name, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			DefaultOps default_ops = 0)
 	: _link{std::move(link)}, kind_{kind}, _structName{struct_name}, _mount{std::move(mount)},
 			_defaultOps{default_ops}, _isOpen{true} { }
@@ -519,7 +520,7 @@ public:
 	// This is the link that was used to open the file.
 	// Note that this might not be the only link that can be used
 	// to reach the file's inode.
-	smarter::shared_ptr<FsLink> associatedLink() {
+	smarter::shared_ptr<FsLink, LinkRc> associatedLink() {
 		if(!_link)
 			std::cout << "posix \e[1;34m" << structName()
 					<< "\e[0m: Object does not support associatedLink()" << std::endl;
@@ -623,7 +624,7 @@ public:
 	virtual async::result<protocols::fs::Error> flock(int flags);
 
 protected:
-	const smarter::shared_ptr<FsLink> _link;
+	const smarter::shared_ptr<FsLink, LinkRc> _link;
 
 private:
 	smarter::counter _fileCtr;
@@ -641,7 +642,7 @@ struct FileWithDefaults : File {
 	FileWithDefaults(FileKind kind, StructName struct_name, DefaultOps default_ops = 0)
 	: File{kind, struct_name, default_ops} { }
 
-	FileWithDefaults(FileKind kind, StructName struct_name, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	FileWithDefaults(FileKind kind, StructName struct_name, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			DefaultOps default_ops = 0)
 	: File{kind, struct_name, std::move(mount), std::move(link), default_ops} { }
 
@@ -662,7 +663,7 @@ public:
 				file, &fileOperations, file->_cancelServe));
 	}
 
-	DummyFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link, DefaultOps default_ops = 0)
+	DummyFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link, DefaultOps default_ops = 0)
 	: FileWithDefaults{FileKind::unknown, StructName::get("dummy-file"), std::move(mount), std::move(link), default_ops | defaultPipeLikeSeek} { }
 
 	helix::BorrowedDescriptor getPassthroughLane() override {

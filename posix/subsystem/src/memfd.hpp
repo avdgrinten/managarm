@@ -14,7 +14,7 @@ public:
 				file, &fileOperations, file->_cancelServe));
 	}
 
-	MemoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link, bool allowSealing)
+	MemoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link, bool allowSealing)
 	: FileWithDefaults{FileKind::unknown,  StructName::get("memfd-file"), mount, link}, _offset{0} {
 		if(!allowSealing) {
 			_seals = F_SEAL_SEAL;
@@ -71,23 +71,23 @@ private:
 	struct PrivateTag { }; // To tag-dispatch to private methods.
 
 public:
-	static smarter::shared_ptr<MemoryFileLink> makeMemoryFileLink(int mode) {
+	static smarter::shared_ptr<MemoryFileLink, LinkRc> makeMemoryFileLink(int mode) {
 		return makeFsShared<MemoryFileLink>(PrivateTag{}, mode);
 	}
 
 	MemoryFileLink(PrivateTag, int mode)
-	: mode_{mode} { }
+	: node_{makeFsShared<MemoryFileNode>(mode)} { }
 
 	void setFile(smarter::shared_ptr<MemoryFile> file) {
-		file_ = std::move(file);
+		node_->setFile(std::move(file));
 	}
 
 public:
 	smarter::shared_ptr<FsNode> getTarget() override {
-		return {sharedFromThis(), &embeddedNode_};
+		return node_;
 	}
 
-	smarter::shared_ptr<FsLink> getParent() override {
+	smarter::shared_ptr<FsLink, LinkRc> getParent() override {
 		return nullptr;
 	}
 
@@ -102,28 +102,34 @@ public:
 private:
 	// MemoryFileLink can never be linked into "real" file systems,
 	// hence the can only ever be one link per node.
-	struct EmbeddedNode final : FsNode {
-		EmbeddedNode() : FsNode(getAnonymousSuperblock()) {}
+	struct MemoryFileNode final : FsNode {
+		MemoryFileNode(int mode)
+		: FsNode{getAnonymousSuperblock()}, mode_{mode} { }
+
+		void setFile(smarter::shared_ptr<MemoryFile> file) {
+			file_ = std::move(file);
+		}
 
 		VfsType getType() override {
 			return VfsType::regular;
 		}
 
 		async::result<frg::expected<Error, FileStats>> getStats() override {
-			auto node = frg::container_of(this, &MemoryFileLink::embeddedNode_);
 			FileStats stats{};
 			stats.inodeNumber = 1;
-			stats.fileSize = node->file_->fileSize();
+			stats.fileSize = file_->fileSize();
 			stats.numLinks = 1;
-			stats.mode = node->mode_;
+			stats.mode = mode_;
 			stats.uid = 0;
 			stats.gid = 0;
 			// TODO: Linux returns the current time for all timestamps.
 			co_return stats;
 		}
+
+	private:
+		smarter::shared_ptr<MemoryFile> file_;
+		int mode_;
 	};
 
-	smarter::shared_ptr<MemoryFile> file_;
-	int mode_;
-	[[no_unique_address]] EmbeddedNode embeddedNode_;
+	smarter::shared_ptr<MemoryFileNode> node_;
 };

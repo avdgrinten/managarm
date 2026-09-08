@@ -58,7 +58,7 @@ public:
 				smarter::shared_ptr<File>{file}, &File::fileOperations));
 	}
 
-	OpenFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	OpenFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		bool isReader, bool isWriter, bool nonBlock = false)
 	: FileWithDefaults{FileKind::unknown,  StructName::get("fifo"), mount, link, File::defaultPipeLikeSeek},
 		isReader_{isReader}, isWriter_{isWriter}, nonBlock_{nonBlock} { }
@@ -312,7 +312,7 @@ void unlinkNamedChannel(FsNode *node) {
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-openNamedChannel(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link, FsNode *node, SemanticFlags flags) {
+openNamedChannel(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link, FsNode *node, SemanticFlags flags) {
 	if (globalChannelMap.find(node) == globalChannelMap.end())
 		co_return nullptr;
 

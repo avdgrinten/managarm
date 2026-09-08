@@ -1,8 +1,11 @@
 #include <async/cancellation.hpp>
 #include <sys/epoll.h>
+#include <algorithm>
 #include <map>
+#include <vector>
 
 #include <bragi/helpers-std.hpp>
+#include <frg/list.hpp>
 #include <frg/std_compat.hpp>
 #include <protocols/fs/client.hpp>
 #include "common.hpp"
@@ -18,13 +21,103 @@ namespace {
 
 struct Node;
 struct DirectoryNode;
+struct Superblock;
 
-struct Superblock final : FsSuperblock {
-	Superblock(helix::UniqueLane lane, std::shared_ptr<UnixDevice> device);
+// Bounds the number of reclaimable (directory, name) entries that the name cache keeps alive.
+constexpr size_t nameCacheCapacity = 8192;
+// Number of hash buckets; a power of two, sized for a load factor of one at capacity.
+constexpr size_t nameCacheBuckets = 8192;
+
+size_t nameCacheHash(FsNode *dir, const std::string &name) {
+	return std::hash<std::string>{}(name)
+			^ (reinterpret_cast<uintptr_t>(dir) * size_t{0x9e3779b97f4a7c15});
+}
+
+// If a namecache is enabled for a superblock, links double as namecache entries.
+struct Link final : FsLink {
+public:
+	smarter::shared_ptr<FsLink, LinkRc> getParent() override {
+		return _owner;
+	}
+
+	async::result<frg::expected<Error>> obstruct() override;
+
+	// Whether this link was obstructed by a mount; cached path walks must not descend past it.
+	bool isObstructed() {
+		return _obstructed;
+	}
+
+	smarter::shared_ptr<FsNode> getTarget() override {
+		return _target;
+	}
+
+	// A negative link records that a name is known to be absent, so it has no target.
+	// Such links only ever exist as name cache entries.
+	bool isNegative() {
+		return !_target;
+	}
+
+	void renameTo(smarter::shared_ptr<FsLink, LinkRc> owner, std::string name) {
+		assert(_owner); // The root link is never renamed.
+		_owner = std::move(owner);
+		_name = std::move(name);
+	}
+
+	std::string getName() override {
+		assert(_owner);
+		return _name;
+	}
+
+	// Same as getParentNode() but avoids refcount churn.
+	FsNode *ownerNode() {
+		return static_cast<Link *>(_owner.get())->_target.get();
+	}
+
+	// Constructs the root link of the mount, which has neither an owner nor a name.
+	Link(Superblock *sb, smarter::shared_ptr<FsNode> target)
+	: _sb{sb}, _target{std::move(target)} { }
+
+	// Constructs a negative link.
+	Link(Superblock *sb, smarter::shared_ptr<FsLink, LinkRc> owner, std::string name)
+	: _sb{sb}, _owner{std::move(owner)}, _name{std::move(name)} {
+		assert(_owner);
+	}
+
+	Link(Superblock *sb, smarter::shared_ptr<FsLink, LinkRc> owner, std::string name,
+			smarter::shared_ptr<FsNode> target)
+	: _sb{sb}, _owner{std::move(owner)}, _name{std::move(name)}, _target{std::move(target)} {
+		assert(_owner);
+	}
+
+	~Link();
+
+private:
+	friend struct Superblock;
+	friend struct DirectoryNode;
+
+	Superblock *_sb;
+	smarter::shared_ptr<FsLink, LinkRc> _owner;
+	std::string _name;
+	smarter::shared_ptr<FsNode> _target;
+	bool _obstructed = false;
+
+	// Serial of the last rename applied to this link, so that renames whose responses
+	// are processed out of order do not leave the link with an older name.
+	uint64_t _renameSerial = 0;
+
+	// Name cache state.
+	size_t _cacheHash = 0;
+	// Hook for the name cache's hash table chain.
+	frg::default_list_hook<Link> _cacheHashHook;
+	frg::default_list_hook<Link> _cacheOwnerHook;
+};
+
+struct Superblock final : FsSuperblock, LinkReclaimer {
+	Superblock(helix::UniqueLane lane, std::shared_ptr<UnixDevice> device, uint64_t mountCaps);
 
 	FutureMaybe<smarter::shared_ptr<FsNode>> createRegular(Process *process) override;
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 			rename(FsLink *source, FsLink *directory, std::string name) override;
 	async::result<frg::expected<Error, FsStats>> getFsStats() override;
 
@@ -37,21 +130,98 @@ struct Superblock final : FsSuperblock {
 		return makedev(id.first, id.second);
 	}
 
-	smarter::shared_ptr<FsLink> internalizeRoot(uint64_t id, helix::UniqueLane lane);
-	smarter::shared_ptr<FsLink> internalizeStructural(FsLink *parent, std::string name,
+	smarter::shared_ptr<FsLink, LinkRc> internalizeRoot(uint64_t id, helix::UniqueLane lane);
+	smarter::shared_ptr<FsLink, LinkRc> internalizeStructural(FsLink *parent, std::string name,
 			uint64_t id, helix::UniqueLane lane);
 	smarter::shared_ptr<Node> internalizeDirectory(uint64_t id, helix::UniqueLane lane);
 	smarter::shared_ptr<Node> internalizePeripheralNode(int64_t type, int id, helix::UniqueLane lane);
-	smarter::shared_ptr<FsLink> internalizeLink(FsLink *parent, std::string name,
+	smarter::shared_ptr<FsLink, LinkRc> internalizeLink(FsLink *parent, std::string name,
 			smarter::shared_ptr<Node> target);
 
+	// Called from destructors. The entry may already belong to a newer object with the same key.
+	void forgetStructural(uint64_t id);
+	void forgetPeripheralNode(uint64_t id);
+	void forgetLink(uint64_t ownerId, const std::string &name, uint64_t targetId);
+
+	// Name caching is only sound if the server cannot change the namespace behind our back.
+	bool nameCacheEnabled() {
+		return _mountCaps & managarm::fs::MountCaps::MC_CLIENT_EXCLUSIVE_NAMESPACE;
+	}
+
+	// Reclaimer that keeps unreferenced links of this mount alive, or null without a name cache.
+	LinkReclaimer *linkReclaimer() {
+		return nameCacheEnabled() ? this : nullptr;
+	}
+
+	std::optional<smarter::shared_ptr<FsLink, LinkRc>> nameCacheLookup(FsNode *dir, const std::string &name);
+	void nameCacheInsert(Link *link);
+
+	// Brackets a mutation of a directory entry.
+	// Until endMutation(), lookups of the name bypass the cache and are not cached,
+	// since the server may already have applied the mutation.
+	void beginMutation(DirectoryNode *dir, const std::string &name);
+	// Counterpart of beginMutation(). Always invalidates the cached link.
+	void endMutation(DirectoryNode *dir, const std::string &name);
+	// Counterpart of beginMutation(). Invalidates the cached link unless the server reports serial zero.
+	void endMutation(DirectoryNode *dir, const std::string &name, uint64_t serial);
+
+	using NameCacheOwnerList = frg::intrusive_list<Link,
+			frg::locate_member<Link, frg::default_list_hook<Link>, &Link::_cacheOwnerHook>>;
+
+	void nameCachePurge(DirectoryNode *dir);
+
+	// Called once the server reports that it removed the directory with the given inode.
+	// There may still be negative links cached for this directory; retireDirectory() removes them.
+	void retireDirectory(uint64_t inode);
+
 private:
+	using NameCacheBucket = frg::intrusive_list<Link,
+			frg::locate_member<Link, frg::default_list_hook<Link>, &Link::_cacheHashHook>>;
+
+	void onReclaim(LinkMetaObjectBase *meta) override;
+	void popMutation(DirectoryNode *dir, const std::string &name);
+	Link *nameCacheFind(FsNode *dir, const std::string &name, size_t hash);
+	void nameCacheUnhash(Link *link);
+	void nameCacheEvict(Link *link);
+
 	helix::UniqueLane _lane;
 	std::map<uint64_t, smarter::weak_ptr<DirectoryNode>> _activeStructural;
 	std::map<uint64_t, smarter::weak_ptr<Node>> _activePeripheralNodes;
-	std::map<std::tuple<uint64_t, std::string, uint64_t>, smarter::weak_ptr<FsLink>> _activeLinks;
+	std::map<std::tuple<uint64_t, std::string, uint64_t>, smarter::weak_ptr<FsLink, LinkRc>> _activeLinks;
+
+	uint64_t _mountCaps;
+	std::vector<NameCacheBucket> _nameCacheBuckets;
 
 	std::shared_ptr<UnixDevice> device_;
+};
+
+// Marks a directory entry as being mutated by an in-flight request, see Superblock::beginMutation().
+struct PendingMutation {
+	PendingMutation(Superblock *sb, DirectoryNode *dir, std::string name)
+	: _sb{sb}, _dir{dir}, _name{std::move(name)} {
+		_sb->beginMutation(_dir, _name);
+	}
+
+	PendingMutation(const PendingMutation &) = delete;
+	PendingMutation &operator=(const PendingMutation &) = delete;
+
+	// A mutation that is never completed did not produce a response at all, so the server
+	// may have applied it and the cached entry has to go.
+	~PendingMutation() {
+		if(_dir)
+			_sb->endMutation(_dir, _name);
+	}
+
+	// Mirrors the serial that the server reported, or zero if it did not mutate the directory.
+	void complete(uint64_t serial) {
+		_sb->endMutation(_dir, _name, serial);
+		_dir = nullptr;
+	}
+
+private:
+	Superblock *_sb;
+	DirectoryNode *_dir;
+	std::string _name;
 };
 
 struct Node : FsNode {
@@ -187,10 +357,12 @@ struct Node : FsNode {
 
 public:
 	Node(uint64_t inode, helix::UniqueLane lane, Superblock *sb)
-	: FsNode{sb}, _inode{inode}, _lane{std::move(lane)} { }
+	: FsNode{sb}, _sb{sb}, _inode{inode}, _lane{std::move(lane)} { }
 
 protected:
 	~Node() = default;
+
+	Superblock *_sb;
 
 public:
 	uint64_t getInode() {
@@ -262,7 +434,7 @@ private:
 
 public:
 	OpenFile(helix::UniqueLane control, helix::UniqueLane lane,
-			std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link)
+			std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 	: File{FileKind::unknown, StructName::get("externfs.file"), std::move(mount), std::move(link)},
 			_control{std::move(control)}, _file{std::move(lane)} { }
 
@@ -310,7 +482,7 @@ private:
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		// Regular files do not support O_NONBLOCK.
 		semantic_flags &= ~semanticNonBlock;
@@ -360,6 +532,10 @@ private:
 public:
 	RegularNode(Superblock *sb, uint64_t inode, helix::UniqueLane lane)
 	: Node{inode, std::move(lane), sb} { }
+
+	~RegularNode() {
+		_sb->forgetPeripheralNode(getInode());
+	}
 };
 
 struct SymlinkNode final : Node {
@@ -369,6 +545,9 @@ private:
 	}
 
 	expected<std::string> readSymlink(FsLink *, Process *) override {
+		if(_cachedTarget)
+			co_return *_cachedTarget;
+
 		managarm::fs::CntRequest req;
 		req.set_req_type(managarm::fs::CntReqType::NODE_READ_SYMLINK);
 
@@ -391,78 +570,61 @@ private:
 		if(resp.error() != managarm::fs::Errors::SUCCESS)
 			co_return resp.error() | toPosixError;
 
-		co_return std::string{static_cast<char *>(recv_target.data()), recv_target.length()};
+		std::string target{static_cast<char *>(recv_target.data()), recv_target.length()};
+		// On client-exclusive mounts, symlink contents cannot change:
+		// there is no way to rewrite a symlink in place, and replacing it creates a new inode.
+		if(_sb->nameCacheEnabled())
+			_cachedTarget = target;
+		co_return target;
 	}
 
 public:
 	SymlinkNode(Superblock *sb, uint64_t inode, helix::UniqueLane lane)
 	: Node{inode, std::move(lane), sb} { }
-};
 
-struct Link final : FsLink {
-public:
-	smarter::shared_ptr<FsLink> getParent() override {
-		return _owner;
-	}
-
-	async::result<frg::expected<Error>> obstruct() override {
-		assert(_owner);
-		managarm::fs::ObstructLinkRequest req;
-		req.set_link_name(_name);
-
-		auto lane = static_cast<Node *>(_owner->getTarget().get())->getLane();
-
-		auto [offer, send_req, send_tail, recv_resp] = co_await helix_ng::exchangeMsgs(
-			lane,
-			helix_ng::offer(
-				helix_ng::sendBragiHeadTail(req, frg::stl_allocator{}),
-				helix_ng::recvInline()
-			)
-		);
-		HEL_CHECK(offer.error());
-		HEL_CHECK(send_req.error());
-		HEL_CHECK(send_tail.error());
-		HEL_CHECK(recv_resp.error());
-
-		managarm::fs::SvrResponse resp;
-		resp.ParseFromArray(recv_resp.data(), recv_resp.length());
-		recv_resp.reset();
-		if(resp.error() != managarm::fs::Errors::SUCCESS)
-			co_return resp.error() | toPosixError;
-		co_return frg::success_tag{};
-	}
-
-	smarter::shared_ptr<FsNode> getTarget() override {
-		return _target;
-	}
-
-	void renameTo(smarter::shared_ptr<FsLink> owner, std::string name) {
-		assert(_owner); // The root link is never renamed.
-		_owner = std::move(owner);
-		_name = std::move(name);
+	~SymlinkNode() {
+		_sb->forgetPeripheralNode(getInode());
 	}
 
 private:
-	std::string getName() override {
-		assert(_owner);
-		return _name;
-	}
-
-public:
-	// Constructs the root link of the mount, which has neither an owner nor a name.
-	explicit Link(smarter::shared_ptr<FsNode> target)
-	: _target{std::move(target)} { }
-
-	Link(smarter::shared_ptr<FsLink> owner, std::string name, smarter::shared_ptr<FsNode> target)
-	: _owner{std::move(owner)}, _name{std::move(name)}, _target{std::move(target)} {
-		assert(_owner);
-	}
-
-private:
-	smarter::shared_ptr<FsLink> _owner;
-	std::string _name;
-	smarter::shared_ptr<FsNode> _target;
+	std::optional<std::string> _cachedTarget;
 };
+
+async::result<frg::expected<Error>> Link::obstruct() {
+	assert(_owner);
+	managarm::fs::ObstructLinkRequest req;
+	req.set_link_name(_name);
+
+	auto lane = static_cast<Node *>(ownerNode())->getLane();
+
+	auto [offer, send_req, send_tail, recv_resp] = co_await helix_ng::exchangeMsgs(
+		lane,
+		helix_ng::offer(
+			helix_ng::sendBragiHeadTail(req, frg::stl_allocator{}),
+			helix_ng::recvInline()
+		)
+	);
+	HEL_CHECK(offer.error());
+	HEL_CHECK(send_req.error());
+	HEL_CHECK(send_tail.error());
+	HEL_CHECK(recv_resp.error());
+
+	managarm::fs::SvrResponse resp;
+	resp.ParseFromArray(recv_resp.data(), recv_resp.length());
+	recv_resp.reset();
+	if(resp.error() != managarm::fs::Errors::SUCCESS)
+		co_return resp.error() | toPosixError;
+	_obstructed = true;
+	co_return frg::success_tag{};
+}
+
+Link::~Link() {
+	assert(!_cacheHashHook.in_list);
+	// Neither the root link nor negative links are interned.
+	if(_owner && _target)
+		_sb->forgetLink(static_cast<Node *>(ownerNode())->getInode(),
+				_name, static_cast<Node *>(_target.get())->getInode());
+}
 
 struct DirectoryNode final : Node {
 private:
@@ -475,7 +637,7 @@ private:
 		return true;
 	}
 
-	async::result<std::expected<smarter::shared_ptr<FsLink>, Error>>
+	async::result<std::expected<smarter::shared_ptr<FsLink, LinkRc>, Error>>
 	getLinkOrCreate(FsLink *parent, Process *process, std::string name, mode_t mode,
 			bool exclusive) override {
 		assert(this->getType() == VfsType::directory);
@@ -486,6 +648,7 @@ private:
 		req.set_name(name);
 		req.set_uid(process->threadGroup()->uid());
 		req.set_gid(process->threadGroup()->gid());
+		PendingMutation pending{_sb, this, name};
 
 		auto [offer, send_head, send_tail, recv_resp, pull_node] = co_await helix_ng::exchangeMsgs(
 			getLane(),
@@ -506,22 +669,72 @@ private:
 		if(resp.error() == managarm::fs::Errors::SUCCESS) {
 			HEL_CHECK(pull_node.error());
 
+			smarter::shared_ptr<FsLink, LinkRc> result;
 			if (resp.file_type() == managarm::fs::FileType::DIRECTORY) {
-				auto child = _sb->internalizeStructural(parent, name,
+				result = _sb->internalizeStructural(parent, name,
 						resp.id(), pull_node.descriptor());
-				co_return child;
 			}else{
 				auto child = _sb->internalizePeripheralNode(resp.file_type(), resp.id(),
 						pull_node.descriptor());
-				co_return _sb->internalizeLink(parent, name, std::move(child));
+				result = _sb->internalizeLink(parent, name, std::move(child));
 			}
+			pending.complete(resp.serial());
+			cacheLink(parent, name, result.get(), resp.serial());
+			co_return result;
 		} else {
+			pending.complete(resp.serial());
 			co_return std::unexpected{resp.error() | toPosixError};
 		}
 	}
 
-	async::result<frg::expected<Error, std::pair<smarter::shared_ptr<FsLink>, size_t>>>
+	async::result<frg::expected<Error, std::pair<smarter::shared_ptr<FsLink, LinkRc>, size_t>>>
 	traverseLinks(FsLink *parent, std::deque<std::string> path) override {
+		// Resolve as many leading components as possible from the name cache.
+		size_t consumed = 0;
+		bool cacheMiss = false;
+		smarter::shared_ptr<FsLink, LinkRc> lastLink;
+		auto dirLink = parent->sharedFromThis();
+		auto dir = smarter::static_pointer_cast<DirectoryNode>(sharedFromThis());
+		while(!path.empty()) {
+			const auto &name = path.front();
+			if(name == "." || name == "..")
+				break; // PathResolver handles these itself once we return.
+			auto cached = dir->lookupCache(name);
+			if(!cached) {
+				cacheMiss = true;
+				break;
+			}
+			// Negative entry: mirror the server-side walk, where any missing
+			// component fails the entire traversal.
+			if(!*cached)
+				co_return Error::noSuchFile;
+			lastLink = std::move(*cached);
+			path.pop_front();
+			++consumed;
+			if(path.empty())
+				break;
+			// Mirror the server-side walk: stop at obstructions (mount points) and
+			// at symlinks, fail on other non-directories.
+			if(static_cast<Link *>(lastLink.get())->isObstructed())
+				break;
+			auto type = lastLink->getTarget()->getType();
+			if(type == VfsType::symlink)
+				break;
+			if(type != VfsType::directory)
+				co_return Error::notDirectory;
+			dirLink = lastLink;
+			dir = smarter::static_pointer_cast<DirectoryNode>(lastLink->getTarget());
+		}
+
+		if(consumed && !cacheMiss)
+			co_return std::make_pair(std::move(lastLink), consumed);
+
+		auto remote = FRG_CO_TRY(co_await dir->remoteTraverseLinks(dirLink.get(), std::move(path)));
+		co_return std::make_pair(std::move(remote.first), consumed + remote.second);
+	}
+
+	async::result<frg::expected<Error, std::pair<smarter::shared_ptr<FsLink, LinkRc>, size_t>>>
+	remoteTraverseLinks(FsLink *parent, std::deque<std::string> path) {
 		managarm::fs::NodeTraverseLinksRequest req;
 		for (auto &i : path)
 			req.add_path_segments(i);
@@ -569,19 +782,24 @@ private:
 			co_return Error::ioError;
 		}
 
-		if(resp.error() != managarm::fs::Errors::SUCCESS)
+		if(resp.error() != managarm::fs::Errors::SUCCESS) {
+			// Only a single-component traversal identifies which name is absent.
+			if(resp.error() == managarm::fs::Errors::FILE_NOT_FOUND && path.size() == 1)
+				cacheLink(parent, path.front(), nullptr, resp.serial());
 			co_return resp.error() | toPosixError;
+		}
 
 		HEL_CHECK(pull_desc.error());
 		helix::UniqueLane pull_lane = pull_desc.descriptor();
 
 		assert(resp.links_traversed());
 		assert(resp.links_traversed() <= path.size());
+		assert(resp.serials().size() == resp.ids().size());
 
 		// The reply only reports inodes, so we cannot immediately tell which link they correspond to.
 		// We replay the resolution rules to associate each link with the proper parent.
-		smarter::shared_ptr<FsLink> link = nullptr;
-		std::vector<smarter::shared_ptr<FsLink>> dirStack{parent->sharedFromThis()};
+		smarter::shared_ptr<FsLink, LinkRc> link = nullptr;
+		std::vector<smarter::shared_ptr<FsLink, LinkRc>> dirStack{parent->sharedFromThis()};
 		for (size_t i = 0; i < resp.ids().size(); i++) {
 			auto [pull_node] = co_await helix_ng::exchangeMsgs(
 				pull_lane,
@@ -610,6 +828,8 @@ private:
 						pull_node.descriptor());
 				link = _sb->internalizeLink(dirStack.back().get(), path[i], std::move(child));
 			}
+			static_cast<DirectoryNode *>(dirStack.back()->getTarget().get())
+					->cacheLink(dirStack.back().get(), path[i], link.get(), resp.serials()[i]);
 
 			if (!last)
 				dirStack.push_back(link);
@@ -618,7 +838,7 @@ private:
 		co_return std::make_pair(link, resp.links_traversed());
 	}
 
-	async::result<std::variant<Error, smarter::shared_ptr<FsLink>>>
+	async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	mkdir(FsLink *parent, Process *proc, std::string name, mode_t mode) override {
 		auto umask = proc ? proc->fsContext()->getUmask() : 0;
 
@@ -627,6 +847,7 @@ private:
 		req.set_mode(mode & ~umask);
 		req.set_uid(proc ? proc->threadGroup()->uid() : 0);
 		req.set_gid(proc ? proc->threadGroup()->gid() : 0);
+		PendingMutation pending{_sb, this, name};
 
 		auto [offer, sendReq, sendTail, recvResp, pullNode] = co_await helix_ng::exchangeMsgs(
 			getLane(),
@@ -647,20 +868,24 @@ private:
 		if(resp.error() == managarm::fs::Errors::SUCCESS) {
 			HEL_CHECK(pullNode.error());
 
-			auto child = _sb->internalizeStructural(parent, name,
+			auto result = _sb->internalizeStructural(parent, name,
 					resp.id(), pullNode.descriptor());
-			co_return child;
+			pending.complete(resp.serial());
+			cacheLink(parent, name, result.get(), resp.serial());
+			co_return result;
 		} else {
+			pending.complete(resp.serial());
 			co_return resp.error() | toPosixError;
 		}
 	}
 
-	async::result<std::variant<Error, smarter::shared_ptr<FsLink>>>
+	async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	symlink(FsLink *parent, std::string name, std::string path) override {
 		managarm::fs::CntRequest req;
 		req.set_req_type(managarm::fs::CntReqType::NODE_SYMLINK);
 		req.set_name_length(name.size());
 		req.set_target_length(path.size());
+		PendingMutation pending{_sb, this, name};
 
 		auto ser = req.SerializeAsString();
 		auto [offer, sendReq, sendName, sendTarget, recvResp, pullNode]
@@ -685,15 +910,19 @@ private:
 		if(resp.error() == managarm::fs::Errors::SUCCESS) {
 			HEL_CHECK(pullNode.error());
 
-			auto child = _sb->internalizeStructural(parent, name,
+			auto child = _sb->internalizePeripheralNode(managarm::fs::FileType::SYMLINK,
 					resp.id(), pullNode.descriptor());
-			co_return child;
+			auto result = _sb->internalizeLink(parent, name, std::move(child));
+			pending.complete(resp.serial());
+			cacheLink(parent, name, result.get(), resp.serial());
+			co_return result;
 		} else {
+			pending.complete(resp.serial());
 			co_return resp.error() | toPosixError;
 		}
 	}
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> mkdev(FsLink *parent, std::string name, VfsType type, DeviceId id) override {
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> mkdev(FsLink *parent, std::string name, VfsType type, DeviceId id) override {
 		(void)parent;
 		(void)name;
 		(void)type;
@@ -702,8 +931,14 @@ private:
 		__builtin_unreachable();
 	}
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 			getLink(FsLink *parent, std::string name) override {
+		if(auto cached = lookupCache(name)) {
+			if(!*cached)
+				co_return Error::noSuchFile;
+			co_return std::move(*cached);
+		}
+
 		managarm::fs::GetLinkRequest req;
 		req.set_path(name);
 
@@ -726,25 +961,30 @@ private:
 		if(resp.error() == managarm::fs::Errors::SUCCESS) {
 			HEL_CHECK(pull_node.error());
 
+			smarter::shared_ptr<FsLink, LinkRc> result;
 			if(resp.file_type() == managarm::fs::FileType::DIRECTORY) {
-				auto child = _sb->internalizeStructural(parent, name,
+				result = _sb->internalizeStructural(parent, name,
 						resp.id(), pull_node.descriptor());
-				co_return child;
 			}else{
 				auto child = _sb->internalizePeripheralNode(resp.file_type(), resp.id(),
 						pull_node.descriptor());
-				co_return _sb->internalizeLink(parent, name, std::move(child));
+				result = _sb->internalizeLink(parent, name, std::move(child));
 			}
+			cacheLink(parent, name, result.get(), resp.serial());
+			co_return result;
 		}else{
+			if(resp.error() == managarm::fs::Errors::FILE_NOT_FOUND)
+				cacheLink(parent, name, nullptr, resp.serial());
 			co_return resp.error() | toPosixError;
 		}
 	}
 
-	async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>> link(FsLink *parent, std::string name,
+	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> link(FsLink *parent, std::string name,
 			smarter::shared_ptr<FsNode> target) override {
 		managarm::fs::LinkRequest req;
 		req.set_path(name);
 		req.set_fd(static_cast<Node *>(target.get())->getInode());
+		PendingMutation pending{_sb, this, name};
 
 		auto [offer, send_req, send_tail, recv_resp, pull_node] = co_await helix_ng::exchangeMsgs(
 			getLane(),
@@ -765,16 +1005,20 @@ private:
 		if(resp.error() == managarm::fs::Errors::SUCCESS) {
 			HEL_CHECK(pull_node.error());
 
+			smarter::shared_ptr<FsLink, LinkRc> result;
 			if(resp.file_type() == managarm::fs::FileType::DIRECTORY) {
-				auto child = _sb->internalizeStructural(parent, name,
+				result = _sb->internalizeStructural(parent, name,
 						resp.id(), pull_node.descriptor());
-				co_return child;
 			}else{
 				auto child = _sb->internalizePeripheralNode(resp.file_type(), resp.id(),
 						pull_node.descriptor());
-				co_return _sb->internalizeLink(parent, name, std::move(child));
+				result = _sb->internalizeLink(parent, name, std::move(child));
 			}
+			pending.complete(resp.serial());
+			cacheLink(parent, name, result.get(), resp.serial());
+			co_return result;
 		}else{
+			pending.complete(resp.serial());
 			co_return resp.error() | toPosixError;
 		}
 	}
@@ -782,6 +1026,7 @@ private:
 	async::result<frg::expected<Error>> unlink(std::string name) override {
 		managarm::fs::UnlinkRequest req;
 		req.set_path(name);
+		PendingMutation pending{_sb, this, name};
 
 		auto [offer, send_req, send_tail, recv_resp] = co_await helix_ng::exchangeMsgs(
 			getLane(),
@@ -798,6 +1043,7 @@ private:
 		managarm::fs::SvrResponse resp;
 		resp.ParseFromArray(recv_resp.data(), recv_resp.length());
 		recv_resp.reset();
+		pending.complete(resp.serial());
 		if(resp.error() != managarm::fs::Errors::SUCCESS)
 			co_return resp.error() | toPosixError;
 
@@ -807,6 +1053,7 @@ private:
 	async::result<frg::expected<Error>> rmdir(std::string name) override {
 		managarm::fs::RmdirRequest req;
 		req.set_path(name);
+		PendingMutation pending{_sb, this, name};
 
 		auto [offer, send_req, send_tail, recv_resp] = co_await helix_ng::exchangeMsgs(
 			getLane(),
@@ -824,14 +1071,16 @@ private:
 		resp.ParseFromArray(recv_resp.data(), recv_resp.length());
 		recv_resp.reset();
 
+		pending.complete(resp.serial());
 		if(resp.error() != managarm::fs::Errors::SUCCESS)
 			co_return resp.error() | toPosixError;
 
+		_sb->retireDirectory(resp.id());
 		co_return {};
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			SemanticFlags semantic_flags) override {
 		// Regular files do not support O_NONBLOCK.
 		semantic_flags &= ~semanticNonBlock;
@@ -879,15 +1128,84 @@ private:
 	}
 
 public:
+	std::optional<smarter::shared_ptr<FsLink, LinkRc>> lookupCache(const std::string &name) {
+		// The server may already have applied an in-flight mutation of the name.
+		if(hasPendingMutation(name))
+			return std::nullopt;
+		return _sb->nameCacheLookup(this, name);
+	}
+
+	bool hasPendingMutation(const std::string &name) {
+		return std::find(_pendingMutations.begin(), _pendingMutations.end(), name)
+				!= _pendingMutations.end();
+	}
+
+	// Caches the result of a lookup that the server stamped with serial (see fs.bragi).
+	// Passing nullptr for link creates a negative cache entry.
+	void cacheLink(FsLink *parent, const std::string &name, FsLink *link, uint64_t serial) {
+		if(!_sb->nameCacheEnabled())
+			return;
+		// A lookup that raced the removal of this directory must not revive it.
+		if(_removed)
+			return;
+		// The lookup observed a state older than a mutation that we already mirrored.
+		if(serial < _mutationSerial)
+			return;
+		// The lookup might predate a mutation that the server already applied.
+		if(hasPendingMutation(name))
+			return;
+		// PathResolver never resolves these through the cache.
+		if(name == "." || name == "..")
+			return;
+		smarter::shared_ptr<Link, LinkRc> negative;
+		if(!link) {
+			negative = makeReclaimableLink<Link>(_sb->linkReclaimer(), _sb,
+					parent->sharedFromThis(), name);
+			link = negative.get();
+		}
+		auto entry = static_cast<Link *>(link);
+		// Links are interned under, and renamed in place to, the owner and name they are
+		// resolved through, so the cache key always agrees with what the link carries.
+		assert(entry->_owner.get() == parent && entry->_name == name);
+		_sb->nameCacheInsert(entry);
+	}
+
+	// Records that a mutation of this directory with the given serial completed.
+	void observeMutation(uint64_t serial) {
+		_mutationSerial = std::max(_mutationSerial, serial);
+	}
+
 	DirectoryNode(Superblock *sb, uint64_t inode, helix::UniqueLane lane)
-	: Node{inode, std::move(lane), sb}, _sb{sb} { }
+	: Node{inode, std::move(lane), sb} { }
+
+	~DirectoryNode() {
+		assert(_cacheEntries.empty());
+		assert(_pendingMutations.empty());
+		_sb->forgetStructural(getInode());
+	}
 
 private:
-	Superblock *_sb;
+	friend struct Superblock;
+
+	// Entries that a directory owns, so that they can be dropped when the directory itself is removed.
+	Superblock::NameCacheOwnerList _cacheEntries;
+	// Set once the server removed the directory, see Superblock::retireDirectory().
+	bool _removed = false;
+	// Highest serial of a mutation of this directory that we have mirrored into the cache.
+	// Lookups stamped with an older serial may have observed the state before it.
+	uint64_t _mutationSerial = 0;
+	// Holds names of link that in-flight mutations of this directory may be changing.
+	// Lookups of them bypass the cache.
+	std::vector<std::string> _pendingMutations;
 };
 
-Superblock::Superblock(helix::UniqueLane lane, std::shared_ptr<UnixDevice> device)
-: _lane{std::move(lane)}, device_{device} { }
+Superblock::Superblock(helix::UniqueLane lane, std::shared_ptr<UnixDevice> device,
+		uint64_t mountCaps)
+: LinkReclaimer{nameCacheCapacity}, _lane{std::move(lane)}, _mountCaps{mountCaps},
+		device_{device} {
+	if(nameCacheEnabled())
+		_nameCacheBuckets.resize(nameCacheBuckets);
+}
 
 FutureMaybe<smarter::shared_ptr<FsNode>> Superblock::createRegular(Process *process) {
 	managarm::fs::CntRequest req;
@@ -920,18 +1238,22 @@ FutureMaybe<smarter::shared_ptr<FsNode>> Superblock::createRegular(Process *proc
 	}
 }
 
-async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
+async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 		Superblock::rename(FsLink *source, FsLink *directory, std::string name) {
 
 	managarm::fs::RenameRequest req;
 	Link *slink = static_cast<Link *>(source);
-	Node *source_node = static_cast<Node *>(slink->getParentNode().get());
-	Node *target_node = static_cast<Node *>(directory->getTarget().get());
+	auto oldName = source->getName();
+	// Hold the directories: a concurrent rename of the same link may drop its owner.
+	auto source_node = smarter::static_pointer_cast<DirectoryNode>(slink->getParentNode());
+	auto target_node = smarter::static_pointer_cast<DirectoryNode>(directory->getTarget());
 	smarter::shared_ptr<Node> shared_node = smarter::static_pointer_cast<Node>(source->getTarget());
 	req.set_inode_source(source_node->getInode());
 	req.set_inode_target(target_node->getInode());
-	req.set_old_name(source->getName());
+	req.set_old_name(oldName);
 	req.set_new_name(name);
+	PendingMutation sourcePending{this, source_node.get(), oldName};
+	PendingMutation targetPending{this, target_node.get(), name};
 
 	auto [offer, send_head, send_tail, recv_resp] = co_await helix_ng::exchangeMsgs(
 		_lane,
@@ -949,18 +1271,31 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink>>>
 	managarm::fs::SvrResponse resp;
 	resp.ParseFromArray(recv_resp.data(), recv_resp.length());
 	recv_resp.reset();
+	// Complete the pending mutations before slink->renameTo()
+	// such that the old name does not persist in the cache.
+	sourcePending.complete(resp.serial());
+	targetPending.complete(resp.serial());
 	if(resp.error() != managarm::fs::Errors::SUCCESS)
 		co_return resp.error() | toPosixError;
+	// A rename of a name onto another name of the same inode changes nothing.
+	if(!resp.serial())
+		co_return source->sharedFromThis();
 
-	// _activeLinks is keyed by the owner and name, so the link has to be re-keyed.
-	_activeLinks.erase({source_node->getInode(), source->getName(), shared_node->getInode()});
-	slink->renameTo(directory->sharedFromThis(), name);
-	_activeLinks[{target_node->getInode(), name, shared_node->getInode()}] = source->sharedFromThis();
+	// Skip the rename if a later one of the same link was mirrored before this one.
+	if(resp.serial() > slink->_renameSerial) {
+		_activeLinks.erase({source_node->getInode(), oldName, shared_node->getInode()});
+		slink->renameTo(directory->sharedFromThis(), name);
+		_activeLinks[{target_node->getInode(), name, shared_node->getInode()}] = source->sharedFromThis();
+		slink->_renameSerial = resp.serial();
+	}
+
+	if(resp.id() && resp.file_type() == managarm::fs::FileType::DIRECTORY)
+		retireDirectory(resp.id());
 	co_return source->sharedFromThis();
 }
 
-smarter::shared_ptr<FsLink> Superblock::internalizeRoot(uint64_t id, helix::UniqueLane lane) {
-	return makeFsShared<Link>(internalizeDirectory(id, std::move(lane)));
+smarter::shared_ptr<FsLink, LinkRc> Superblock::internalizeRoot(uint64_t id, helix::UniqueLane lane) {
+	return makeReclaimableLink<Link>(linkReclaimer(), this, internalizeDirectory(id, std::move(lane)));
 }
 
 smarter::shared_ptr<Node> Superblock::internalizeDirectory(uint64_t id, helix::UniqueLane lane) {
@@ -973,7 +1308,7 @@ smarter::shared_ptr<Node> Superblock::internalizeDirectory(uint64_t id, helix::U
 	return node;
 }
 
-smarter::shared_ptr<FsLink> Superblock::internalizeStructural(FsLink *parent,
+smarter::shared_ptr<FsLink, LinkRc> Superblock::internalizeStructural(FsLink *parent,
 		std::string name, uint64_t id, helix::UniqueLane lane) {
 	return internalizeLink(parent, std::move(name),
 			internalizeDirectory(id, std::move(lane)));
@@ -1001,16 +1336,146 @@ smarter::shared_ptr<Node> Superblock::internalizePeripheralNode(int64_t type,
 	return node;
 }
 
-smarter::shared_ptr<FsLink> Superblock::internalizeLink(FsLink *parent,
+smarter::shared_ptr<FsLink, LinkRc> Superblock::internalizeLink(FsLink *parent,
 		std::string name, smarter::shared_ptr<Node> target) {
 	auto parentInode = static_cast<Node *>(parent->getTarget().get())->getInode();
 	auto entry = &_activeLinks[{parentInode, name, target->getInode()}];
 	if(auto intern = entry->lock(); intern)
 		return intern;
 
-	auto link = makeFsShared<Link>(parent->sharedFromThis(), std::move(name), std::move(target));
+	auto link = makeReclaimableLink<Link>(linkReclaimer(), this, parent->sharedFromThis(),
+			std::move(name), std::move(target));
 	*entry = link;
 	return link;
+}
+
+void Superblock::forgetStructural(uint64_t id) {
+	auto it = _activeStructural.find(id);
+	if(it != _activeStructural.end() && !it->second.lock())
+		_activeStructural.erase(it);
+}
+
+void Superblock::forgetPeripheralNode(uint64_t id) {
+	auto it = _activePeripheralNodes.find(id);
+	if(it != _activePeripheralNodes.end() && !it->second.lock())
+		_activePeripheralNodes.erase(it);
+}
+
+void Superblock::forgetLink(uint64_t ownerId, const std::string &name, uint64_t targetId) {
+	auto it = _activeLinks.find({ownerId, name, targetId});
+	if(it != _activeLinks.end() && !it->second.lock())
+		_activeLinks.erase(it);
+}
+
+Link *Superblock::nameCacheFind(FsNode *dir, const std::string &name, size_t hash) {
+	if(_nameCacheBuckets.empty())
+		return nullptr;
+	auto &bucket = _nameCacheBuckets[hash & (nameCacheBuckets - 1)];
+	for(auto it = bucket.begin(); it != bucket.end(); ++it) {
+		Link *link = *it;
+		if(link->_cacheHash == hash && link->ownerNode() == dir && link->_name == name)
+			return link;
+	}
+	return nullptr;
+}
+
+std::optional<smarter::shared_ptr<FsLink, LinkRc>> Superblock::nameCacheLookup(FsNode *dir,
+		const std::string &name) {
+	auto link = nameCacheFind(dir, name, nameCacheHash(dir, name));
+	if(!link)
+		return std::nullopt;
+	touch(link->selfPtr().policy().meta());
+	if(link->isNegative())
+		return smarter::shared_ptr<FsLink, LinkRc>{};
+	return link->sharedFromThis();
+}
+
+void Superblock::nameCacheInsert(Link *link) {
+	assert(!_nameCacheBuckets.empty());
+	assert(link->_owner);
+	auto hash = nameCacheHash(link->ownerNode(), link->_name);
+	if(auto present = nameCacheFind(link->ownerNode(), link->_name, hash)) {
+		if(present == link) {
+			touch(link->selfPtr().policy().meta());
+			return;
+		}
+		// The name was re-created and now refers to a different link.
+		nameCacheEvict(present);
+	}
+	// The link stays alive on its own: the reclaimer holds a reference from construction on.
+	link->_cacheHash = hash;
+	_nameCacheBuckets[hash & (nameCacheBuckets - 1)].push_front(link);
+	// Let the containing directory remember the link such that we can purge it on rmdir().
+	assert(link->ownerNode()->getType() == VfsType::directory);
+	static_cast<DirectoryNode *>(link->ownerNode())->_cacheEntries.push_front(link);
+}
+
+void Superblock::beginMutation(DirectoryNode *dir, const std::string &name) {
+	dir->_pendingMutations.push_back(name);
+}
+
+void Superblock::popMutation(DirectoryNode *dir, const std::string &name) {
+	auto &pending = dir->_pendingMutations;
+	auto it = std::find(pending.begin(), pending.end(), name);
+	assert(it != pending.end());
+	pending.erase(it);
+}
+
+void Superblock::endMutation(DirectoryNode *dir, const std::string &name) {
+	popMutation(dir, name);
+	if(auto link = nameCacheFind(dir, name, nameCacheHash(dir, name)))
+		nameCacheEvict(link);
+}
+
+void Superblock::endMutation(DirectoryNode *dir, const std::string &name, uint64_t serial) {
+	// The server did not mutate the directory, hence the cached entry is still valid.
+	if(!serial) {
+		popMutation(dir, name);
+		return;
+	}
+	endMutation(dir, name);
+	dir->observeMutation(serial);
+}
+
+void Superblock::nameCacheUnhash(Link *link) {
+	auto &bucket = _nameCacheBuckets[link->_cacheHash & (nameCacheBuckets - 1)];
+	bucket.erase(bucket.iterator_to(link));
+	auto &owned = static_cast<DirectoryNode *>(link->ownerNode())->_cacheEntries;
+	owned.erase(owned.iterator_to(link));
+}
+
+// Drops an entry from the cache: it cannot be found by name anymore, hence it is only worth
+// keeping around while something else still references it.
+void Superblock::nameCacheEvict(Link *link) {
+	nameCacheUnhash(link);
+	reclaim(link->selfPtr().policy().meta());
+}
+
+void Superblock::onReclaim(LinkMetaObjectBase *meta) {
+	auto link = static_cast<LinkMetaObject<Link> *>(meta)->get();
+	// Entries reference the link of the directory that owns them; hence a directory
+	// with cache entries is never reclaimable here.
+	assert(!link->_target || link->_target->getType() != VfsType::directory
+			|| static_cast<DirectoryNode *>(link->_target.get())->_cacheEntries.empty());
+	if(link->_cacheHashHook.in_list)
+		nameCacheUnhash(link);
+}
+
+void Superblock::nameCachePurge(DirectoryNode *dir) {
+	// Evicting an entry removes it from the list, so re-read the list on every step.
+	while(!dir->_cacheEntries.empty())
+		nameCacheEvict(dir->_cacheEntries.front());
+}
+
+void Superblock::retireDirectory(uint64_t inode) {
+	// There is nothing to drop for a directory that we never interned.
+	smarter::shared_ptr<DirectoryNode> dir;
+	if(auto it = _activeStructural.find(inode); it != _activeStructural.end())
+		dir = it->second.lock();
+	if(dir) {
+		dir->_removed = true;
+		nameCachePurge(dir.get());
+	}
 }
 
 async::result<frg::expected<Error, FsStats>> Superblock::getFsStats() {
@@ -1055,14 +1520,15 @@ async::result<frg::expected<Error, FsStats>> Superblock::getFsStats() {
 
 } // anonymous namespace
 
-smarter::shared_ptr<FsLink> createRoot(helix::UniqueLane sb_lane, helix::UniqueLane lane, std::shared_ptr<UnixDevice> device) {
-	auto sb = new Superblock{std::move(sb_lane), device};
+smarter::shared_ptr<FsLink, LinkRc> createRoot(helix::UniqueLane sb_lane, helix::UniqueLane lane,
+		std::shared_ptr<UnixDevice> device, uint64_t mountCaps) {
+	auto sb = new Superblock{std::move(sb_lane), device, mountCaps};
 	// FIXME: 2 is the ext2fs root inode.
 	return sb->internalizeRoot(2, std::move(lane));
 }
 
 smarter::shared_ptr<File, FileHandle>
-createFile(helix::UniqueLane lane, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link) {
+createFile(helix::UniqueLane lane, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link) {
 	auto file = smarter::make_shared<OpenFile>(helix::UniqueLane{},
 			std::move(lane), std::move(mount), std::move(link));
 	file->setupWeakFile(file);

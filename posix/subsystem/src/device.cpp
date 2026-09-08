@@ -23,7 +23,7 @@ UnixDeviceRegistry blockRegistry;
 // UnixDevice
 // --------------------------------------------------------
 
-FutureMaybe<smarter::shared_ptr<FsLink>> UnixDevice::mount(std::string) {
+FutureMaybe<smarter::shared_ptr<FsLink, LinkRc>> UnixDevice::mount(std::string) {
 	// TODO: Return an error.
 	throw std::logic_error("Device cannot be mounted!");
 }
@@ -53,7 +53,7 @@ std::shared_ptr<UnixDevice> UnixDeviceRegistry::get(DeviceId id) {
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
 openDevice(Process *process, VfsType type, DeviceId id, std::shared_ptr<MountView> mount,
-	smarter::shared_ptr<FsLink> link, SemanticFlags semantic_flags) {
+	smarter::shared_ptr<FsLink, LinkRc> link, SemanticFlags semantic_flags) {
 	if(type == VfsType::charDevice) {
 		auto device = charRegistry.get(id);
 		if(device == nullptr)
@@ -74,8 +74,8 @@ openDevice(Process *process, VfsType type, DeviceId id, std::shared_ptr<MountVie
 // devtmpfs functions.
 // --------------------------------------------------------
 
-smarter::shared_ptr<FsLink> getDevtmpfs() {
-	static smarter::shared_ptr<FsLink> devtmpfs = tmp_fs::createDevTmpFsRoot();
+smarter::shared_ptr<FsLink, LinkRc> getDevtmpfs() {
+	static smarter::shared_ptr<FsLink, LinkRc> devtmpfs = tmp_fs::createDevTmpFsRoot();
 	return devtmpfs;
 }
 
@@ -91,7 +91,7 @@ async::result<void> createDeviceNode(std::string path, VfsType type, DeviceId id
 		}else{
 			assert(s > k);
 			auto name = path.substr(k, s - k);
-			smarter::shared_ptr<FsLink> link;
+			smarter::shared_ptr<FsLink, LinkRc> link;
 			while(true) {
 				auto linkResult = co_await dirLink->getTarget()->getLink(dirLink.get(), name);
 				if(linkResult) {
@@ -99,7 +99,7 @@ async::result<void> createDeviceNode(std::string path, VfsType type, DeviceId id
 					break;
 				}
 				auto mkdirResult = co_await dirLink->getTarget()->mkdir(dirLink.get(), nullptr, name, 0755);
-				if(auto linkp = std::get_if<smarter::shared_ptr<FsLink>>(&mkdirResult)) {
+				if(auto linkp = std::get_if<smarter::shared_ptr<FsLink, LinkRc>>(&mkdirResult)) {
 					link = std::move(*linkp);
 					break;
 				}
@@ -208,7 +208,7 @@ private:
 
 public:
 	DeviceFile(helix::UniqueLane control, helix::UniqueLane lane,
-			std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+			std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			helix::Mapping status_mapping)
 	: FileWithDefaults{FileKind::unknown,  StructName::get("devicefile"), std::move(mount), std::move(link)},
 			_control{std::move(control)}, _file{std::move(lane)},
@@ -237,7 +237,7 @@ private:
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
 openExternalDevice(helix::BorrowedLane lane,
-		std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink> link,
+		std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 		SemanticFlags semantic_flags) {
 	if(semantic_flags & ~(semanticNonBlock | semanticRead | semanticWrite | semanticAppend)){
 		std::cout << "\e[31mposix: openExternalDevice() received illegal arguments:"
@@ -380,7 +380,7 @@ async::result<void> serveServerLane(helix::UniqueDescriptor lane) {
 	}
 }
 
-FutureMaybe<smarter::shared_ptr<FsLink>> mountExternalDevice(helix::BorrowedLane lane, std::shared_ptr<UnixDevice> device, std::string fs_type) {
+FutureMaybe<smarter::shared_ptr<FsLink, LinkRc>> mountExternalDevice(helix::BorrowedLane lane, std::shared_ptr<UnixDevice> device, std::string fs_type) {
 	managarm::fs::MountRequest req;
 	req.set_fs_type(fs_type);
 
@@ -397,9 +397,10 @@ FutureMaybe<smarter::shared_ptr<FsLink>> mountExternalDevice(helix::BorrowedLane
 	HEL_CHECK(pull_node.error());
 
 	managarm::fs::MountResponse resp;
-	resp.ParseFromArray(recv_resp.data(), recv_resp.length());
+	auto parsed = resp.ParseFromArray(recv_resp.data(), recv_resp.length());
 	recv_resp.reset();
+	assert(parsed);
 	assert(resp.error() == managarm::fs::Errors::SUCCESS);
-	co_return extern_fs::createRoot(lane.dup(), pull_node.descriptor(), device);
+	co_return extern_fs::createRoot(lane.dup(), pull_node.descriptor(), device, resp.caps());
 }
 
