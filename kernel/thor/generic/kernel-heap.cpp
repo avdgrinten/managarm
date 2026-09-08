@@ -267,12 +267,12 @@ namespace {
 			return;
 #endif // KERNEL_LOG_ALLOCATIONS
 
-			auto channel = solicitIoChannel("kernel-alloc-trace");
-			if(channel) {
+			spawnOnWorkQueue(*kernelAlloc, WorkQueue::generalQueue().lock(),
+					[] () -> coroutine<void> {
+				auto channel = co_await solicitIoChannel("kernel-alloc-trace");
 				infoLogger() << "thor: Connecting alloc-trace to I/O channel" << frg::endlog;
-				spawnOnWorkQueue(*kernelAlloc, WorkQueue::generalQueue().lock(),
-						dumpRingToChannel(allocLog.get(), std::move(channel), 2048));
-			}
+				co_await dumpRingToChannel(allocLog.get(), std::move(channel), 2048);
+			}());
 		}
 	};
 }

@@ -134,7 +134,8 @@ initgraph::Stage *getIoChannelsDiscoveredStage();
 
 void publishIoChannel(smarter::shared_ptr<KernelIoChannel> channel);
 
-smarter::shared_ptr<KernelIoChannel> solicitIoChannel(frg::string_view tag);
+// Completes once a channel with the given tag is published; parks forever if none ever is.
+coroutine<smarter::shared_ptr<KernelIoChannel>> solicitIoChannel(frg::string_view tag);
 
 // Helper function to drain a ring buffer to an I/O channel.
 // Records larger than maxRecordSize are truncated.

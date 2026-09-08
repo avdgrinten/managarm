@@ -244,12 +244,12 @@ initgraph::Task initOsTraceMbus{&globalInitEngine, "generic.init-ostrace-sinks",
 			// Only dump to an I/O channel if ostrace is supported (otherwise, the ring buffer
 			// does not even exist).
 			if(wantOsTrace) {
-				auto channel = solicitIoChannel("ostrace");
-				if(channel) {
+				spawnOnWorkQueue(*kernelAlloc, WorkQueue::generalQueue().lock(),
+						[] () -> coroutine<void> {
+					auto channel = co_await solicitIoChannel("ostrace");
 					infoLogger() << "thor: Connecting ostrace to I/O channel" << frg::endlog;
-					spawnOnWorkQueue(*kernelAlloc, WorkQueue::generalQueue().lock(),
-							dumpRingToChannel(globalOsTraceRing.get(), std::move(channel), maxFrameSize));
-				}
+					co_await dumpRingToChannel(globalOsTraceRing.get(), std::move(channel), maxFrameSize);
+				}());
 			}
 		});
 	}

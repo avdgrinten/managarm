@@ -474,22 +474,21 @@ void launchGdbServer(smarter::shared_ptr<Thread, ActiveHandle> thread,
 	if(launched)
 		return;
 	launched = true;
-	auto channel = solicitIoChannel("kernel-gdbserver");
-	if(!channel) {
-		infoLogger() << "thor: No I/O channel available for gdbserver" << frg::endlog;
-		return;
-	}
-	infoLogger() << "thor: Launching gdbserver on I/O channel "
-			<< channel->descriptiveTag() << frg::endlog;
+	infoLogger() << "thor: Launching gdbserver once an I/O channel is available" << frg::endlog;
 
-	auto svr = frg::construct<GdbServer>(*kernelAlloc,
-			std::move(thread), path, std::move(channel));
 	spawnOnWorkQueue(*kernelAlloc, wq.lock(),
-		async::transform(svr->run(), [] (auto outcome) {
-			if(!outcome)
-				infoLogger() << "thor: Internal error in gdbserver" << frg::endlog;
-		})
-	);
+			[] (smarter::shared_ptr<Thread, ActiveHandle> thread,
+					frg::string_view path) -> coroutine<void> {
+		auto channel = co_await solicitIoChannel("kernel-gdbserver");
+		infoLogger() << "thor: Launching gdbserver on I/O channel "
+				<< channel->descriptiveTag() << frg::endlog;
+
+		auto svr = frg::construct<GdbServer>(*kernelAlloc,
+				std::move(thread), path, std::move(channel));
+		auto outcome = co_await svr->run();
+		if(!outcome)
+			infoLogger() << "thor: Internal error in gdbserver" << frg::endlog;
+	}(std::move(thread), path));
 }
 
 } // namespace thor

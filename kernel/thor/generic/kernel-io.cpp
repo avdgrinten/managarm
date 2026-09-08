@@ -1,3 +1,4 @@
+#include <async/oneshot-event.hpp>
 #include <frg/allocation.hpp>
 #include <frg/hash_map.hpp>
 #include <thor-internal/kernel-io.hpp>
@@ -6,14 +7,39 @@
 namespace thor {
 
 namespace {
+	// Slots are created by whichever of publishIoChannel() / solicitIoChannel() comes first
+	// and are never freed, so the map can key on the slot's own tag string.
+	struct ChannelSlot {
+		ChannelSlot(frg::string<KernelAlloc> tag)
+		: tag{std::move(tag)} { }
+
+		frg::string<KernelAlloc> tag;
+		smarter::shared_ptr<KernelIoChannel> channel;
+		async::oneshot_event published;
+	};
+
+	constinit IrqSpinlock globalChannelMutex;
+
+	// Protected by globalChannelMutex.
 	frg::eternal<
 		frg::hash_map<
 			frg::string_view,
-			smarter::shared_ptr<KernelIoChannel>,
+			ChannelSlot *,
 			frg::hash<frg::string_view>,
 			Allocator
 		>
 	> globalChannelMap{frg::hash<frg::string_view>{}};
+
+	// Must be called with globalChannelMutex held.
+	ChannelSlot *obtainSlot(frg::string_view tag) {
+		auto maybeSlot = globalChannelMap->get(tag);
+		if(maybeSlot)
+			return *maybeSlot;
+		auto slot = frg::construct<ChannelSlot>(*kernelAlloc,
+				frg::string<KernelAlloc>{*kernelAlloc, tag});
+		globalChannelMap->insert(slot->tag, slot);
+		return slot;
+	}
 }
 
 initgraph::Stage *getIoChannelsDiscoveredStage() {
@@ -22,14 +48,29 @@ initgraph::Stage *getIoChannelsDiscoveredStage() {
 }
 
 void publishIoChannel(smarter::shared_ptr<KernelIoChannel> channel) {
-	globalChannelMap->insert(channel->tag(), std::move(channel));
+	ChannelSlot *slot;
+	{
+		auto lock = frg::guard(&globalChannelMutex);
+		slot = obtainSlot(channel->tag());
+		if(slot->channel) {
+			warningLogger() << "thor: Ignoring duplicate I/O channel "
+					<< channel->descriptiveTag() << frg::endlog;
+			return;
+		}
+		slot->channel = std::move(channel);
+	}
+	// Waiters resume inline, so raise outside of the lock.
+	slot->published.raise();
 }
 
-smarter::shared_ptr<KernelIoChannel> solicitIoChannel(frg::string_view tag) {
-	auto maybeChannel = globalChannelMap->get(tag);
-	if(!maybeChannel)
-		return nullptr;
-	return *maybeChannel;
+coroutine<smarter::shared_ptr<KernelIoChannel>> solicitIoChannel(frg::string_view tag) {
+	ChannelSlot *slot;
+	{
+		auto lock = frg::guard(&globalChannelMutex);
+		slot = obtainSlot(tag);
+	}
+	co_await slot->published.wait();
+	co_return slot->channel;
 }
 
 coroutine<void> dumpRingToChannel(LogRingBuffer *ringBuffer,
