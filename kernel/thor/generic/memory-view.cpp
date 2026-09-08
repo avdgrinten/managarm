@@ -23,6 +23,9 @@ namespace {
 
 	// Number of pages that BackingMemory::invalidateRange() discards per critical section.
 	constexpr size_t discardChunkSize = 512;
+
+	// Number of page entries that BackingMemory::writebackFence() scans per critical section.
+	constexpr size_t fenceChunkSize = 512;
 }
 
 // --------------------------------------------------------
@@ -973,6 +976,19 @@ ManagedSpace::ManagedPage::detachMonitor(MonitorType type) {
 	return {frg::adopt_rc, ptr};
 }
 
+bool ManagedSpace::ManagedPage::hasMonitor(MonitorType type) {
+	auto bit = uint8_t{1} << static_cast<unsigned int>(type);
+	return attachedMonitors & bit;
+}
+
+bool ManagedSpace::ManagedPage::hasUnwrittenData() {
+	return transactionState == TxState::dirty
+			|| transactionState == TxState::pendingWriteback
+			|| transactionState == TxState::wantWriteback
+			|| transactionState == TxState::writeback
+			|| stillDirty;
+}
+
 std::expected<smarter::shared_ptr<ManagedSpace>, Error> ManagedSpace::create(
 		size_t length, bool readahead) {
 	if(length > backingMemoryLength)
@@ -1071,6 +1087,9 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 						assert(!page->stillDirty || page->discardMode == DiscardMode::dropDirty);
 						// The frame is being discarded so it doesn't need to be written back.
 						page->stillDirty = false;
+						auto writebackMonitor = page->detachMonitor(MonitorType::writeback);
+						if(writebackMonitor)
+							pendingMonitors.push_back(writebackMonitor.release());
 						page->transactionState = TxState::none;
 						anyDiscardQueued |= _disposeDiscarded(page);
 					}
@@ -1129,6 +1148,10 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 						anyDirty = true;
 					} else {
 						assert(!page->stillDirty || page->discardMode == DiscardMode::dropDirty);
+						page->stillDirty = false;
+						auto writebackMonitor = page->detachMonitor(MonitorType::writeback);
+						if(writebackMonitor)
+							pendingMonitors.push_back(writebackMonitor.release());
 						page->transactionState = TxState::none;
 						anyDiscardQueued |= _disposeDiscarded(page);
 					}
@@ -1321,6 +1344,7 @@ coroutine<void> ManagedSpace::_runInvalidationLoop() {
 		bool raiseDiscard = false;
 		bool anyDirty = false;
 		bool anyExpedite = false;
+		MonitorPendingList pendingMonitors;
 		{
 			auto irqLock = frg::guard(&irqMutex());
 			auto lock = frg::guard(&mutex);
@@ -1337,11 +1361,16 @@ coroutine<void> ManagedSpace::_runInvalidationLoop() {
 					anyDirty = true;
 				} else {
 					assert(!page->stillDirty || page->discardMode == DiscardMode::dropDirty);
+					page->stillDirty = false;
+					auto writebackMonitor = page->detachMonitor(MonitorType::writeback);
+					if(writebackMonitor)
+						pendingMonitors.push_back(writebackMonitor.release());
 					page->transactionState = TxState::none;
 					raiseDiscard |= _disposeDiscarded(page);
 				}
 			}
 		}
+		_raiseMonitors(pendingMonitors);
 		if(raiseDiscard)
 			_discardEvent.raise();
 		if(anyDirty)
@@ -1449,8 +1478,9 @@ void ManagedSpace::_enqueueDirty(ManagedPage *page, bool &raiseExpedite) {
 	_dirtyList.push_back(&page->cachePage);
 	if(!_writebackDeadline)
 		_writebackDeadline = getClockNanos() + writebackDelayNanos;
-	// Discard waiters must not sit out the writeback delay; see discardPage().
-	if(page->discarded && !_writebackExpedited) {
+	// Discard and writebackFence() waiters must not sit out the writeback delay.
+	if((page->discarded || page->hasMonitor(MonitorType::writeback))
+			&& !_writebackExpedited) {
 		_writebackExpedited = true;
 		raiseExpedite = true;
 	}
@@ -1947,6 +1977,7 @@ Error BackingMemory::updateRange(ManageRequest type, size_t offset, size_t lengt
 		return Error::illegalArgs;
 
 	ManagedSpace::MonitorPendingList pendingMonitors;
+	ManageList pendingManagement;
 	bool raiseDiscard = false;
 	{
 		auto irqLock = frg::guard(&irqMutex());
@@ -2031,6 +2062,9 @@ Error BackingMemory::updateRange(ManageRequest type, size_t offset, size_t lengt
 				}
 			}
 		}
+
+		// Re-queued writebacks must not wait for an unrelated _progressManagement() call.
+		_managed->_progressManagement(pendingManagement);
 	}
 
 	if(raiseDiscard)
@@ -2038,56 +2072,71 @@ Error BackingMemory::updateRange(ManageRequest type, size_t offset, size_t lengt
 
 	ManagedSpace::_raiseMonitors(pendingMonitors);
 
+	while(!pendingManagement.empty()) {
+		auto node = pendingManagement.pop_front();
+		node->completionEvent.raise();
+	}
+
 	return Error::success;
 }
 
 coroutine<frg::expected<Error>> BackingMemory::writebackFence(uintptr_t offset, size_t size) {
+	assert(currentIpl() == ipl::exceptionalWork);
 	if (offset & (kPageSize - 1))
 		co_return Error::illegalArgs;
 	if (size & (kPageSize - 1))
 		co_return Error::illegalArgs;
+	if (offset > backingMemoryLength || size > backingMemoryLength - offset)
+		co_return Error::bufferTooSmall;
 
 	// Note that writebackFence() expedites writeback
 	// (otherwise, callers would need to wait for the full writebackDelayNanos).
 
-	size_t pg = 0;
-	while(pg < size) {
+	auto limitPage = (offset + size) >> kPageShift;
+
+	uint64_t cursor = offset >> kPageShift;
+	while(cursor < limitPage) {
+		uint64_t index;
 		frg::intrusive_shared_ptr<ManagedSpace::TransactionMonitor, Allocator> monitor;
 		bool needSecond = false;
 		bool raiseExpedite = false;
+		bool exhausted = false;
 		{
 			auto irqLock = frg::guard(&irqMutex());
 			auto lock = frg::guard(&_managed->mutex);
 
-			while(pg < size) {
-				size_t index = (offset + pg) >> kPageShift;
-				auto pit = _managed->pages.find(index);
-				if(pit) {
-					if(pit->transactionState == ManagedSpace::TxState::dirty
-							|| pit->transactionState == ManagedSpace::TxState::pendingWriteback
-							|| pit->transactionState == ManagedSpace::TxState::wantWriteback) {
-						monitor = pit->requireMonitor(ManagedSpace::MonitorType::writeback);
-						if(pit->transactionState == ManagedSpace::TxState::dirty
-								&& !_managed->_writebackExpedited) {
-							_managed->_writebackExpedited = true;
-							raiseExpedite = true;
-						}
-						break;
-					} else if(pit->transactionState == ManagedSpace::TxState::writeback) {
-						monitor = pit->requireMonitor(ManagedSpace::MonitorType::writeback);
-						needSecond = true;
-						break;
-					}
+			// Skip over absent entries and scan in chunks
+			// so that the spinlock is not held for an unbounded time.
+			auto it = _managed->pages.lower_bound(cursor);
+			for(size_t i = 0; i < fenceChunkSize; ++i) {
+				if(it == _managed->pages.end() || it->cachePage.identity >= limitPage) {
+					exhausted = true;
+					break;
 				}
-				pg += kPageSize;
+				auto *pit = &*it;
+				++it;
+				index = pit->cachePage.identity;
+				cursor = index + 1;
+				if(!pit->hasUnwrittenData())
+					continue;
+				monitor = pit->requireMonitor(ManagedSpace::MonitorType::writeback);
+				needSecond = pit->transactionState == ManagedSpace::TxState::writeback;
+				// Later pages in the range can be in TxState::dirty; expedite regardless.
+				if(!_managed->_writebackExpedited) {
+					_managed->_writebackExpedited = true;
+					raiseExpedite = true;
+				}
+				break;
 			}
 		}
 		if(raiseExpedite)
 			_managed->_expediteEvent.raise();
 
-		if(!monitor)
+		if(exhausted)
 			break;
 
+		if(!monitor)
+			continue;
 		co_await monitor->event.wait();
 
 		// If the writeback was already in progress, it is not guaranteed that it did write
@@ -2099,7 +2148,6 @@ coroutine<frg::expected<Error>> BackingMemory::writebackFence(uintptr_t offset, 
 				auto irqLock = frg::guard(&irqMutex());
 				auto lock = frg::guard(&_managed->mutex);
 
-				size_t index = (offset + pg) >> kPageShift;
 				auto pit = _managed->pages.find(index);
 				if(pit && (pit->transactionState == ManagedSpace::TxState::wantWriteback
 						|| pit->transactionState == ManagedSpace::TxState::writeback))
@@ -2109,8 +2157,6 @@ coroutine<frg::expected<Error>> BackingMemory::writebackFence(uintptr_t offset, 
 			if(monitor)
 				co_await monitor->event.wait();
 		}
-
-		pg += kPageSize;
 	}
 
 	co_return {};
