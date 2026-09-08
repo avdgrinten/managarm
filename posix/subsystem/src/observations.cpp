@@ -165,8 +165,9 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 				std::cout << "posix: GET_PROCESS_DATA supercall" << std::endl;
 			uintptr_t gprs[kHelNumGprs];
 			HEL_CHECK(helLoadRegisters(thread.getHandle(), kHelRegsGeneral, &gprs));
+			auto writeSize = std::min(gprs[kHelRegArg1], sizeof(posix::ManagarmProcessData));
 			auto storeData = co_await helix_ng::writeMemory(thread, gprs[kHelRegArg0],
-					sizeof(posix::ManagarmProcessData), &data);
+					writeSize, &data);
 			HEL_CHECK(storeData.error());
 			gprs[kHelRegError] = kHelErrNone;
 			HEL_CHECK(helStoreRegisters(thread.getHandle(), kHelRegsGeneral, &gprs));

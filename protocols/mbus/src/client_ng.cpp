@@ -16,8 +16,11 @@ namespace {
 	HelHandle getMbusClientLane() {
 		posix::ManagarmProcessData data;
 
-		HEL_CHECK(helSyscall1(kHelCallSuper + posix::superGetProcessData,
-						reinterpret_cast<HelWord>(&data)));
+		HEL_CHECK(helSyscall2(
+			kHelCallSuper + posix::superGetProcessData,
+			reinterpret_cast<HelWord>(&data),
+			sizeof(posix::ManagarmProcessData)
+		));
 
 		return data.mbusLane;
 	}

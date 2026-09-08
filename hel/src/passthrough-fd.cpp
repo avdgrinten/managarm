@@ -11,7 +11,11 @@ HelHandle handleForFd(int fd) {
 		return 0;
 
 	posix::ManagarmProcessData data;
-	HEL_CHECK(helSyscall1(kHelCallSuper + posix::superGetProcessData, reinterpret_cast<HelWord>(&data)));
+	HEL_CHECK(helSyscall2(
+		kHelCallSuper + posix::superGetProcessData,
+		reinterpret_cast<HelWord>(&data),
+		sizeof(posix::ManagarmProcessData)
+	));
 
 	return reinterpret_cast<HelHandle *>(data.fileTable)[fd];
 }
