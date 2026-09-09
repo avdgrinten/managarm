@@ -2882,6 +2882,11 @@ coroutine<frg::expected<Error, smarter::shared_ptr<MemoryView>>> CopyOnWriteMemo
 	frg::vector<frg::tuple<size_t, smarter::shared_ptr<CowPage>>, KernelAlloc> inProgressPages{*kernelAlloc};
 	frg::vector<frg::tuple<size_t, smarter::shared_ptr<CowPage>>, KernelAlloc> lockedCopies{*kernelAlloc};
 
+	// Note: We turn owned pages into shared pages while holding the locks below.
+	//       Since this happens while the lock is held, peekRange() and touchRange() can never
+	//       see intermediate states (e.g., pages that are already removed from _ownedPages
+	//       but that are not available in _copyChain yet).
+
 	{
 		auto irqLock = frg::guard(&irqMutex());
 		auto lock = frg::guard(&_mutex);
@@ -2903,27 +2908,28 @@ coroutine<frg::expected<Error, smarter::shared_ptr<MemoryView>>> CopyOnWriteMemo
 		// Inspect all copied pages owned by the original mapping.
 		for(size_t pg = 0; pg < _length; pg += kPageSize) {
 			auto it = _ownedPages.find(pg >> kPageShift);
+			smarter::shared_ptr<CowPage> page;
+			if(it)
+				page = *it;
 
-			if(!it) {
+			// Pages in state null only hold a lock count, so they do not shadow the chain.
+			if(!page || page->state == CowState::null) {
 				// If the page is missing in this memory object, look at the CowChain.
 				auto pageOffset = _viewOffset + pg;
 				if (curChain) {
 					auto chainLock = frg::guard(&curChain->_mutex);
 
 					if(auto it = curChain->_pages.find(pageOffset >> kPageShift); it) {
-						auto page = *it;
-						assert(page->state == CowState::hasCopy);
+						auto chainPage = *it;
+						assert(chainPage->state == CowState::hasCopy);
 						auto newIt = newChain->_pages.insert(pageOffset >> kPageShift);
-						*newIt = page;
+						*newIt = chainPage;
 					}
 				}
 				continue;
 			}
 
-			auto page = *it;
-			if(page->state == CowState::null) {
-				continue;
-			}else if(page->state == CowState::inProgress) {
+			if(page->state == CowState::inProgress) {
 				// We wait for the in progress pages later, as we
 				// need to drop the locks we're holding before
 				// suspending, but they are ensuring consistency
