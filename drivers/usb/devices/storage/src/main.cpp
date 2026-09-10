@@ -8,6 +8,8 @@
 #include <stdio.h>
 
 #include <async/result.hpp>
+#include <core/cmdline.hpp>
+#include <frg/cmdline.hpp>
 #include <helix/dispatcher-pool.hpp>
 #include <protocols/mbus/client.hpp>
 #include <protocols/usb/usb.hpp>
@@ -17,8 +19,9 @@
 #include "storage.hpp"
 
 namespace {
-	constexpr bool logEnumeration = false;
-	constexpr bool logSteps = false;
+	// Set by usb-storage.debug and usb-storage.trace on the kernel command line.
+	bool logEnumeration = false;
+	bool logSteps = false;
 }
 
 namespace proto = protocols::usb;
@@ -46,7 +49,7 @@ async::result<void> StorageDevice::initialize(int config_num, int intf_num) {
 		}
 	}
 
-	if(logSteps)
+	if(logEnumeration)
 		std::cout << "block-usb: Setting up configuration" << std::endl;
 
 	auto config = (co_await usbDevice_.useConfiguration(0, config_num)).unwrap();
@@ -54,7 +57,7 @@ async::result<void> StorageDevice::initialize(int config_num, int intf_num) {
 	endp_in_ = (co_await intf.getEndpoint(proto::PipeType::in, in_endp_number.value())).unwrap();
 	endp_out_ = (co_await intf.getEndpoint(proto::PipeType::out, out_endp_number.value())).unwrap();
 
-	if(logSteps)
+	if(logEnumeration)
 		std::cout << "block-usb: Device is ready" << std::endl;
 }
 
@@ -132,7 +135,8 @@ async::detached bindDevice(mbus_ng::Entity entity) {
 
 	auto descriptorOrError = co_await device.configurationDescriptor(0);
 	if(!descriptorOrError) {
-		std::cout << "usb-hid: Failed to get device descriptor" << std::endl;
+		std::cout << "block-usb: mbus ID " << entity.id()
+				<< ": Failed to get configuration descriptor" << std::endl;
 		co_return;
 	}
 
@@ -161,7 +165,8 @@ async::detached bindDevice(mbus_ng::Entity entity) {
 	}
 
 	if(logEnumeration)
-		std::cout << "block-usb: Device class: 0x" << std::hex << intf_class.value()
+		std::cout << "block-usb: mbus ID " << entity.id()
+				<< ": interface class: 0x" << std::hex << intf_class.value()
 				<< ", subclass: 0x" << intf_subclass.value()
 				<< ", protocol: 0x" << intf_protocol.value()
 				<< std::dec << std::endl;
@@ -179,6 +184,14 @@ async::detached bindDevice(mbus_ng::Entity entity) {
 }
 
 async::detached observeDevices() {
+	Cmdline cmdlineHelper{};
+	auto cmdline = co_await cmdlineHelper.get();
+	frg::array args = {
+		frg::option{"usb-storage.debug", frg::store_true(logEnumeration)},
+		frg::option{"usb-storage.trace", frg::store_true(logSteps)},
+	};
+	frg::parse_arguments({cmdline.data(), cmdline.size()}, args);
+
 	auto filter = mbus_ng::Conjunction{{
 		mbus_ng::EqualsFilter{"usb.type", "device"},
 		mbus_ng::EqualsFilter{"usb.class", "00"}
