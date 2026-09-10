@@ -112,6 +112,7 @@ extern "C" void thorRtIpiShootdown();
 extern "C" void thorRtIpiPing();
 extern "C" void thorRtIpiCall();
 extern "C" void thorRtPreemption();
+extern "C" void thorRtSpurious();
 
 extern "C" void nmiStub();
 
@@ -305,7 +306,9 @@ void setupIdt(uint32_t *table) {
 	makeIdt64IntSystemGate(table, 0xF0, irq_selector, (void *)&thorRtIpiShootdown, 0);
 	makeIdt64IntSystemGate(table, 0xF1, irq_selector, (void *)&thorRtIpiPing, 0);
 	makeIdt64IntSystemGate(table, 0xF2, irq_selector, (void *)&thorRtIpiCall, 0);
-	makeIdt64IntSystemGate(table, 0xFF, irq_selector, (void *)&thorRtPreemption, 0);
+	makeIdt64IntSystemGate(table, lapicTimerVector, irq_selector, (void *)&thorRtPreemption, 0);
+	makeIdt64IntSystemGate(table, lapicSpuriousVector, irq_selector,
+			(void *)&thorRtSpurious, 0);
 
 	int nmi_selector = kSelKernelCode;
 	makeIdt64IntSystemGate(table, 2, nmi_selector, (void *)&nmiStub, 3);
@@ -537,6 +540,28 @@ extern "C" void onPlatformPreemption(IrqImageAccessor image) {
 	} else {
 		localScheduler.get().checkPreemption(image);
 	}
+
+	iplLeaveContext(*image.iplState());
+}
+
+extern "C" void onPlatformSpurious(IrqImageAccessor image) {
+	iplSave(*image.iplState());
+	iplEnterContext(ipl::interrupt, *image.iplState());
+
+	if(inStub(*image.ip()))
+		panicLogger() << "Spurious IRQ"
+				" in stub section, cs: 0x" << frg::hex_fmt(*image.cs())
+				<< ", ip: " << (void *)*image.ip() << frg::endlog;
+
+	uint16_t cs = *image.cs();
+	assert(cs == kSelKernelCode || cs == kSelUserCode);
+
+	assert(!irqMutex().nesting());
+	disableUserAccess();
+
+	// Spurious interrupts never set ISR bits; they must not be acknowledged with an EOI.
+	infoLogger() << "thor [CPU " << getLocalApicId()
+			<< "]: Spurious local APIC interrupt" << frg::endlog;
 
 	iplLeaveContext(*image.iplState());
 }
@@ -852,8 +877,12 @@ extern "C" void onFredEvent(Frame* frame) {
 			onPlatformCall(IrqImageAccessor{frame});
 			return;
 		}
-		if (vector == 0xFF) {
+		if (vector == lapicTimerVector) {
 			onPlatformPreemption(IrqImageAccessor{frame});
+			return;
+		}
+		if (vector == lapicSpuriousVector) {
+			onPlatformSpurious(IrqImageAccessor{frame});
 			return;
 		}
 

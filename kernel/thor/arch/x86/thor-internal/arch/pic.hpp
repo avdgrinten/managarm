@@ -39,6 +39,10 @@ extern IrqSlot globalIrqSlots[numIrqSlots];
 // Local APIC management
 // --------------------------------------------------------
 
+// Vectors of interrupts that the local APIC generates itself.
+static inline constexpr unsigned int lapicTimerVector = 0xFE;
+static inline constexpr unsigned int lapicSpuriousVector = 0xFF;
+
 struct ApicRegisterSpace {
 	constexpr ApicRegisterSpace()
 	: _x2apic{false}, _mem_base(0) { }

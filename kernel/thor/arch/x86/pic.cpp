@@ -244,8 +244,7 @@ void initLocalApicPerCpu() {
 	};
 
 	// Enable the local APIC.
-	uint32_t spurious_vector = 0x81;
-	picBase.store(lApicSpurious, apicSpuriousVector(spurious_vector)
+	picBase.store(lApicSpurious, apicSpuriousVector(lapicSpuriousVector)
 			| apicSpuriousSwEnable(true));
 
 	dumpLocalInt(0);
@@ -257,11 +256,11 @@ void initLocalApicPerCpu() {
 
 	// Setup a timer interrupt for scheduling.
 	if(localApicContext()->useTscMode) {
-		picBase.store(lApicLvtTimer, apicLvtVector(0xFF) | apicLvtTimerMode(2));
+		picBase.store(lApicLvtTimer, apicLvtVector(lapicTimerVector) | apicLvtTimerMode(2));
 		// The SDM requires this to order MMIO and MSR writes.
 		asm volatile ("mfence" : : : "memory");
 	}else{
-		picBase.store(lApicLvtTimer, apicLvtVector(0xFF));
+		picBase.store(lApicLvtTimer, apicLvtVector(lapicTimerVector));
 	}
 
 	// Setup the PMI.
