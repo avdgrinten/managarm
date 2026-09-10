@@ -35,7 +35,10 @@ struct StorageDevice : scsi::StorageDevice {
 	: scsi::StorageDevice(512, parent_id, &pool_),
 	  usbDevice_(std::move(usb_device)),
 	  endp_in_{nullptr},
-	  endp_out_{nullptr} {}
+	  endp_out_{nullptr} {
+		// Same limit as Linux' usb-storage (for non-USB3 devices).
+		maxSectorsPerCommand = 240;
+	}
 
 	async::result<void> initialize(int config_num, int intf_num);
 
