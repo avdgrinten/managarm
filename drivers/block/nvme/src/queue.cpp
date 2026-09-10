@@ -26,11 +26,11 @@ async::result<void> PciExpressQueue::init() {
 	size_t sqSize = ((depth_ << 6) + align - 1) & ~size_t(align - 1);
 	size_t cqSize = ((depth_ * sizeof(spec::CompletionEntry)) + align - 1) & ~size_t(align - 1);
 
-	cq_ = arch::dma_buffer{&controller_->memoryPool(), cqSize};
+	cq_ = arch::dma_buffer{&controller_->contiguousPool(), cqSize};
 	cqes_ = reinterpret_cast<spec::CompletionEntry *>(cq_.data());
 	memset(cqes_, 0, cqSize);
 
-	sq_ = arch::dma_buffer{&controller_->memoryPool(), sqSize};
+	sq_ = arch::dma_buffer{&controller_->contiguousPool(), sqSize};
 	sqCmds_ = sq_.data();
 
 	co_return;

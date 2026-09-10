@@ -64,6 +64,10 @@ struct Controller {
 		return pool_;
 	}
 
+	arch::contiguous_pool &contiguousPool() {
+		return contiguousPool_;
+	}
+
 protected:
 	spec::DataTransfer preferredDataTransfer_ = spec::DataTransfer::PRP;
 
@@ -75,6 +79,8 @@ protected:
 
 	arch::dma_realm dmaRealm_;
 	arch::contiguous_pool pool_{&dmaRealm_, {.addressBits = 64, .allocateContigous = false}};
+	// Queues are passed to the controller as a single PRP with kQueuePhysContig.
+	arch::contiguous_pool contiguousPool_{&dmaRealm_, {.addressBits = 64, .allocateContigous = true}};
 
 	std::string serial;
 	std::string model;
