@@ -282,7 +282,8 @@ async::result<RingPointer> ProducerRing::pushTrbs(const std::vector<RawTrb> &trb
 		_enqueue.advance(1, usableRingSize);
 	}
 
-	_updateLink(initialPtr.cycle);
+	// If the TD continues after the Link TRB, the Link TRB has to be part of the chain.
+	_updateLink(initialPtr.cycle, finalPtr.cycle != initialPtr.cycle);
 
 	// Make sure this is all visible to the controller.
 	_controller->barrier.writeback(_ring.view_buffer());
@@ -312,7 +313,7 @@ void ProducerRing::retire(RingPointer newDequeue) {
 	_progressEvent.raise();
 }
 
-void ProducerRing::_updateLink(bool initialCycle) {
+void ProducerRing::_updateLink(bool initialCycle, bool chain) {
 	if (_enqueue.cycle == initialCycle) return;
 
 	auto ptr = getPtr();
@@ -320,7 +321,7 @@ void ProducerRing::_updateLink(bool initialCycle) {
 		static_cast<uint32_t>(ptr & 0xFFFFFFFF),
 		static_cast<uint32_t>(ptr >> 32),
 		0,
-		static_cast<uint32_t>(initialCycle | (1 << 1) | (6 << 10))
+		static_cast<uint32_t>(initialCycle | (1 << 1) | (chain ? (1 << 4) : 0) | (6 << 10))
 	}};
 }
 
