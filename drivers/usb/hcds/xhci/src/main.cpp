@@ -1356,12 +1356,25 @@ EndpointState::transfer(proto::InterruptTransfer info) {
 
 async::result<frg::expected<proto::UsbError, size_t>>
 EndpointState::transfer(proto::BulkTransfer info) {
-	auto trbs = co_await Transfer::buildNormalChain(_device->controller()->dmaSpace(), info.buffer, _maxPacketSize);
-	co_return FRG_CO_TRY(co_await _postTd(
-				std::move(trbs),
-				info.buffer,
-				info.flags == proto::kXferToHost,
-				std::format("bulk transfer of {} bytes", info.buffer.size())));
+	// A TD has to fit into the transfer ring (one TRB per page), so split large transfers into multiple
+	// TDs. Since the TD size is a multiple of any max packet size, a short packet still ends the transfer.
+	constexpr size_t maxTdSize = 64 * 4096;
+
+	size_t progress = 0;
+	do {
+		auto chunk = info.buffer.subview(progress, std::min(maxTdSize, info.buffer.size() - progress));
+		auto trbs = co_await Transfer::buildNormalChain(_device->controller()->dmaSpace(), chunk, _maxPacketSize);
+		auto length = FRG_CO_TRY(co_await _postTd(
+					std::move(trbs),
+					chunk,
+					info.flags == proto::kXferToHost,
+					std::format("bulk transfer of {} bytes", chunk.size())));
+		progress += length;
+		if (length < chunk.size())
+			break;
+	} while (progress < info.buffer.size());
+
+	co_return progress;
 }
 
 uint8_t Device::endpointState(int endpointId) {
