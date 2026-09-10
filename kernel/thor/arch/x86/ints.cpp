@@ -324,7 +324,7 @@ extern "C" void onPlatformIrq(IrqImageAccessor image, int number) {
 	assert(!irqMutex().nesting());
 	disableUserAccess();
 
-	handleIrq(image, globalIrqSlots[number].pin());
+	handleIrq(image, irqSlots.get().slots[number].pin());
 
 	if (image.inUserMode()) {
 		auto thisThread = getCurrentThread();

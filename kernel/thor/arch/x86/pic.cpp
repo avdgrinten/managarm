@@ -110,7 +110,7 @@ uint64_t getRawTimestampCounter() {
 // IrqSlot
 // --------------------------------------------------------
 
-constinit IrqSlot globalIrqSlots[numIrqSlots];
+THOR_DEFINE_PERCPU(irqSlots);
 
 void IrqSlot::link(IrqPin *pin) {
 	assert(!_pin.load(std::memory_order_relaxed));
@@ -471,19 +471,29 @@ void sendGlobalNmi() {
 
 namespace {
 	IrqSpinlock irqAllocationLock;
-	static bool irqSlotAllocated[numIrqSlots]{};
 
+	// Allocates a slot index that is free on every CPU.
 	std::optional<int> allocateIrqSlot() {
 		auto guard = frg::guard(&irqAllocationLock);
 
 		for(int i = 0; i < numIrqSlots; i++) {
-			if(irqSlotAllocated[i])
+			bool free = true;
+			for(size_t cpu = 0; cpu < getCpuCount(); cpu++)
+				if(irqSlots.getFor(cpu).slots[i].allocated)
+					free = false;
+			if(!free)
 				continue;
-			irqSlotAllocated[i] = true;
+			for(size_t cpu = 0; cpu < getCpuCount(); cpu++)
+				irqSlots.getFor(cpu).slots[i].allocated = true;
 			return i;
 		}
 
 		return std::nullopt;
+	}
+
+	void linkIrqSlot(int slotIndex, IrqPin *pin) {
+		for(size_t cpu = 0; cpu < getCpuCount(); cpu++)
+			irqSlots.getFor(cpu).slots[slotIndex].link(pin);
 	}
 
 	struct ApicMsiPin final : MsiPin {
@@ -535,7 +545,7 @@ smarter::shared_ptr<MsiPin> allocateApicMsi(frg::string<KernelAlloc> name) {
 
 	infoLogger() << "thor: Allocating IRQ slot " << slotIndex
 			<< " to " << pin->name() << frg::endlog;
-	globalIrqSlots[slotIndex].link(pin.get());
+	linkIrqSlot(slotIndex, pin.get());
 
 	// Leak a reference until IrqPin teardown exists;
 	// otherwise the slot dangles once the last sink goes away.
@@ -692,7 +702,7 @@ namespace {
 				panicLogger() << "thor: Could not allocate interrupt vector for "
 						<< name() << frg::endlog;
 			auto slotIndex = *maybeSlotIndex;
-			globalIrqSlots[slotIndex].link(this);
+			linkIrqSlot(slotIndex, this);
 			_vector = irqSlotVectorBase + slotIndex;
 		}
 

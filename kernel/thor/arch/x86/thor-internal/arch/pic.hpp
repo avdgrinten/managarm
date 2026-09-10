@@ -6,6 +6,7 @@
 #include <x86/machine.hpp>
 #include <initgraph.hpp>
 #include <thor-internal/arch/asm.h>
+#include <thor-internal/cpu-data.hpp>
 #include <thor-internal/irq.hpp>
 #include <thor-internal/timer.hpp>
 #include <thor-internal/types.hpp>
@@ -34,11 +35,19 @@ struct IrqSlot {
 		return _pin.load(std::memory_order_acquire);
 	}
 
+	// Protected by the IRQ allocation lock.
+	bool allocated = false;
+
 private:
 	std::atomic<IrqPin *> _pin{nullptr};
 };
 
-extern IrqSlot globalIrqSlots[numIrqSlots];
+// Slot i of a CPU receives the IRQs that arrive at vector irqSlotVectorBase + i on that CPU.
+struct IrqSlotTable {
+	IrqSlot slots[numIrqSlots];
+};
+
+extern PerCpu<IrqSlotTable> irqSlots;
 
 // --------------------------------------------------------
 // Local APIC management
