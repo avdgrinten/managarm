@@ -230,7 +230,7 @@ GfxDevice::createDumb(uint32_t width, uint32_t height, uint32_t bpp) {
 	size_t mappingSize = frg::align_up(size, 0x1000);
 
 	auto gpuVa = _vramAllocator.allocate(size);
-	auto dmaBuffer = arch::dma_buffer{&_pool, size};
+	auto dmaBuffer = arch::dma_buffer{&_pool, mappingSize, 0x1000};
 
 	async::run(dmaSpace_.ensure_mapped(dmaBuffer), helix::currentDispatcher);
 	for (size_t page = 0; page < mappingSize; page += 0x1000) {
