@@ -107,7 +107,7 @@ async::result<void> Namespace::handleIoctl(managarm::fs::GenericIoctlRequest &re
 		cmdBuf.cdw15 = param.cdw15;
 
 		size_t data_size = param.data_len;
-		std::vector<std::byte> data_buf(data_size);
+		arch::dma_buffer data_buf{&controller_->memoryPool(), data_size};
 
 		auto [recv_data] = co_await helix_ng::exchangeMsgs(
 				conversation,
@@ -115,7 +115,7 @@ async::result<void> Namespace::handleIoctl(managarm::fs::GenericIoctlRequest &re
 		);
 		HEL_CHECK(recv_data.error());
 
-		co_await cmd->setupBuffer(controller_, arch::dma_buffer_view{nullptr, data_buf.data(), data_size}, controller_->dataTransferPolicy());
+		co_await cmd->setupBuffer(controller_, data_buf, controller_->dataTransferPolicy());
 
 		auto res = co_await controller_->submitAdminCommand(std::move(cmd));
 
