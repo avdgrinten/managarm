@@ -139,8 +139,9 @@ async::detached observePartitions() {
 			auto mbus_parent = std::stoi(parent_property.value);
 			std::shared_ptr<drvcore::Device> parent_device;
 			if (mbus_parent != -1) {
-				parent_device = drvcore::getMbusDevice(mbus_parent);
-				assert(parent_device);
+				// The parent (e.g., a USB device) may not be installed yet.
+				while (!(parent_device = drvcore::getMbusDevice(mbus_parent)))
+					co_await drvcore::mbusMapUpdate.async_wait();
 			}
 
 			auto lane = (co_await entity.getRemoteLane()).unwrap();
@@ -226,8 +227,9 @@ async::detached run() {
 			auto mbus_parent = std::stoi(parent_property.value);
 			std::shared_ptr<drvcore::Device> parent_device;
 			if (mbus_parent != -1) {
-				parent_device = drvcore::getMbusDevice(mbus_parent);
-				assert(parent_device);
+				// The parent (e.g., a USB device) may not be installed yet.
+				while (!(parent_device = drvcore::getMbusDevice(mbus_parent)))
+					co_await drvcore::mbusMapUpdate.async_wait();
 			}
 
 			auto entity = co_await mbus_ng::Instance::global().getEntity(event.id);
