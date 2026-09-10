@@ -702,6 +702,14 @@ async::detached Controller::Port::initPort() {
 	// Linux only waits for power good (20 ms for USB 2, 100 ms for USB 3 root hubs).
 	co_await helix_ng::sleepFor(powerCyclePorts ? 1'000'000'000 : 100'000'000);
 
+	// Ports can end up in states that do not generate events (e.g., Compliance), so take a snapshot.
+	if (debugLogs) {
+		[] (Port *self) -> async::detached {
+			co_await helix_ng::sleepFor(3'000'000'000);
+			self->logPortsc("3 s after power-on");
+		}(this);
+	}
+
 	// Wait for something to connect to the port
 	co_await awaitFlag(portsc::connectStatus, true);
 	if (debugLogs)
