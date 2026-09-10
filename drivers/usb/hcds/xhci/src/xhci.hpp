@@ -362,6 +362,10 @@ private:
 
 		void logPortsc(std::string_view what);
 
+		// With xhci.warm-reset, issues a Warm Port Reset if a USB3 port's link is in SS.Inactive or
+		// Compliance. Returns true if a reset was issued.
+		async::result<bool> recoverLink();
+
 		async::recurring_event _doorbell;
 
 		async::result<proto::PortState> pollState();

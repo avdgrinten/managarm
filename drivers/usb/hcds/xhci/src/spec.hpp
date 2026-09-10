@@ -152,6 +152,7 @@ inline constexpr arch::bit_register<uint32_t> porthlpmc(0xC);
 namespace portsc {
 
 inline constexpr arch::field<uint32_t, bool> portReset(4, 1);
+inline constexpr arch::field<uint32_t, bool> warmPortReset(31, 1);
 inline constexpr arch::field<uint32_t, bool> portEnable(1, 1);
 inline constexpr arch::field<uint32_t, bool> connectStatus(0, 1);
 inline constexpr arch::field<uint32_t, bool> portPower(9, 1);

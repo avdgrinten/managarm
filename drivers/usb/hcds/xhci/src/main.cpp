@@ -44,6 +44,8 @@ namespace {
 bool debugLogs = false;
 // Cleared by xhci.no-power-cycle on the kernel command line.
 bool powerCyclePorts = true;
+// Set by xhci.warm-reset on the kernel command line.
+bool warmResetPorts = false;
 
 // Number of address bits that the controller can use for DMA.
 size_t dmaAddressBits([[maybe_unused]] arch::mem_space space) {
@@ -691,6 +693,23 @@ void Controller::Port::transitionToLinkStatus(uint8_t status) {
 			| portsc::portLinkStatusStrobe(true));
 }
 
+async::result<bool> Controller::Port::recoverLink() {
+	if (!warmResetPorts || _proto->major != 3)
+		co_return false;
+
+	// SS.Inactive (6) and Compliance (10) can only be left through a Warm Reset (xHCI 4.19.1.2.6/7).
+	auto linkStatus = getLinkStatus();
+	if (linkStatus != 6 && linkStatus != 10)
+		co_return false;
+
+	logPortsc("issuing warm reset");
+	_space.store(port::portsc, portsc::portPower(true) | portsc::warmPortReset(true));
+	for (int i = 0; i < 20 && (_space.load(port::portsc) & portsc::portReset); i++)
+		co_await helix_ng::sleepFor(50'000'000);
+	logPortsc("after warm reset");
+	co_return true;
+}
+
 async::detached Controller::Port::initPort() {
 	if (powerCyclePorts) {
 		_space.store(port::portsc, portsc::portPower(false));
@@ -710,8 +729,24 @@ async::detached Controller::Port::initPort() {
 		}(this);
 	}
 
-	// Wait for something to connect to the port
-	co_await awaitFlag(portsc::connectStatus, true);
+	// Wait for something to connect to the port.
+	// Entering Compliance does not generate an event, hence we also check the link on each timeout.
+	int warmResets = 0;
+	while (true) {
+		resetChangeBits();
+		if (isConnected())
+			break;
+		if (warmResets < 3 && co_await recoverLink()) {
+			warmResets++;
+			continue;
+		}
+
+		async::cancellation_event ev;
+		helix::TimeoutCancellation tc{1'000'000'000, ev};
+
+		co_await _doorbell.async_wait(ev);
+		co_await tc.retire();
+	}
 	if (debugLogs)
 		logPortsc("connected");
 
@@ -741,6 +776,7 @@ async::result<frg::expected<proto::UsbError, void>> Controller::Port::issueReset
 	// Wait for the port to enable. Give up (like Linux) if the device disconnects or the port
 	// does not enable in time, since the enumerator blocks all other ports of this controller.
 	int timeouts = 0;
+	int warmResets = 0;
 	while (true) {
 		resetChangeBits();
 		auto sc = _space.load(port::portsc);
@@ -749,6 +785,10 @@ async::result<frg::expected<proto::UsbError, void>> Controller::Port::issueReset
 		if (!(sc & portsc::connectStatus)) {
 			logPortsc("lost the device while waiting for port enable");
 			co_return proto::UsbError::other;
+		}
+		if (warmResets < 3 && co_await recoverLink()) {
+			warmResets++;
+			continue;
 		}
 		if (timeouts == 5) {
 			logPortsc("did not enable, giving up");
@@ -1465,6 +1505,7 @@ async::detached observeControllers() {
 	frg::array args = {
 		frg::option{"xhci.debug", frg::store_true(debugLogs)},
 		frg::option{"xhci.no-power-cycle", frg::store_false(powerCyclePorts)},
+		frg::option{"xhci.warm-reset", frg::store_true(warmResetPorts)},
 	};
 	frg::parse_arguments({cmdline.data(), cmdline.size()}, args);
 
