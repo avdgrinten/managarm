@@ -5,6 +5,8 @@
 #include <arch/mem_space.hpp>
 #include <x86/machine.hpp>
 #include <initgraph.hpp>
+#include <thor-internal/arch/asm.h>
+#include <thor-internal/cpu-data.hpp>
 #include <thor-internal/irq.hpp>
 #include <thor-internal/timer.hpp>
 #include <thor-internal/types.hpp>
@@ -16,7 +18,11 @@ namespace thor {
 // IRQ slots
 // --------------------------------------------------------
 
-static inline constexpr int numIrqSlots = 64;
+// IRQ slots occupy the vectors between the legacy PIC and the IPIs.
+static inline constexpr int irqSlotVectorBase = 48;
+static inline constexpr int numIrqSlots = THOR_NUM_IRQ_SLOTS;
+static_assert(irqSlotVectorBase + numIrqSlots <= 0xF0);
+static inline constexpr size_t irqStubSize = THOR_IRQ_STUB_SIZE;
 
 // Represents a slot in the CPU's interrupt table.
 // Slots might be global or per-CPU.
@@ -29,15 +35,27 @@ struct IrqSlot {
 		return _pin.load(std::memory_order_acquire);
 	}
 
+	// Protected by the IRQ allocation lock.
+	bool allocated = false;
+
 private:
 	std::atomic<IrqPin *> _pin{nullptr};
 };
 
-extern IrqSlot globalIrqSlots[numIrqSlots];
+// Slot i of a CPU receives the IRQs that arrive at vector irqSlotVectorBase + i on that CPU.
+struct IrqSlotTable {
+	IrqSlot slots[numIrqSlots];
+};
+
+extern PerCpu<IrqSlotTable> irqSlots;
 
 // --------------------------------------------------------
 // Local APIC management
 // --------------------------------------------------------
+
+// Vectors of interrupts that the local APIC generates itself.
+static inline constexpr unsigned int lapicTimerVector = 0xFE;
+static inline constexpr unsigned int lapicSpuriousVector = 0xFF;
 
 struct ApicRegisterSpace {
 	constexpr ApicRegisterSpace()

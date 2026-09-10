@@ -110,7 +110,7 @@ uint64_t getRawTimestampCounter() {
 // IrqSlot
 // --------------------------------------------------------
 
-constinit IrqSlot globalIrqSlots[numIrqSlots];
+THOR_DEFINE_PERCPU(irqSlots);
 
 void IrqSlot::link(IrqPin *pin) {
 	assert(!_pin.load(std::memory_order_relaxed));
@@ -244,8 +244,7 @@ void initLocalApicPerCpu() {
 	};
 
 	// Enable the local APIC.
-	uint32_t spurious_vector = 0x81;
-	picBase.store(lApicSpurious, apicSpuriousVector(spurious_vector)
+	picBase.store(lApicSpurious, apicSpuriousVector(lapicSpuriousVector)
 			| apicSpuriousSwEnable(true));
 
 	dumpLocalInt(0);
@@ -257,11 +256,11 @@ void initLocalApicPerCpu() {
 
 	// Setup a timer interrupt for scheduling.
 	if(localApicContext()->useTscMode) {
-		picBase.store(lApicLvtTimer, apicLvtVector(0xFF) | apicLvtTimerMode(2));
+		picBase.store(lApicLvtTimer, apicLvtVector(lapicTimerVector) | apicLvtTimerMode(2));
 		// The SDM requires this to order MMIO and MSR writes.
 		asm volatile ("mfence" : : : "memory");
 	}else{
-		picBase.store(lApicLvtTimer, apicLvtVector(0xFF));
+		picBase.store(lApicLvtTimer, apicLvtVector(lapicTimerVector));
 	}
 
 	// Setup the PMI.
@@ -472,24 +471,69 @@ void sendGlobalNmi() {
 
 namespace {
 	IrqSpinlock irqAllocationLock;
-	static bool irqSlotAllocated[numIrqSlots]{};
 
-	std::optional<int> allocateIrqSlot() {
+	// Allocates a slot index that is free on every CPU.
+	// This is needed for I/O APIC interrupts: the EOI of a level-triggered IRQ is broadcast by vector only,
+	// so a vector shared with another level-triggered pin (even one that targets a different CPU)
+	// would cause EOI to clear unrelated I/O APIC remote IRRs.
+	std::optional<int> allocateIoApicIrqSlot() {
 		auto guard = frg::guard(&irqAllocationLock);
 
 		for(int i = 0; i < numIrqSlots; i++) {
-			if(irqSlotAllocated[i])
+			bool free = true;
+			for(size_t cpu = 0; cpu < getCpuCount(); cpu++)
+				if(irqSlots.getFor(cpu).slots[i].allocated)
+					free = false;
+			if(!free)
 				continue;
-			irqSlotAllocated[i] = true;
+			for(size_t cpu = 0; cpu < getCpuCount(); cpu++)
+				irqSlots.getFor(cpu).slots[i].allocated = true;
 			return i;
 		}
 
 		return std::nullopt;
 	}
 
+	void linkIrqSlot(int slotIndex, IrqPin *pin) {
+		for(size_t cpu = 0; cpu < getCpuCount(); cpu++)
+			irqSlots.getFor(cpu).slots[slotIndex].link(pin);
+	}
+
+	struct MsiSlot {
+		size_t cpu;
+		int index;
+	};
+
+	// Allocates a slot index on a single CPU.
+	std::optional<MsiSlot> allocateMsiIrqSlot() {
+		auto guard = frg::guard(&irqAllocationLock);
+
+		std::optional<MsiSlot> best;
+		for(size_t cpu = 0; cpu < getCpuCount(); cpu++) {
+			auto target = getCpuData(cpu);
+			if(!target->cpuInitialized.load(std::memory_order_acquire)
+					|| target->localApicId >= 0xFF)
+				continue;
+			auto &table = irqSlots.getFor(cpu);
+			// Slots are taken from the top so that the low ones stay free on every CPU
+			// for allocateIoApicIrqSlot().
+			for(int i = numIrqSlots - 1; i >= 0; i--) {
+				if(table.slots[i].allocated)
+					continue;
+				if(!best || i > best->index)
+					best = MsiSlot{cpu, i};
+				break;
+			}
+		}
+
+		if(best)
+			irqSlots.getFor(best->cpu).slots[best->index].allocated = true;
+		return best;
+	}
+
 	struct ApicMsiPin final : MsiPin {
-		ApicMsiPin(frg::string<KernelAlloc> name, unsigned int vector)
-		: MsiPin{std::move(name)}, vector_{vector} { }
+		ApicMsiPin(frg::string<KernelAlloc> name, unsigned int vector, uint32_t apicId)
+		: MsiPin{std::move(name)}, vector_{vector}, apicId_{apicId} { }
 
 		IrqStrategy program(TriggerMode mode, Polarity) override {
 			assert(mode == TriggerMode::edge);
@@ -509,7 +553,7 @@ namespace {
 		}
 
 		uint64_t getMessageAddress() override {
-			return 0xFEE00000;
+			return 0xFEE00000 | (uint64_t{apicId_} << 12);
 		}
 
 		uint32_t getMessageData() override {
@@ -518,25 +562,27 @@ namespace {
 
 	private:
 		unsigned int vector_;
+		uint32_t apicId_;
 	};
 }
 
 smarter::shared_ptr<MsiPin> allocateApicMsi(frg::string<KernelAlloc> name) {
-	auto maybeSlotIndex = allocateIrqSlot();
-	if (!maybeSlotIndex)
+	auto maybeSlot = allocateMsiIrqSlot();
+	if (!maybeSlot)
 		return nullptr;
-	auto slotIndex = *maybeSlotIndex;
+	auto [cpu, slotIndex] = *maybeSlot;
 
 	// Create an IRQ pin for the MSI.
-	auto pin = createIrqPin<ApicMsiPin>(std::move(name), 64 + slotIndex);
+	auto pin = createIrqPin<ApicMsiPin>(std::move(name), irqSlotVectorBase + slotIndex,
+			getCpuData(cpu)->localApicId);
 	pin->configure(IrqConfiguration{
 		.trigger = TriggerMode::edge,
 		.polarity = Polarity::high
 	});
 
-	infoLogger() << "thor: Allocating IRQ slot " << slotIndex
+	infoLogger() << "thor: Allocating IRQ slot " << slotIndex << " on CPU #" << cpu
 			<< " to " << pin->name() << frg::endlog;
-	globalIrqSlots[slotIndex].link(pin.get());
+	irqSlots.getFor(cpu).slots[slotIndex].link(pin.get());
 
 	// Leak a reference until IrqPin teardown exists;
 	// otherwise the slot dangles once the last sink goes away.
@@ -688,13 +734,13 @@ namespace {
 
 		// Allocate an IRQ vector for the I/O APIC pin.
 		if(_vector == -1) {
-			auto maybeSlotIndex = allocateIrqSlot();
+			auto maybeSlotIndex = allocateIoApicIrqSlot();
 			if (!maybeSlotIndex)
 				panicLogger() << "thor: Could not allocate interrupt vector for "
 						<< name() << frg::endlog;
 			auto slotIndex = *maybeSlotIndex;
-			globalIrqSlots[slotIndex].link(this);
-			_vector = 64 + slotIndex;
+			linkIrqSlot(slotIndex, this);
+			_vector = irqSlotVectorBase + slotIndex;
 		}
 
 		{
