@@ -5,6 +5,7 @@
 #include <arch/mem_space.hpp>
 #include <x86/machine.hpp>
 #include <initgraph.hpp>
+#include <thor-internal/arch/asm.h>
 #include <thor-internal/irq.hpp>
 #include <thor-internal/timer.hpp>
 #include <thor-internal/types.hpp>
@@ -16,7 +17,8 @@ namespace thor {
 // IRQ slots
 // --------------------------------------------------------
 
-static inline constexpr int numIrqSlots = 64;
+static inline constexpr int numIrqSlots = THOR_NUM_IRQ_SLOTS;
+static inline constexpr size_t irqStubSize = THOR_IRQ_STUB_SIZE;
 
 // Represents a slot in the CPU's interrupt table.
 // Slots might be global or per-CPU.

@@ -32,6 +32,9 @@
 
 .set .L_imageFxSave, 0xC0
 
+# Offset of the error code / IRQ slot index within the Frame struct.
+.set .L_frameCode, 0x80
+
 .set .L_msrIndexFsBase, 0xC0000100
 .set .L_msrIndexGsBase, 0xC0000101
 .set .L_msrIndexKernelGsBase, 0xC0000102
@@ -213,17 +216,28 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 # IRQ stubs
 # ---------------------------------------------------------
 
-.macro MAKE_IRQ_STUB name, number
+# Each IRQ slot gets a fixed-size stub that pushes its slot index in place of
+# the error code and continues at the common IRQ entry.
 .section .text.stubs
-.global \name
-\name:
+.balign THOR_IRQ_STUB_SIZE
+.global thorRtIrqStubs
+thorRtIrqStubs:
+.rept THOR_NUM_IRQ_SLOTS
+0:
+	pushq $\+
+	jmp thorRtIrqCommon
+	# Pad with int3 so that a stray jump into the padding traps.
+	# The fill count also errors out if a stub ever outgrows the stride.
+	.fill 0b + THOR_IRQ_STUB_SIZE - ., 1, 0xCC
+.endr
+
+thorRtIrqCommon:
 	# Swap GS if we interrupted user-space.
-	testl $3, 8(%rsp)
+	testl $3, 16(%rsp)
 	jz 1f
 	swapgs
 1:
 
-	push $0 # Dummy error code.
 	push %rbp
 	push %r15
 	push %r14
@@ -244,7 +258,7 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 	sub $8, %rsp
 
 	mov %rsp, %rdi
-	mov $\number, %rsi
+	mov .L_frameCode(%rsp), %rsi
 	xor %ebp, %ebp
 	cld
 	call onPlatformIrq
@@ -275,7 +289,6 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 
 	add $8, %rsp
 	iretq
-.endm
 
 .macro MAKE_LEGACY_IRQ_STUB name, number
 .section .text.stubs
@@ -402,71 +415,6 @@ MAKE_FAULT_STUB .L_typeFaultNoCode, faultStubSimdException, 19
 	add $8, %rsp
 	iretq
 .endm
-
-MAKE_IRQ_STUB thorRtIsrIrq0, 0
-MAKE_IRQ_STUB thorRtIsrIrq1, 1
-MAKE_IRQ_STUB thorRtIsrIrq2, 2
-MAKE_IRQ_STUB thorRtIsrIrq3, 3
-MAKE_IRQ_STUB thorRtIsrIrq4, 4
-MAKE_IRQ_STUB thorRtIsrIrq5, 5
-MAKE_IRQ_STUB thorRtIsrIrq6, 6
-MAKE_IRQ_STUB thorRtIsrIrq7, 7
-MAKE_IRQ_STUB thorRtIsrIrq8, 8
-MAKE_IRQ_STUB thorRtIsrIrq9, 9
-MAKE_IRQ_STUB thorRtIsrIrq10, 10
-MAKE_IRQ_STUB thorRtIsrIrq11, 11
-MAKE_IRQ_STUB thorRtIsrIrq12, 12
-MAKE_IRQ_STUB thorRtIsrIrq13, 13
-MAKE_IRQ_STUB thorRtIsrIrq14, 14
-MAKE_IRQ_STUB thorRtIsrIrq15, 15
-MAKE_IRQ_STUB thorRtIsrIrq16, 16
-MAKE_IRQ_STUB thorRtIsrIrq17, 17
-MAKE_IRQ_STUB thorRtIsrIrq18, 18
-MAKE_IRQ_STUB thorRtIsrIrq19, 19
-MAKE_IRQ_STUB thorRtIsrIrq20, 20
-MAKE_IRQ_STUB thorRtIsrIrq21, 21
-MAKE_IRQ_STUB thorRtIsrIrq22, 22
-MAKE_IRQ_STUB thorRtIsrIrq23, 23
-MAKE_IRQ_STUB thorRtIsrIrq24, 24
-MAKE_IRQ_STUB thorRtIsrIrq25, 25
-MAKE_IRQ_STUB thorRtIsrIrq26, 26
-MAKE_IRQ_STUB thorRtIsrIrq27, 27
-MAKE_IRQ_STUB thorRtIsrIrq28, 28
-MAKE_IRQ_STUB thorRtIsrIrq29, 29
-MAKE_IRQ_STUB thorRtIsrIrq30, 30
-MAKE_IRQ_STUB thorRtIsrIrq31, 31
-MAKE_IRQ_STUB thorRtIsrIrq32, 32
-MAKE_IRQ_STUB thorRtIsrIrq33, 33
-MAKE_IRQ_STUB thorRtIsrIrq34, 34
-MAKE_IRQ_STUB thorRtIsrIrq35, 35
-MAKE_IRQ_STUB thorRtIsrIrq36, 36
-MAKE_IRQ_STUB thorRtIsrIrq37, 37
-MAKE_IRQ_STUB thorRtIsrIrq38, 38
-MAKE_IRQ_STUB thorRtIsrIrq39, 39
-MAKE_IRQ_STUB thorRtIsrIrq40, 40
-MAKE_IRQ_STUB thorRtIsrIrq41, 41
-MAKE_IRQ_STUB thorRtIsrIrq42, 42
-MAKE_IRQ_STUB thorRtIsrIrq43, 43
-MAKE_IRQ_STUB thorRtIsrIrq44, 44
-MAKE_IRQ_STUB thorRtIsrIrq45, 45
-MAKE_IRQ_STUB thorRtIsrIrq46, 46
-MAKE_IRQ_STUB thorRtIsrIrq47, 47
-MAKE_IRQ_STUB thorRtIsrIrq48, 48
-MAKE_IRQ_STUB thorRtIsrIrq49, 49
-MAKE_IRQ_STUB thorRtIsrIrq50, 50
-MAKE_IRQ_STUB thorRtIsrIrq51, 51
-MAKE_IRQ_STUB thorRtIsrIrq52, 52
-MAKE_IRQ_STUB thorRtIsrIrq53, 53
-MAKE_IRQ_STUB thorRtIsrIrq54, 54
-MAKE_IRQ_STUB thorRtIsrIrq55, 55
-MAKE_IRQ_STUB thorRtIsrIrq56, 56
-MAKE_IRQ_STUB thorRtIsrIrq57, 57
-MAKE_IRQ_STUB thorRtIsrIrq58, 58
-MAKE_IRQ_STUB thorRtIsrIrq59, 59
-MAKE_IRQ_STUB thorRtIsrIrq60, 60
-MAKE_IRQ_STUB thorRtIsrIrq61, 61
-MAKE_IRQ_STUB thorRtIsrIrq62, 62
-MAKE_IRQ_STUB thorRtIsrIrq63, 63
 
 MAKE_LEGACY_IRQ_STUB thorRtIsrLegacyIrq7, 7
 MAKE_LEGACY_IRQ_STUB thorRtIsrLegacyIrq15, 15
