@@ -1,3 +1,4 @@
+#include <frg/cmdline.hpp>
 #include <frg/scope_exit.hpp>
 #include <frg/string.hpp>
 #include <frg/small_vector.hpp>
@@ -105,6 +106,9 @@ namespace {
 	// Whether the log drain fiber has started yet.
 	constinit std::atomic<bool> drainOnline{false};
 
+	// Set by thor.sync-log. The drain fiber still runs to wake up waitForLog() consumers.
+	constinit std::atomic<bool> syncLog{false};
+
 	void runLogDrain() {
 		drainOnline.store(true, std::memory_order_relaxed);
 
@@ -154,6 +158,16 @@ namespace {
 	initgraph::Task initLogDrainTask{&globalInitEngine, "generic.init-log-drain",
 		initgraph::Requires{getFibersAvailableStage()},
 		[] {
+			bool wantSyncLog = false;
+			frg::array args = {
+				frg::option{"thor.sync-log", frg::store_true(wantSyncLog)},
+			};
+			frg::parse_arguments(getKernelCmdline(), args);
+			if(wantSyncLog) {
+				infoLogger() << "thor: Synchronous logging is enabled" << frg::endlog;
+				syncLog.store(true, std::memory_order_relaxed);
+			}
+
 			KernelFiber::run([] {
 				runLogDrain();
 			});
@@ -184,7 +198,7 @@ void postLogRecord(frg::string_view record, bool expedited) {
 		drainEvent.raise();
 
 	// For expedited logs, we call into log handlers synchronously.
-	if (!useThreaded || expedited) {
+	if (!useThreaded || expedited || syncLog.load(std::memory_order_relaxed)) {
 		// We are emitting all remaining events here anyway (without releasing the lock),
 		// so flushing in between records offers little advantages. Simply flush at the end.
 		bool reentrant{emitMutex.owner() == getCpuData()};
