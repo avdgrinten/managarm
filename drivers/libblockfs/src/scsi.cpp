@@ -254,14 +254,22 @@ async::result<void> StorageDevice::performIo(bool isWrite, uint64_t sector,
 		std::println(std::cout, "block-scsi: Request complete");
 }
 
+async::result<void> StorageDevice::performSplitIo(bool isWrite, uint64_t sector,
+		arch::dma_buffer_view view) {
+	size_t maxBytes = maxSectorsPerCommand << sectorShift;
+	for (size_t offset = 0; offset < view.size(); offset += maxBytes)
+		co_await performIo(isWrite, sector + (offset >> sectorShift),
+				view.subview(offset, std::min(maxBytes, view.size() - offset)));
+}
+
 async::result<void> StorageDevice::readSectors(uint64_t sector,
 		arch::dma_buffer_view view) {
-	co_await performIo(false, sector, view);
+	co_await performSplitIo(false, sector, view);
 }
 
 async::result<void> StorageDevice::writeSectors(uint64_t sector,
 		arch::dma_buffer_view view) {
-	co_await performIo(true, sector, view);
+	co_await performSplitIo(true, sector, view);
 }
 
 async::result<size_t> StorageDevice::getSize() {

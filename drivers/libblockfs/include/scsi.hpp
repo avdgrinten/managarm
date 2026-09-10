@@ -63,7 +63,13 @@ struct StorageDevice : Interface, blockfs::BlockDevice {
 
 	size_t storageSize{};
 
+	// Larger requests are split into multiple commands. Transports may lower this.
+	size_t maxSectorsPerCommand{0xffff};
+
 private:
+	async::result<void> performSplitIo(bool isWrite, uint64_t sector,
+			arch::dma_buffer_view view);
+
 	async::result<void> performIo(bool isWrite, uint64_t sector,
 			arch::dma_buffer_view view);
 };
