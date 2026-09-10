@@ -17,7 +17,10 @@ namespace thor {
 // IRQ slots
 // --------------------------------------------------------
 
+// IRQ slots occupy the vectors between the legacy PIC and the IPIs.
+static inline constexpr int irqSlotVectorBase = 48;
 static inline constexpr int numIrqSlots = THOR_NUM_IRQ_SLOTS;
+static_assert(irqSlotVectorBase + numIrqSlots <= 0xF0);
 static inline constexpr size_t irqStubSize = THOR_IRQ_STUB_SIZE;
 
 // Represents a slot in the CPU's interrupt table.

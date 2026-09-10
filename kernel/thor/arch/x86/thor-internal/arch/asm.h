@@ -12,6 +12,6 @@
 #define THOR_EXECUTOR_UAR 0x18
 
 // Number of IDT IRQ stubs.
-#define THOR_NUM_IRQ_SLOTS 64
+#define THOR_NUM_IRQ_SLOTS 192
 // Size of each IDT IRQ stub.
 #define THOR_IRQ_STUB_SIZE 16

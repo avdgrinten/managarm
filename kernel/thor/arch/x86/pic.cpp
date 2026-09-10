@@ -527,7 +527,7 @@ smarter::shared_ptr<MsiPin> allocateApicMsi(frg::string<KernelAlloc> name) {
 	auto slotIndex = *maybeSlotIndex;
 
 	// Create an IRQ pin for the MSI.
-	auto pin = createIrqPin<ApicMsiPin>(std::move(name), 64 + slotIndex);
+	auto pin = createIrqPin<ApicMsiPin>(std::move(name), irqSlotVectorBase + slotIndex);
 	pin->configure(IrqConfiguration{
 		.trigger = TriggerMode::edge,
 		.polarity = Polarity::high
@@ -693,7 +693,7 @@ namespace {
 						<< name() << frg::endlog;
 			auto slotIndex = *maybeSlotIndex;
 			globalIrqSlots[slotIndex].link(this);
-			_vector = 64 + slotIndex;
+			_vector = irqSlotVectorBase + slotIndex;
 		}
 
 		{

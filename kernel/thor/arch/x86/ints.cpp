@@ -176,7 +176,7 @@ void setupIdt(uint32_t *table) {
 	makeIdt64IntSystemGate(table, 47, irq_selector, (void *)&thorRtIsrLegacyIrq15, 0);
 
 	for(int i = 0; i < numIrqSlots; i++)
-		makeIdt64IntSystemGate(table, 64 + i, irq_selector,
+		makeIdt64IntSystemGate(table, irqSlotVectorBase + i, irq_selector,
 				thorRtIrqStubs + i * irqStubSize, 0);
 
 	makeIdt64IntSystemGate(table, 0xF0, irq_selector, (void *)&thorRtIpiShootdown, 0);
@@ -736,8 +736,8 @@ extern "C" void onFredEvent(Frame* frame) {
 			return;
 		}
 
-		if (vector >= 64 && vector <= 127) {
-			onPlatformIrq(IrqImageAccessor{frame}, vector - 64);
+		if (vector >= irqSlotVectorBase && vector < irqSlotVectorBase + numIrqSlots) {
+			onPlatformIrq(IrqImageAccessor{frame}, vector - irqSlotVectorBase);
 			return;
 		}
 
