@@ -199,6 +199,11 @@ void EventRing::processRing() {
 	}
 }
 
+bool EventRing::hasPendingEvent() {
+	_controller->barrier.invalidate(_eventRing.view_buffer());
+	return (_eventRing->ent[_dequeue.index].val[3] & 1) == _dequeue.cycle;
+}
+
 // ------------------------------------------------------------------------
 // ProducerRing
 // ------------------------------------------------------------------------

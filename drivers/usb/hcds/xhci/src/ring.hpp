@@ -142,6 +142,9 @@ struct EventRing {
 
 	void processRing();
 
+	// True if the entry at the dequeue pointer is valid, i.e., there is an event we have not processed yet.
+	bool hasPendingEvent();
+
 private:
 	arch::dma_object<EventRingEntries> _eventRing;
 	arch::dma_array<ErstEntry> _erst;

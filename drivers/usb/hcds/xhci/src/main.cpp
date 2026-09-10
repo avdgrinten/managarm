@@ -10,7 +10,9 @@
 #include <print>
 
 #include <arch/dma_pool.hpp>
+#include <core/cmdline.hpp>
 #include <frg/bitops.hpp>
+#include <frg/cmdline.hpp>
 #include <async/result.hpp>
 #include <helix/ipc.hpp>
 #include <protocols/hw/client.hpp>
@@ -37,6 +39,11 @@ namespace proto = protocols::usb;
 std::vector<std::shared_ptr<Controller>> globalControllers;
 
 namespace {
+
+// Set by xhci.debug on the kernel command line.
+bool debugLogs = false;
+// Cleared by xhci.no-power-cycle on the kernel command line.
+bool powerCyclePorts = true;
 
 // Number of address bits that the controller can use for DMA.
 size_t dmaAddressBits([[maybe_unused]] arch::mem_space space) {
@@ -445,14 +452,24 @@ void Controller::processEvent(Event ev) {
 				break;
 			}
 
-			if (_ports[ev.portId - 1])
+			if (_ports[ev.portId - 1]) {
+				if (debugLogs)
+					_ports[ev.portId - 1]->logPortsc("status change");
 				_ports[ev.portId - 1]->_doorbell.raise();
+			}
 			break;
 
 		default:
 			std::println("{} Unexpected event in processEvent, ignoring...", this);
 			ev.printInfo();
 	}
+}
+
+void Controller::dumpState() {
+	auto operational = _space.subspace(_space.load(cap_regs::caplength));
+	std::println("{} USBSTS={:#x}", this, static_cast<uint32_t>(operational.load(op_regs::usbsts)));
+	for (auto &interrupter : _interrupters)
+		interrupter->dump(this);
 }
 
 async::result<frg::expected<proto::UsbError, uint32_t>>
@@ -603,6 +620,12 @@ void Interrupter::_clearPending() {
 	_space.store(interrupter::iman, _space.load(interrupter::iman) | iman::pending(1));
 }
 
+void Interrupter::dump(Controller *controller) {
+	std::println("{} IMAN={:#x}, ERDP={:#x}, unprocessed event: {}",
+			controller, static_cast<uint32_t>(_space.load(interrupter::iman)),
+			_space.load(interrupter::erdpLow), _ring->hasPendingEvent());
+}
+
 // ------------------------------------------------------------------------
 // Controller::Port
 // ------------------------------------------------------------------------
@@ -653,6 +676,15 @@ uint8_t Controller::Port::getSpeed() {
 	return _space.load(port::portsc) & portsc::portSpeed;
 }
 
+void Controller::Port::logPortsc(std::string_view what) {
+	auto sc = _space.load(port::portsc);
+	std::println("{} USB {:x}.{:02x} port {} {}: PORTSC={:#010x} (CCS {:d}, PED {:d}, PR {:d}, PLS {:d}, speed {:d}, changes {:#04x})",
+			_controller, _proto->major, _proto->minor, _id, what, static_cast<uint32_t>(sc),
+			bool(sc & portsc::connectStatus), bool(sc & portsc::portEnable),
+			bool(sc & portsc::portReset), sc & portsc::portLinkStatus, sc & portsc::portSpeed,
+			(static_cast<uint32_t>(sc) >> 17) & 0x7F);
+}
+
 void Controller::Port::transitionToLinkStatus(uint8_t status) {
 	_space.store(port::portsc, portsc::portPower(true)
 			| portsc::portLinkStatus(status)
@@ -660,18 +692,20 @@ void Controller::Port::transitionToLinkStatus(uint8_t status) {
 }
 
 async::detached Controller::Port::initPort() {
-	std::println("{} Powering off port {}", _controller, _id);
-	_space.store(port::portsc, portsc::portPower(false));
+	if (powerCyclePorts) {
+		_space.store(port::portsc, portsc::portPower(false));
+		co_await helix_ng::sleepFor(1'000'000'000);
+	}
 
-	co_await helix_ng::sleepFor(1'000'000'000);
-
-	std::println("{} Powering on port {}", _controller, _id);
 	_space.store(port::portsc, portsc::portPower(true));
 
-	co_await helix_ng::sleepFor(1'000'000'000);
+	// Linux only waits for power good (20 ms for USB 2, 100 ms for USB 3 root hubs).
+	co_await helix_ng::sleepFor(powerCyclePorts ? 1'000'000'000 : 100'000'000);
 
 	// Wait for something to connect to the port
 	co_await awaitFlag(portsc::connectStatus, true);
+	if (debugLogs)
+		logPortsc("connected");
 
 	// Notify the enumerator
 	_state.changes |= proto::HubStatus::connect;
@@ -696,12 +730,37 @@ async::result<frg::expected<proto::UsbError, void>> Controller::Port::issueReset
 		reset();
 	}
 
-	// Wait for the port to enable.
-	co_await awaitFlag(portsc::portEnable, true);
+	// Wait for the port to enable. Give up (like Linux) if the device disconnects or the port
+	// does not enable in time, since the enumerator blocks all other ports of this controller.
+	int timeouts = 0;
+	while (true) {
+		resetChangeBits();
+		auto sc = _space.load(port::portsc);
+		if (sc & portsc::portEnable)
+			break;
+		if (!(sc & portsc::connectStatus)) {
+			logPortsc("lost the device while waiting for port enable");
+			co_return proto::UsbError::other;
+		}
+		if (timeouts == 5) {
+			logPortsc("did not enable, giving up");
+			co_return proto::UsbError::timeout;
+		}
+
+		async::cancellation_event ev;
+		helix::TimeoutCancellation tc{1'000'000'000, ev};
+
+		bool raised = co_await _doorbell.async_wait(ev);
+		co_await tc.retire();
+
+		if (!raised)
+			logPortsc(std::format("still waiting for port enable after {} s", ++timeouts));
+	}
 
 	auto linkStatus = getLinkStatus();
 
-	std::println("{} Port {} link status is {:d}", _controller, _id, linkStatus);
+	if (debugLogs)
+		logPortsc("enabled");
 
 	if (linkStatus >= 1 && linkStatus <= 3) {
 		transitionToLinkStatus(0);
@@ -1218,8 +1277,13 @@ ConfigurationState::useInterface(int number, int alternative) {
 
 async::result<frg::expected<proto::UsbError, size_t>>
 EndpointState::transfer(proto::ControlTransfer info) {
+	auto setup = *info.setup.data();
+	auto what = std::format("control request {:02x}/{:02x} (wValue {:04x}, wIndex {:04x}, wLength {})",
+			uint32_t{setup.type}, uint32_t{setup.request}, uint32_t{setup.value},
+			uint32_t{setup.index}, uint32_t{setup.length});
+
 	auto trbs = co_await Transfer::buildControlChain(
-		*info.setup.data(),
+		setup,
 		_device->controller()->dmaSpace(),
 		info.buffer,
 		info.flags == proto::kXferToHost,
@@ -1228,7 +1292,8 @@ EndpointState::transfer(proto::ControlTransfer info) {
 	co_return FRG_CO_TRY(co_await _postTd(
 				std::move(trbs),
 				info.buffer,
-				info.flags == proto::kXferToHost));
+				info.flags == proto::kXferToHost,
+				std::move(what)));
 }
 
 async::result<frg::expected<proto::UsbError, size_t>>
@@ -1237,7 +1302,8 @@ EndpointState::transfer(proto::InterruptTransfer info) {
 	co_return FRG_CO_TRY(co_await _postTd(
 				std::move(trbs),
 				info.buffer,
-				info.flags == proto::kXferToHost));
+				info.flags == proto::kXferToHost,
+				std::format("interrupt transfer of {} bytes", info.buffer.size())));
 }
 
 async::result<frg::expected<proto::UsbError, size_t>>
@@ -1246,11 +1312,17 @@ EndpointState::transfer(proto::BulkTransfer info) {
 	co_return FRG_CO_TRY(co_await _postTd(
 				std::move(trbs),
 				info.buffer,
-				info.flags == proto::kXferToHost));
+				info.flags == proto::kXferToHost,
+				std::format("bulk transfer of {} bytes", info.buffer.size())));
+}
+
+uint8_t Device::endpointState(int endpointId) {
+	_controller->barrier.invalidate(_devCtx.data(), _devCtx.rawSize());
+	return _devCtx.get(deviceCtxEp0 + endpointId - 1).val[0] & 7;
 }
 
 async::result<frg::expected<proto::UsbError, size_t>>
-EndpointState::_postTd(std::vector<RawTrb> &&trbs, arch::dma_buffer_view buffer, bool toHost) {
+EndpointState::_postTd(std::vector<RawTrb> &&trbs, arch::dma_buffer_view buffer, bool toHost, std::string what) {
 	ProducerRing::Transaction tx;
 
 	// Invalidate the buffer before posting the TD in case the ring is already running.
@@ -1268,7 +1340,22 @@ EndpointState::_postTd(std::vector<RawTrb> &&trbs, arch::dma_buffer_view buffer,
 		_device->submit(_endpointId);
 	}
 
+	// Interrupt transfers may legitimately stay pending indefinitely.
+	auto done = std::make_shared<bool>(false);
+	if (debugLogs && _type != proto::EndpointType::interrupt) {
+		[] (EndpointState *self, std::shared_ptr<bool> done, std::string what) -> async::detached {
+			co_await helix_ng::sleepFor(2'000'000'000);
+			if (*done)
+				co_return;
+			std::println("{} Slot {}: {} on endpoint {} still pending after 2 s (endpoint state {})",
+					self->_device->controller(), self->_device->slot(), what, self->_endpointId,
+					self->_device->endpointState(self->_endpointId));
+			self->_device->controller()->dumpState();
+		}(this, done, what);
+	}
+
 	auto maybeResidue = co_await tx.transfer();
+	*done = true;
 
 	if (toHost)
 		_device->controller()->barrier.invalidate(buffer);
@@ -1365,6 +1452,14 @@ async::detached bindController(mbus_ng::Entity entity) {
 }
 
 async::detached observeControllers() {
+	Cmdline cmdlineHelper{};
+	auto cmdline = co_await cmdlineHelper.get();
+	frg::array args = {
+		frg::option{"xhci.debug", frg::store_true(debugLogs)},
+		frg::option{"xhci.no-power-cycle", frg::store_false(powerCyclePorts)},
+	};
+	frg::parse_arguments({cmdline.data(), cmdline.size()}, args);
+
 	auto filter = mbus_ng::Conjunction{{
 		mbus_ng::EqualsFilter{"pci-class", "0c"},
 		mbus_ng::EqualsFilter{"pci-subclass", "03"},

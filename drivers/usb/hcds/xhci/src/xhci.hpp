@@ -1,3 +1,6 @@
+#include <format>
+#include <string_view>
+
 #include <arch/mem_space.hpp>
 #include <arch/dma_pool.hpp>
 #include <arch/barrier.hpp>
@@ -73,6 +76,8 @@ struct Interrupter {
 	async::detached handleIrqs(helix::UniqueIrq &irq);
 	async::detached pollIrqs();
 
+	void dump(Controller *controller);
+
 private:
 	bool _isBusy();
 	void _clearPending();
@@ -140,6 +145,10 @@ struct Device final : proto::DeviceData, std::enable_shared_from_this<Device> {
 	async::result<frg::expected<proto::UsbError>>
 	updateEp0PacketSize(size_t maxPacketSize);
 
+	// Endpoint State field of the endpoint's context in the device context (0 = disabled, 1 = running,
+	// 2 = halted, 3 = stopped, 4 = error).
+	uint8_t endpointState(int endpointId);
+
 
 	size_t slot() const {
 		return _slotId;
@@ -203,7 +212,7 @@ private:
 	async::mutex _submissionMutex;
 
 	async::result<frg::expected<proto::UsbError, size_t>>
-	_postTd(std::vector<RawTrb> &&trbs, arch::dma_buffer_view buffer, bool toHost);
+	_postTd(std::vector<RawTrb> &&trbs, arch::dma_buffer_view buffer, bool toHost, std::string what);
 
 	async::result<frg::expected<proto::UsbError>>
 	_resetAfterError(RingPointer nextDequeue);
@@ -262,6 +271,9 @@ struct Controller final : proto::BaseController {
 	}
 
 	void processEvent(Event ev);
+
+	// Prints controller and interrupter state, e.g., when a transfer does not complete.
+	void dumpState();
 
 	void ringDoorbell(uint8_t doorbell, uint8_t target, uint16_t streamId = 0);
 
@@ -347,6 +359,8 @@ private:
 				co_await tc.retire();
 			}
 		}
+
+		void logPortsc(std::string_view what);
 
 		async::recurring_event _doorbell;
 
