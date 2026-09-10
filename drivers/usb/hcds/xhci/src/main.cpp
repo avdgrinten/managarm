@@ -80,7 +80,8 @@ Controller::Controller(
 
 	_numPorts = _space.load(cap_regs::hcsparams1) & hcsparams1::maxPorts;
 	_ports.resize(_numPorts);
-	std::println("{} {} ports in total", this, _numPorts);
+	std::println("{} {} ports in total, port power control: {}", this, _numPorts,
+			bool(_space.load(cap_regs::hccparams1) & hccparams1::portPowerControl));
 }
 
 async::result<void> Controller::_biosHandoff(uint32_t cap) {
@@ -351,6 +352,11 @@ Controller::enumerateDevice(std::shared_ptr<proto::Hub> parentHub, int port, pro
 
 	arch::dma_object<proto::DeviceDescriptor> descriptor{&_memoryPool};
 	FRG_CO_TRY(co_await device->readDescriptor(descriptor.view_buffer(), 0x0100));
+
+	std::println("{} Slot {} on root port {}: {:04x}:{:04x}, class {:02x}/{:02x}/{:02x}, bcdUSB {:x}.{:02x}, {} Mbps",
+			this, device->slot(), rootPort, descriptor->idVendor, descriptor->idProduct,
+			descriptor->deviceClass, descriptor->deviceSubclass, descriptor->deviceProtocol,
+			descriptor->bcdUsb >> 8, descriptor->bcdUsb & 0xFF, protocols::usb::getSpeedMbps(speed));
 
 	arch::dma_object<proto::ConfigDescriptor> configDescriptor{&_memoryPool};
 	FRG_CO_TRY(co_await device->readDescriptor(configDescriptor.view_buffer(), 0x0200));
@@ -890,7 +896,7 @@ Device::useConfiguration(uint8_t index, uint8_t value) {
 
 	FRG_CO_TRY(co_await transfer({protocols::usb::kXferToDevice, setConfig, {}}));
 
-	std::println("{} Configuration set", _controller);
+	std::println("{} Slot {}: configuration {} set", _controller, _slotId, value);
 
 	co_return proto::Configuration{std::make_shared<ConfigurationState>(shared_from_this(), index)};
 }
@@ -990,7 +996,7 @@ Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<
 
 	FRG_CO_TRY(co_await _controller->addressDevice(_slotId, inputCtx));
 
-	std::println("{} Device successfully addressed", _controller);
+	std::println("{} Slot {}: device successfully addressed", _controller, _slotId);
 
 	co_return frg::success;
 }
@@ -1197,8 +1203,8 @@ ConfigurationState::useInterface(int number, int alternative) {
 	for (auto &ep : _eps) {
 		auto interval = bIntervalIntoMicroframes(_device->speed(), ep.type, ep.interval);
 
-		std::println("{} Setting up {} endpoint {} (max packet size: {}) (bInterval {} = 2**{} microframes)",
-				_device->controller(), ep.dir == proto::PipeType::in ? "in" : "out", ep.pipe, ep.packetSize,
+		std::println("{} Slot {}: setting up {} endpoint {} (max packet size: {}) (bInterval {} = 2**{} microframes)",
+				_device->controller(), _device->slot(), ep.dir == proto::PipeType::in ? "in" : "out", ep.pipe, ep.packetSize,
 				ep.interval, interval);
 
 		FRG_CO_TRY(co_await _device->setupEndpoint(ep.pipe, ep.dir, ep.packetSize, ep.type, interval));
