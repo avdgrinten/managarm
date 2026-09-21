@@ -59,3 +59,21 @@ message DeviceBindResponse 6 {
 head(128):
 	Errors error;
 }
+
+// Registers a userspace-backed kernel I/O channel. On success, the kernel provides the
+// following rings via the ringbuf protocol (see ringbuf.bragi) after the response:
+// * The output ring (RELIABLE, STREAM) of the given size; the kernel is the producer.
+// * If in_ring_size is non-zero: the input ring (RELIABLE, STREAM); the kernel is the consumer.
+// The kernel flushes the output ring whenever output needs to be written out immediately.
+message ProvideIoChannelRequest 7 {
+head(128):
+	string tag;
+	string descriptive_tag;
+	uint64 out_ring_size;
+	uint64 in_ring_size;
+}
+
+message ProvideIoChannelResponse 8 {
+head(128):
+	Errors error;
+}
