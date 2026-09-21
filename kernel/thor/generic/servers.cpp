@@ -15,6 +15,7 @@
 #include <thor-internal/servers.hpp>
 #include <thor-internal/thread.hpp>
 #include <thor-internal/mbus.hpp>
+#include <thor-internal/user-io.hpp>
 
 namespace thor {
 
@@ -587,6 +588,42 @@ private:
 			);
 			if(controlError != Error::success)
 				co_return controlError;
+		}else if(preamble.id() == bragi::message_id<managarm::svrctl::ProvideIoChannelRequest>) {
+			auto req = bragi::parse_head_only<managarm::svrctl::ProvideIoChannelRequest>(reqBuffer, *kernelAlloc);
+			if(!req)
+				co_return Error::protocolViolation;
+
+			auto channelOutcome = UserIoChannel::create(
+					frg::string<KernelAlloc>{*kernelAlloc, req->tag()},
+					frg::string<KernelAlloc>{*kernelAlloc, req->descriptive_tag()},
+					req->out_ring_size(), req->in_ring_size());
+
+			managarm::svrctl::ProvideIoChannelResponse<KernelAlloc> resp(*kernelAlloc);
+			if(channelOutcome) {
+				resp.set_error(managarm::svrctl::Errors::SUCCESS);
+			}else if(channelOutcome.error() == Error::illegalArgs) {
+				resp.set_error(managarm::svrctl::Errors::ILLEGAL_REQUEST);
+			}else{
+				co_return channelOutcome.error();
+			}
+
+			frg::unique_memory<KernelAlloc> respBuffer{*kernelAlloc, resp.head_size};
+			bragi::write_head_only(resp, respBuffer);
+
+			auto respError = co_await sendBuffer(lane, std::move(respBuffer));
+			if(respError != Error::success)
+				co_return respError;
+			if(!channelOutcome)
+				co_return frg::success;
+
+			auto channel = std::move(*channelOutcome);
+			auto provideOutcome = co_await channel->provide(lane);
+			if(!provideOutcome)
+				co_return provideOutcome.error();
+
+			infoLogger() << "thor: Registered user I/O channel "
+					<< channel->descriptiveTag() << frg::endlog;
+			publishIoChannel(std::move(channel));
 		}else{
 			warningLogger() << "thor: Illegal message ID " << preamble.id()
 					<< " for SvrctlBusObject" << frg::endlog;
