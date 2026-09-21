@@ -86,3 +86,15 @@ pub fn mbus_lane_handle() -> &'static Handle {
 
     &MBUS_LANE_HANDLE
 }
+
+pub fn hierarchy_handle() -> &'static Handle {
+    static HIERARCHY_HANDLE: LazyLock<ManuallyDrop<Handle>> = LazyLock::new(|| unsafe {
+        ManuallyDrop::new(
+            Handle::from_raw(PROCESS_DATA.hierarchy_handle)
+                .clone_handle()
+                .expect("Failed to clone hierarchy handle"),
+        )
+    });
+
+    &HIERARCHY_HANDLE
+}
