@@ -1,0 +1,53 @@
+namespace "managarm::ringbuf";
+
+// Shared memory ring buffers that carry bytes (but no handles) from a producer to a consumer.
+
+// This protocol does not have requests of its own. Instead, rings are connected through a
+// conversation lane of a host protocol (e.g., in response to a request of the host protocol).
+// The host protocol determines the number of rings, their order, their RingParameters and
+// which side is the producer of each ring. One side (the provider) allocates all memory and
+// pushes the following descriptors over the conversation lane:
+// * A kick lane on which the provider offers Kick messages.
+//   Only present if the other side ever waits (see below).
+// * A kick lane on which the other side offers Kick messages.
+//   Only present if the provider ever waits.
+// * For each ring, the producer memory: a header page (see ProducerHeader in core.hpp)
+//   followed by the data area. The consumer does not get kHelRightWrite for this object.
+// * For each ring, the consumer memory: a single page (see ConsumerHeader in core.hpp).
+//   The producer does not get kHelRightWrite for this object.
+// Consumers always wait for kicks; producers only wait for kicks if the ring is RELIABLE.
+// To connect multiple consumers to a DROP_OLDEST ring, the ring is provided multiple times
+// (with a distinct consumer memory and distinct kick lanes each time).
+
+// All positions are monotonically increasing byte counters;
+// the offset into the data area is the position modulo the ring size.
+// A peer that wants to wait first publishes the position that it waits for in the wake_at field
+// of its header, then re-checks the other side's position and only then waits for a Kick.
+// A peer that moves its own position past the other side's wake_at must send a Kick.
+
+enum Mode {
+	// The producer waits until the consumer frees up space. Single consumer.
+	RELIABLE = 1,
+	// The producer overwrites the oldest records and never waits. Requires Framing::RECORDS.
+	// Each consumer has its own consumer memory and its own kick lane.
+	DROP_OLDEST = 2
+}
+
+enum Framing {
+	// The ring carries a byte stream without any structure.
+	STREAM = 1,
+	// The ring carries records that are prefixed by a RecordHeader (see core.hpp).
+	RECORDS = 2
+}
+
+struct RingParameters {
+	Mode mode;
+	Framing framing;
+	// Size of the data area. Must be a power of two and a multiple of the page size.
+	uint64 size;
+}
+
+// Tells the receiver to re-examine the shared state of all rings that use this lane.
+message Kick 1 {
+head(16):
+}
