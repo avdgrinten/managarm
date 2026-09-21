@@ -73,6 +73,7 @@ src = files(
 	'generic/profile.cpp',
 	'generic/random.cpp',
 	'generic/rcu.cpp',
+	'generic/ringbuf.cpp',
 	'generic/service.cpp',
 	'generic/schedule.cpp',
 	'generic/stream.cpp',
@@ -109,6 +110,7 @@ src += frgbragi.process([
 	protos/'clock/clock.bragi',
 	protos/'kernlet/kernlet.bragi',
 	protos/'kerncfg/kerncfg.bragi',
+	protos/'ringbuf/ringbuf.bragi',
 	protos/'svrctl/svrctl.bragi'
 ])
 
@@ -125,6 +127,7 @@ inc += include_directories(
 	'system/smbios',
 	'../common',
 	'../../protocols/posix/include',
+	'../../protocols/ringbuf/include',
 	'../../protocols/svrctl/include',
 )
 
