@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["sif", "posix/devserver", "servers/kernletcc", "utils/hello-rs"]
+members = ["sif", "posix/devserver", "servers/kernletcc", "drivers/dmalog", "utils/hello-rs"]
 
 [workspace.dependencies]
 hel = { path = "rust/hel" }

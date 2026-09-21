@@ -1,0 +1,4 @@
+name: dmalog
+exec: /usr/bin/dmalog
+files:
+  - /usr/bin/dmalog

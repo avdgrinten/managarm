@@ -256,6 +256,7 @@ if build_drivers
 	subdir('sif')
 	subdir('posix/devserver')
 	subdir('servers/kernletcc')
+	subdir('drivers/dmalog')
 
 	foreach dir : delay
 		subdir(dir)
