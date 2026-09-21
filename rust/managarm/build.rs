@@ -1,6 +1,6 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     for protocol in [
-        "clock", "fs", "hw", "kerncfg", "mbus", "posix", "ringbuf", "usb",
+        "clock", "fs", "hw", "kerncfg", "mbus", "posix", "ringbuf", "svrctl", "usb",
     ] {
         let path = format!("../../protocols/{protocol}/{protocol}.bragi");
         let out_path = format!("{protocol}.rs");
