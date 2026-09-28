@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstddef>
+#include <cstring>
 
 #include <async/algorithm.hpp>
 #include <async/result.hpp>
@@ -147,4 +148,106 @@ async::result<void> testInvalidateRange() {
 
 DEFINE_TEST(invalidateRange, ([] {
 	async::run(testInvalidateRange(), helix::currentDispatcher);
+}))
+
+namespace {
+
+async::result<void> fillPage(helix::BorrowedDescriptor memory, uintptr_t offset, char c) {
+	char buffer[0x1000];
+	memset(buffer, c, 0x1000);
+	auto result = co_await helix_ng::writeMemory(memory, offset, 0x1000, buffer);
+	HEL_CHECK(result.error());
+}
+
+async::result<void> expectPage(helix::BorrowedDescriptor memory, uintptr_t offset, char c) {
+	char buffer[0x1000]{};
+	auto result = co_await helix_ng::readMemory(memory, offset, 0x1000, buffer);
+	HEL_CHECK(result.error());
+	for(size_t i = 0; i < 0x1000; i++)
+		assert(buffer[i] == c);
+}
+
+async::result<void> expectFault(helix::BorrowedDescriptor memory, uintptr_t offset) {
+	char buffer[0x1000];
+	auto result = co_await helix_ng::readMemory(memory, offset, 0x1000, buffer);
+	assert(result.error() == kHelErrFault);
+	(void)result;
+}
+
+async::result<HelError> install(helix::BorrowedDescriptor indirect, uintptr_t offset,
+		helix::BorrowedDescriptor memory, uintptr_t memoryOffset, size_t size) {
+	auto result = co_await helix_ng::installMemoryIndirection(indirect, offset,
+			memory, memoryOffset, size);
+	co_return result.error();
+}
+
+async::result<HelError> remove(helix::BorrowedDescriptor indirect, uintptr_t offset, size_t size) {
+	auto result = co_await helix_ng::removeMemoryIndirection(indirect, offset, size);
+	co_return result.error();
+}
+
+async::result<void> testIndirectMemory() {
+	HelHandle firstHandle, secondHandle, indirectHandle, backingHandle, frontalHandle;
+	HEL_CHECK(helAllocateMemory(core::getProcessHierarchy(), 0x2000, 0, nullptr, &firstHandle));
+	HEL_CHECK(helAllocateMemory(core::getProcessHierarchy(), 0x2000, 0, nullptr, &secondHandle));
+	HEL_CHECK(helCreateIndirectMemory(0x10000, &indirectHandle));
+	HEL_CHECK(helCreateManagedMemory(core::getProcessHierarchy(), 0x1000, 0,
+			&backingHandle, &frontalHandle));
+	helix::UniqueDescriptor first{firstHandle};
+	helix::UniqueDescriptor second{secondHandle};
+	helix::UniqueDescriptor indirect{indirectHandle};
+	helix::UniqueDescriptor backing{backingHandle};
+	helix::UniqueDescriptor frontal{frontalHandle};
+
+	co_await fillPage(first, 0, 'a');
+	co_await fillPage(first, 0x1000, 'b');
+	co_await fillPage(second, 0, 'c');
+	co_await fillPage(second, 0x1000, 'd');
+
+	// Adjacent indirections at offsets that are not aligned to their sizes.
+	HEL_CHECK(co_await install(indirect, 0x1000, first, 0, 0x2000));
+	HEL_CHECK(co_await install(indirect, 0x3000, second, 0x1000, 0x1000));
+	co_await expectPage(indirect, 0x1000, 'a');
+	co_await expectPage(indirect, 0x2000, 'b');
+	co_await expectPage(indirect, 0x3000, 'd');
+	co_await expectFault(indirect, 0);
+	co_await expectFault(indirect, 0x4000);
+
+	// Writes through the indirection reach the target memory.
+	co_await fillPage(indirect, 0x3000, 'e');
+	co_await expectPage(second, 0x1000, 'e');
+
+	assert(co_await install(indirect, 0x2000, second, 0, 0x2000) == kHelErrAlreadyExists);
+	assert(co_await install(indirect, 0x4800, second, 0, 0x1000) == kHelErrIllegalArgs);
+	assert(co_await install(indirect, 0x4000, second, 0, 0) == kHelErrIllegalArgs);
+	assert(co_await install(indirect, 0xF000, second, 0, 0x2000) == kHelErrOutOfBounds);
+	assert(co_await install(indirect, 0x4000, second, 0x1000, 0x2000) == kHelErrOutOfBounds);
+	assert(co_await install(indirect, 0x4000, frontal, 0, 0x1000) == kHelErrIllegalObject);
+	assert(co_await remove(indirect, 0x1000, 0x1000) == kHelErrIllegalArgs);
+
+	// Slices delegate to their memory and bound the indirection by their size.
+	HelHandle sliceHandle;
+	HEL_CHECK(helCreateSliceView(firstHandle, 0x1000, 0x1000, 0, &sliceHandle));
+	helix::UniqueDescriptor slice{sliceHandle};
+	assert(co_await install(indirect, 0x5000, slice, 0, 0x2000) == kHelErrOutOfBounds);
+	HEL_CHECK(co_await install(indirect, 0x5000, slice, 0, 0x1000));
+	co_await expectPage(indirect, 0x5000, 'b');
+
+	// Removal unmaps the indirection: after reinstalling, the mapping sees the new memory.
+	helix::Mapping mapping{indirect, 0x1000, 0x2000, kHelMapProtRead | kHelMapProtWrite};
+	auto window = static_cast<volatile char *>(mapping.get());
+	assert(window[0] == 'a');
+	HEL_CHECK(co_await remove(indirect, 0x1000, 0x2000));
+	co_await expectFault(indirect, 0x1000);
+	HEL_CHECK(co_await install(indirect, 0x1000, second, 0, 0x2000));
+	assert(window[0] == 'c');
+	assert(window[0x1000] == 'e');
+
+	// Dropping the handles destroys the indirect memory while indirections are installed.
+}
+
+} // anonymous namespace
+
+DEFINE_TEST(indirectMemory, ([] {
+	async::run(testIndirectMemory(), helix::currentDispatcher);
 }))
