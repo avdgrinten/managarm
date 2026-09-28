@@ -689,10 +689,6 @@ void handleSyscall(SyscallImageAccessor image) {
 		*image.error() = helCreateIndirectMemory((size_t)arg0, &handle);
 		*image.out0() = handle;
 	} break;
-	case kHelCallAlterMemoryIndirection: {
-		*image.error() = helAlterMemoryIndirection((HelHandle)arg0, (size_t)arg1,
-				(HelHandle)arg2, (uintptr_t)arg3, (size_t)arg4);
-	} break;
 	case kHelCallCreateSliceView: {
 		HelHandle handle;
 		*image.error() = helCreateSliceView((HelHandle)arg0, (uintptr_t)arg1, (size_t)arg2,

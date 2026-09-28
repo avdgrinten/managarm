@@ -513,9 +513,13 @@ coroutine<frg::expected<Error, MemoryNotification>> MemoryView::pollNotification
 	co_return Error::illegalObject;
 }
 
-Error MemoryView::setIndirection(size_t, smarter::shared_ptr<MemoryView>,
+Error MemoryView::installIndirection(uintptr_t, smarter::shared_ptr<MemoryView>,
 		uintptr_t, size_t, CachingFlags) {
 	return Error::illegalObject;
+}
+
+coroutine<frg::expected<Error>> MemoryView::removeIndirection(uintptr_t, size_t) {
+	co_return Error::illegalObject;
 }
 
 coroutine<frg::expected<Error>> copyBetweenViews(
@@ -3117,13 +3121,17 @@ SwappableMemory::touchRange(uintptr_t offset, size_t, FetchFlags flags) {
 // IndirectMemory
 // --------------------------------------------------------
 
-std::expected<smarter::shared_ptr<IndirectMemory>, Error> IndirectMemory::create(size_t numSlots) {
-	auto ptr = allocate_rcu_shared<IndirectMemory>(*kernelAlloc, CtorToken{}, numSlots);
+std::expected<smarter::shared_ptr<IndirectMemory>, Error> IndirectMemory::create(size_t length) {
+	if(length & (kPageSize - 1))
+		return std::unexpected{Error::illegalArgs};
+	auto ptr = allocate_rcu_shared<IndirectMemory>(*kernelAlloc, CtorToken{}, length);
 	return ptr;
 }
 
-IndirectMemory::IndirectMemory(CtorToken, size_t numSlots)
-: numSlots_{numSlots}, slots_{*kernelAlloc} { }
+// The eviction queue is used to unmap removed indirections.
+IndirectMemory::IndirectMemory(CtorToken, size_t length)
+: MemoryView{frg::allocate_intrusive_shared<EvictionQueue>(Allocator{})},
+	length_{length}, slots_{*kernelAlloc} { }
 
 IndirectMemory::~IndirectMemory() {
 	while(slots_.begin() != slots_.end())
@@ -3145,7 +3153,6 @@ smarter::shared_ptr<IndirectMemory::IndirectionSlot> IndirectMemory::resolve_(ui
 }
 
 void IndirectMemory::releaseSlot_(IndirectionSlot *indirection) {
-	indirection->memory->removeObserver(&indirection->observer);
 	indirection->selfPtr.policy().decrement();
 }
 
@@ -3207,38 +3214,61 @@ IndirectMemory::touchRange(uintptr_t offset, size_t sizeHint, FetchFlags flags) 
 }
 
 size_t IndirectMemory::getLength() {
-	return numSlots_ << 32;
+	return length_;
 }
 
-Error IndirectMemory::setIndirection(size_t slot, smarter::shared_ptr<MemoryView> memory,
-		uintptr_t offset, size_t size, CachingFlags flags) {
-	if(!size)
+Error IndirectMemory::installIndirection(uintptr_t offset, smarter::shared_ptr<MemoryView> memory,
+		uintptr_t memoryOffset, size_t size, CachingFlags flags) {
+	if(!size || (offset & (kPageSize - 1)) || (memoryOffset & (kPageSize - 1))
+			|| (size & (kPageSize - 1)))
 		return Error::illegalArgs;
-	// Slots must not overlap in slots_, and offsets beyond slot 2^32 are unreachable anyway.
-	if(slot >= numSlots_ || slot >= (size_t{1} << 32) || size > (size_t{1} << 32))
+	if(offset > length_ || size > length_ - offset)
 		return Error::outOfBounds;
+	auto memoryLength = memory->getLength();
+	if(memoryOffset > memoryLength || size > memoryLength - memoryOffset)
+		return Error::outOfBounds;
+	// Evictions of the target memory would have to be forwarded to our mappings.
+	if(memory->canEvictMemory())
+		return Error::illegalObject;
 
 	auto indirection = allocate_rcu_shared<IndirectionSlot>(*kernelAlloc,
-			this, slot, memory, offset, size, flags);
+			this, offset, std::move(memory), memoryOffset, size, flags);
 	indirection->selfPtr = indirection;
 
+	auto irqLock = frg::guard(&irqMutex());
+	auto lock = frg::guard(&mutex_);
+
+	// The first slot that ends at or after offset is the only one that can overlap.
+	// Replacing slots would require evicting their pages from all mappings.
+	auto it = slots_.lower_bound(offset);
+	if(it != slots_.end() && (*it).second->first() <= indirection->last())
+		return Error::alreadyExists;
+
+	indirection.policy().increment();
+	slots_.insert(indirection->last(), indirection.get());
+	return Error::success;
+}
+
+coroutine<frg::expected<Error>> IndirectMemory::removeIndirection(uintptr_t offset, size_t size) {
+	if(!size)
+		co_return Error::illegalArgs;
+
+	IndirectionSlot *indirection;
 	{
 		auto irqLock = frg::guard(&irqMutex());
 		auto lock = frg::guard(&mutex_);
 
-		// Since slots have at most 2^32 bytes, this is either the slot or a later one.
-		auto it = slots_.lower_bound(uintptr_t{slot} << 32);
-		// Replacing a slot would require evicting its pages from all mappings.
-		if(it != slots_.end() && (*it).second->slot == slot)
-			return Error::alreadyExists;
-
-		indirection.policy().increment();
-		slots_.insert(indirection->last(), indirection.get());
+		auto it = slots_.lower_bound(offset);
+		if(it == slots_.end() || (*it).second->first() != offset
+				|| (*it).second->size != size)
+			co_return Error::illegalArgs;
+		indirection = slots_.erase(it);
 	}
 
-	// TODO: start a coroutine to observe evictions.
-	memory->addObserver(&indirection->observer);
-	return Error::success;
+	// Mappings acknowledge only after in-flight faults that still resolved the slot have completed.
+	co_await evictionQueue()->breakRange(offset, size);
+	releaseSlot_(indirection);
+	co_return {};
 }
 
 // --------------------------------------------------------

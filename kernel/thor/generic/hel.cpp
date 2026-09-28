@@ -817,17 +817,17 @@ HelError helAccessPhysical(
 	return kHelErrNone;
 }
 
-HelError helCreateIndirectMemory(size_t numSlots, HelHandle *handle) {
+HelError helCreateIndirectMemory(size_t size, HelHandle *handle) {
 	auto this_thread = getCurrentThread();
 	auto this_universe = this_thread->getUniverse();
 
-	auto memoryOutcome = IndirectMemory::create(numSlots);
+	auto memoryOutcome = IndirectMemory::create(size);
 	if(!memoryOutcome)
 		return translateError(memoryOutcome.error());
 	*handle = this_universe->attachDescriptor(
 		AnyDescriptor::make<DescriptorType::memoryView>(
 			std::move(*memoryOutcome),
-			// No kHelRightExecute: we only require kHelRightRead | kHelRightWrite in helAlterMemoryIndirection(),
+			// No kHelRightExecute: we only require kHelRightRead | kHelRightWrite in kHelSubmitAlterMemoryIndirection,
 			// so allowing kHelRightExecute would allow users to launder rights.
 			kHelRightRead | kHelRightWrite | kHelRightAssign | kHelRightProvision | kHelRightFence | kHelRightManage
 		)
@@ -836,8 +836,9 @@ HelError helCreateIndirectMemory(size_t numSlots, HelHandle *handle) {
 	return kHelErrNone;
 }
 
-HelError helAlterMemoryIndirection(HelHandle indirectHandle, size_t slot,
-		HelHandle memoryHandle, uintptr_t offset, size_t size) {
+HelError doSubmitAlterMemoryIndirection(HelHandle indirectHandle, HelHandle memoryHandle,
+		smarter::shared_ptr<IpcQueue> queue, uintptr_t offset, uintptr_t memoryOffset, size_t size,
+		uintptr_t context) {
 	auto thisThread = getCurrentThread();
 	auto thisUniverse = thisThread->getUniverse();
 
@@ -848,35 +849,60 @@ HelError helAlterMemoryIndirection(HelHandle indirectHandle, size_t slot,
 
 	smarter::shared_ptr<MemoryView> memoryView;
 	smarter::shared_ptr<MemorySlice> slice;
-	CachingFlags cacheFlags = 0;
-	auto memoryOutcome = thisUniverse->inspectDescriptor(memoryHandle,
-			[&](const DescriptorView &desc) -> std::expected<void, Error> {
-		if(desc.is<DescriptorType::memoryView>()) {
-			auto viewOutcome = desc.resolveObject<DescriptorType::memoryView>(kHelRightRead | kHelRightWrite | kHelRightAssign);
-			if(!viewOutcome)
-				return std::unexpected{viewOutcome.error()};
-			memoryView = std::move(*viewOutcome);
-		} else if(desc.is<DescriptorType::memorySlice>()) {
-			auto sliceOutcome = desc.resolveObject<DescriptorType::memorySlice>(kHelRightRead | kHelRightWrite | kHelRightAssign);
-			if(!sliceOutcome)
-				return std::unexpected{sliceOutcome.error()};
-			slice = std::move(*sliceOutcome);
-		} else {
-			return std::unexpected{Error::badDescriptor};
-		}
-		return {};
-	});
-	if(!memoryOutcome)
-		return translateError(memoryOutcome.error());
-
-	if(slice) {
-		memoryView = slice->getView();
-		offset += slice->offset();
-		cacheFlags = slice->getCachingFlags();
+	// Without a memory object, the indirection is removed.
+	if(memoryHandle != kHelNullHandle) {
+		auto memoryOutcome = thisUniverse->inspectDescriptor(memoryHandle,
+				[&](const DescriptorView &desc) -> std::expected<void, Error> {
+			if(desc.is<DescriptorType::memoryView>()) {
+				auto viewOutcome = desc.resolveObject<DescriptorType::memoryView>(kHelRightRead | kHelRightWrite | kHelRightAssign);
+				if(!viewOutcome)
+					return std::unexpected{viewOutcome.error()};
+				memoryView = std::move(*viewOutcome);
+			} else if(desc.is<DescriptorType::memorySlice>()) {
+				auto sliceOutcome = desc.resolveObject<DescriptorType::memorySlice>(kHelRightRead | kHelRightWrite | kHelRightAssign);
+				if(!sliceOutcome)
+					return std::unexpected{sliceOutcome.error()};
+				slice = std::move(*sliceOutcome);
+			} else {
+				return std::unexpected{Error::badDescriptor};
+			}
+			return {};
+		});
+		if(!memoryOutcome)
+			return translateError(memoryOutcome.error());
 	}
 
-	return translateError(indirectView->setIndirection(slot, std::move(memoryView),
-			offset, size, cacheFlags));
+	if(!queue->validSize(ipcSourceSize(sizeof(HelSimpleResult))))
+		return kHelErrQueueTooSmall;
+
+	[](smarter::shared_ptr<MemoryView> indirectView, smarter::shared_ptr<MemoryView> memoryView,
+			smarter::shared_ptr<MemorySlice> slice, uintptr_t offset, uintptr_t memoryOffset,
+			size_t size, smarter::shared_ptr<IpcQueue> queue, uintptr_t context,
+			enable_detached_coroutine) -> void {
+		HelError error;
+		if(slice) {
+			if(memoryOffset > slice->length() || size > slice->length() - memoryOffset) {
+				error = kHelErrOutOfBounds;
+			}else{
+				error = translateError(indirectView->installIndirection(offset, slice->getView(),
+						slice->offset() + memoryOffset, size, slice->getCachingFlags()));
+			}
+		}else if(memoryView) {
+			error = translateError(indirectView->installIndirection(offset, std::move(memoryView),
+					memoryOffset, size, 0));
+		}else{
+			auto outcome = co_await onExceptionalWq(indirectView->removeIndirection(offset, size));
+			error = outcome ? kHelErrNone : translateError(outcome.error());
+		}
+
+		HelSimpleResult helResult{.error = error, .reserved = {}};
+		QueueSource ipcSource{&helResult, sizeof(HelSimpleResult), nullptr};
+		co_await queue->submit(&ipcSource, context);
+	}(std::move(indirectView), std::move(memoryView), std::move(slice), offset, memoryOffset, size,
+		std::move(queue), context,
+		enable_detached_coroutine{getCurrentThread()->mainWorkQueue().lock()});
+
+	return kHelErrNone;
 }
 
 HelError helCreateSliceView(HelHandle memoryHandle,
@@ -4717,6 +4743,18 @@ void thor::submitFromSq(smarter::shared_ptr<IpcQueue> queue, uint32_t opcode,
 		memcpy(&sqData, sqSpan.data(), sizeof(sqData));
 		error = doSubmitInvalidateMemory(sqData.handle, queue, sqData.offset, sqData.size,
 				sqData.flags, context);
+		break;
+	}
+	case kHelSubmitAlterMemoryIndirection: {
+		if(sqSpan.size() < sizeof(HelSqAlterMemoryIndirection)) {
+			infoLogger() << "Bad length for kHelSubmitAlterMemoryIndirection" << frg::endlog;
+			error = kHelErrBufferTooSmall;
+			break;
+		}
+		HelSqAlterMemoryIndirection sqData;
+		memcpy(&sqData, sqSpan.data(), sizeof(sqData));
+		error = doSubmitAlterMemoryIndirection(sqData.indirectHandle, sqData.memoryHandle, queue,
+				sqData.offset, sqData.memoryOffset, sqData.size, context);
 		break;
 	}
 	case kHelSubmitPopulateSpace: {

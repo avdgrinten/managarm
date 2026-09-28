@@ -80,13 +80,13 @@ struct File {
 	 * @param bo BufferObject to be set up for mapping
 	 * @return uint32_t The offset to be used to mmap the BufferObject
 	 */
-	uint32_t createHandle(std::shared_ptr<BufferObject> bo);
+	async::result<uint32_t> createHandle(std::shared_ptr<BufferObject> bo);
 	BufferObject *resolveHandle(uint32_t handle);
 	std::optional<uint32_t> getHandle(std::shared_ptr<drm_core::BufferObject> bo);
 
 	bool exportBufferObject(uint32_t handle, helix_ng::Credentials creds);
 
-	std::pair<std::shared_ptr<drm_core::BufferObject>, uint32_t>
+	async::result<std::pair<std::shared_ptr<drm_core::BufferObject>, uint32_t>>
 	importBufferObject(helix_ng::Credentials creds);
 
 	/**

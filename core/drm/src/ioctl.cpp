@@ -409,7 +409,7 @@ struct drm_core::File::HandleIoctl {
 			managarm::fs::GenericIoctlReply resp;
 
 			auto pair = self->_device->createDumb(req.drm_width(), req.drm_height(), req.drm_bpp());
-			auto handle = self->createHandle(pair.first);
+			auto handle = co_await self->createHandle(pair.first);
 			resp.set_drm_handle(handle);
 
 			resp.set_drm_pitch(pair.second);
@@ -1304,7 +1304,7 @@ struct drm_core::File::HandleIoctl {
 
 			// 'import' the BufferObject while returning or creating the DRM handle that references it
 			helix_ng::Credentials credentials = creds.credentials();
-			auto [bo, handle] = self->importBufferObject(credentials);
+			auto [bo, handle] = co_await self->importBufferObject(credentials);
 
 			if(bo) {
 				resp.set_error(managarm::fs::Errors::SUCCESS);

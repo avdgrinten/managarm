@@ -164,20 +164,11 @@ extern inline __attribute__ (( always_inline )) HelError helAccessPhysical(
 };
 
 extern inline __attribute__ (( always_inline )) HelError helCreateIndirectMemory(
-		size_t numSlots, HelHandle *handle) {
+		size_t size, HelHandle *handle) {
 	HelWord helHandle;
 	HelError error = helSyscall1_1(kHelCallCreateIndirectMemory,
-			(HelWord)numSlots, &helHandle);
+			(HelWord)size, &helHandle);
 	*handle = (HelHandle)helHandle;
-	return error;
-}
-
-extern inline __attribute__ (( always_inline )) HelError helAlterMemoryIndirection(
-		HelHandle indirectHandle, size_t slotIndex,
-		HelHandle memoryHandle, uintptr_t offset, size_t size) {
-	HelError error = helSyscall5(kHelCallAlterMemoryIndirection,
-			(HelWord)indirectHandle, (HelWord)slotIndex,
-			(HelWord)memoryHandle, (HelWord)offset, (HelWord)size);
 	return error;
 }
 

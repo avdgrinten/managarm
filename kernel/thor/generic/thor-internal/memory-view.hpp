@@ -435,8 +435,12 @@ public:
 	virtual coroutine<frg::expected<Error>> invalidateRange(uintptr_t offset, size_t size,
 			DiscardMode mode);
 
-	virtual Error setIndirection(size_t slot, smarter::shared_ptr<MemoryView> view,
-			uintptr_t offset, size_t size, CachingFlags flags);
+	// Delegates a range at offset to a range of view at viewOffset.
+	virtual Error installIndirection(uintptr_t offset, smarter::shared_ptr<MemoryView> view,
+			uintptr_t viewOffset, size_t size, CachingFlags flags);
+
+	// Removes the indirection that exactly covers the range and unmaps it from all mappings.
+	virtual coroutine<frg::expected<Error>> removeIndirection(uintptr_t offset, size_t size);
 
 	coroutine<frg::expected<Error>>
 	touchFullRange(uintptr_t offset, size_t size, FetchFlags flags);
@@ -1277,9 +1281,9 @@ private:
 	struct CtorToken {};
 
 public:
-	static std::expected<smarter::shared_ptr<IndirectMemory>, Error> create(size_t numSlots);
+	static std::expected<smarter::shared_ptr<IndirectMemory>, Error> create(size_t length);
 
-	IndirectMemory(CtorToken, size_t numSlots);
+	IndirectMemory(CtorToken, size_t length);
 	IndirectMemory(const IndirectMemory &) = delete;
 	~IndirectMemory();
 
@@ -1294,28 +1298,28 @@ public:
 	std::expected<size_t, Error> accessRange(uintptr_t offset, size_t size,
 			FetchFlags flags, PageAccessFn fn) override;
 
-	Error setIndirection(size_t slot, smarter::shared_ptr<MemoryView> memory,
-			uintptr_t offset, size_t size, CachingFlags flags) override;
+	Error installIndirection(uintptr_t offset, smarter::shared_ptr<MemoryView> memory,
+			uintptr_t memoryOffset, size_t size, CachingFlags flags) override;
+	coroutine<frg::expected<Error>> removeIndirection(uintptr_t offset, size_t size) override;
 
 private:
 	struct IndirectionSlot {
-		IndirectionSlot(IndirectMemory *owner, size_t slot,
+		IndirectionSlot(IndirectMemory *owner, uintptr_t base,
 				smarter::shared_ptr<MemoryView> memory,
 				uintptr_t offset, size_t size, CachingFlags flags)
-		: owner{owner}, slot{slot}, memory{std::move(memory)}, offset{offset},
-			size{size}, flags{flags}, observer{} { }
+		: owner{owner}, base{base}, memory{std::move(memory)}, offset{offset},
+			size{size}, flags{flags} { }
 
 		// Offsets of the first and last byte of this slot within the IndirectMemory.
-		uintptr_t first() const { return uintptr_t{slot} << 32; }
-		uintptr_t last() const { return first() + size - 1; }
+		uintptr_t first() const { return base; }
+		uintptr_t last() const { return base + size - 1; }
 
 		IndirectMemory *owner;
-		size_t slot;
+		uintptr_t base;
 		smarter::shared_ptr<MemoryView> memory;
 		uintptr_t offset;
 		size_t size;
 		CachingFlags flags;
-		MemoryObserver observer;
 		smarter::weak_ptr<IndirectionSlot> selfPtr;
 	};
 
@@ -1326,7 +1330,7 @@ private:
 	// Must not be called with mutex_ held.
 	void releaseSlot_(IndirectionSlot *indirection);
 
-	size_t numSlots_;
+	size_t length_;
 	// Only protects writers to slots_; readers use RCU.
 	frg::ticket_spinlock mutex_;
 	// Slots are keyed by last(), such that lower_bound() finds the slot containing an offset.

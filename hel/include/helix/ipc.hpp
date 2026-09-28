@@ -1532,6 +1532,109 @@ inline auto invalidateMemory(BorrowedDescriptor memory, uintptr_t offset, size_t
 }
 
 // --------------------------------------------------------------------
+// AlterMemoryIndirection
+// --------------------------------------------------------------------
+
+struct AlterMemoryIndirectionResult {
+	HelError error() {
+		assert(valid_);
+		return error_;
+	}
+
+	void parse(void *&ptr, const ElementHandle &) {
+		auto result = reinterpret_cast<HelSimpleResult *>(ptr);
+		error_ = result->error;
+		ptr = (char *)ptr + sizeof(HelSimpleResult);
+		valid_ = true;
+	}
+
+private:
+	bool valid_ = false;
+	HelError error_;
+};
+
+template <typename Receiver>
+struct AlterMemoryIndirectionOperation : private Context {
+	AlterMemoryIndirectionOperation(BorrowedDescriptor indirect, uintptr_t offset,
+			BorrowedDescriptor memory, uintptr_t memoryOffset, size_t size, Receiver r)
+	: indirect_{std::move(indirect)}, offset_{offset}, memory_{std::move(memory)},
+			memoryOffset_{memoryOffset}, size_{size}, r_{std::move(r)} {}
+
+	void start() {
+		HelSqAlterMemoryIndirection header;
+		header.indirectHandle = indirect_.getHandle();
+		header.memoryHandle = memory_.getHandle();
+		header.offset = offset_;
+		header.memoryOffset = memoryOffset_;
+		header.size = size_;
+
+		std::array segments{
+			std::as_bytes(std::span{&header, 1})
+		};
+
+		auto context = static_cast<Context *>(this);
+		Dispatcher::global().pushSq(kHelSubmitAlterMemoryIndirection,
+				reinterpret_cast<uintptr_t>(context), segments);
+	}
+
+	AlterMemoryIndirectionOperation(const AlterMemoryIndirectionOperation &) = delete;
+	AlterMemoryIndirectionOperation &operator= (const AlterMemoryIndirectionOperation &) = delete;
+
+private:
+	void complete(ElementHandle element) override {
+		AlterMemoryIndirectionResult result;
+		void *ptr = element.data();
+		result.parse(ptr, element);
+		async::execution::set_value(r_, std::move(result));
+	}
+
+	BorrowedDescriptor indirect_;
+	uintptr_t offset_;
+	BorrowedDescriptor memory_;
+	uintptr_t memoryOffset_;
+	size_t size_;
+	Receiver r_;
+};
+
+struct [[nodiscard]] AlterMemoryIndirectionSender {
+	using value_type = AlterMemoryIndirectionResult;
+
+	AlterMemoryIndirectionSender(BorrowedDescriptor indirect, uintptr_t offset,
+			BorrowedDescriptor memory, uintptr_t memoryOffset, size_t size)
+	: indirect_{std::move(indirect)}, offset_{offset}, memory_{std::move(memory)},
+			memoryOffset_{memoryOffset}, size_{size} { }
+
+	template<typename Receiver>
+	AlterMemoryIndirectionOperation<Receiver> connect(Receiver receiver) {
+		return {std::move(indirect_), offset_, std::move(memory_), memoryOffset_, size_,
+				std::move(receiver)};
+	}
+
+private:
+	BorrowedDescriptor indirect_;
+	uintptr_t offset_;
+	BorrowedDescriptor memory_;
+	uintptr_t memoryOffset_;
+	size_t size_;
+};
+
+inline async::sender_awaiter<AlterMemoryIndirectionSender, AlterMemoryIndirectionResult>
+operator co_await (AlterMemoryIndirectionSender sender) {
+	return {std::move(sender)};
+}
+
+inline auto installMemoryIndirection(BorrowedDescriptor indirect, uintptr_t offset,
+		BorrowedDescriptor memory, uintptr_t memoryOffset, size_t size) {
+	return AlterMemoryIndirectionSender{std::move(indirect), offset,
+			std::move(memory), memoryOffset, size};
+}
+
+inline auto removeMemoryIndirection(BorrowedDescriptor indirect, uintptr_t offset, size_t size) {
+	return AlterMemoryIndirectionSender{std::move(indirect), offset,
+			BorrowedDescriptor{kHelNullHandle}, 0, size};
+}
+
+// --------------------------------------------------------------------
 // PopulateSpace
 // --------------------------------------------------------------------
 

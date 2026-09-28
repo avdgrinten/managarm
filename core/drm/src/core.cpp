@@ -30,7 +30,7 @@
 drm_core::File::File(std::shared_ptr<Device> device)
 : _device(device), _eventSequence{1} {
 	HelHandle handle;
-	HEL_CHECK(helCreateIndirectMemory(1024, &handle));
+	HEL_CHECK(helCreateIndirectMemory(size_t{1024} << 32, &handle));
 	_memory = helix::UniqueDescriptor{handle};
 
 	_statusPage.update(_eventSequence, 0);
@@ -57,7 +57,20 @@ const std::vector<std::shared_ptr<drm_core::FrameBuffer>> &drm_core::File::getFr
 	return _frameBuffers;
 }
 
-uint32_t drm_core::File::createHandle(std::shared_ptr<BufferObject> bo) {
+async::result<uint32_t> drm_core::File::createHandle(std::shared_ptr<BufferObject> bo) {
+	// Indirections stay installed after the handle is closed since existing mmap()s remain valid.
+	// Hence, re-importing a BufferObject finds its indirection already installed.
+	// Indirections are page-granular; the memory of a BufferObject extends to the next page.
+	auto [boMemory, boOffset] = bo->getMemory();
+	auto result = co_await helix_ng::installMemoryIndirection(_memory,
+			bo->getMapping(), boMemory, boOffset, (bo->getSize() + 0xFFF) & ~size_t{0xFFF});
+	if(result.error() != kHelErrAlreadyExists)
+		HEL_CHECK(result.error());
+
+	// Another request may have imported the BufferObject while we were installing it.
+	if(auto existing = getHandle(bo))
+		co_return *existing;
+
 	auto handle = _allocator.allocate();
 	auto ret = _buffers.insert({handle, bo});
 	assert(ret.second);
@@ -65,16 +78,7 @@ uint32_t drm_core::File::createHandle(std::shared_ptr<BufferObject> bo) {
 	if(logDrmRequests)
 		std::println("core/drm: createHandle for BufferObject {} -> handle {}", static_cast<void *>(bo.get()), handle);
 
-	// Indirections stay installed after the handle is closed since existing mmap()s remain valid.
-	// Hence, re-importing a BufferObject finds its indirection already installed.
-	auto [boMemory, boOffset] = bo->getMemory();
-	auto error = helAlterMemoryIndirection(_memory.getHandle(),
-			bo->getMapping() >> 32, boMemory.getHandle(),
-			boOffset, bo->getSize());
-	if(error != kHelErrAlreadyExists)
-		HEL_CHECK(error);
-
-	return handle;
+	co_return handle;
 }
 
 drm_core::BufferObject *drm_core::File::resolveHandle(uint32_t handle) {
@@ -112,19 +116,19 @@ bool drm_core::File::exportBufferObject(uint32_t handle, helix_ng::Credentials c
  * For the currently opened File, this imports the BufferObject from the device if necessary and
  * returns a pair of (BufferObject, DRM handle) for the `File`.
  */
-std::pair<std::shared_ptr<drm_core::BufferObject>, uint32_t>
+async::result<std::pair<std::shared_ptr<drm_core::BufferObject>, uint32_t>>
 drm_core::File::importBufferObject(helix_ng::Credentials creds) {
 	auto bo = _device->findBufferObject(creds);
 	if(!bo)
-		return {};
+		co_return {};
 
 	auto handle = getHandle(bo);
 
 	if(!handle) {
-		handle = createHandle(bo);
+		handle = co_await createHandle(bo);
 	}
 
-	return {bo, handle.value_or(-1)};
+	co_return {bo, handle.value_or(-1)};
 }
 
 void drm_core::File::postEvent(drm_core::Event event) {

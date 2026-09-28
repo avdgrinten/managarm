@@ -48,7 +48,6 @@ enum {
 	kHelCallCreateDmaSpace = 108,
 	kHelCallConfigureIrq = 109,
 	kHelCallCreateIndirectMemory = 45,
-	kHelCallAlterMemoryIndirection = 52,
 	kHelCallMapMemory = 44,
 	kHelCallSubmitProtectMemory = 99,
 	kHelCallSubmitSynchronizeSpace = 53,
@@ -843,6 +842,8 @@ static const uint32_t kHelSubmitBindDmaDevice = 19;
 static const uint32_t kHelSubmitUnbindDmaDevice = 20;
 //! SQ opcode: activate translation on an IOMMU.
 static const uint32_t kHelSubmitActivateIommu = 21;
+//! SQ opcode: install or remove an indirection of an indirect memory object.
+static const uint32_t kHelSubmitAlterMemoryIndirection = 22;
 
 //! In-memory kernel/user-space queue.
 struct HelQueue {
@@ -1107,6 +1108,29 @@ struct HelSqUnbindDmaDevice {
 struct HelSqActivateIommu {
 	//! Handle to the IOMMU (see ::helAccessIommu).
 	HelHandle iommuHandle;
+};
+
+//! SQ data for kHelSubmitAlterMemoryIndirection.
+//!
+//! Installs an indirection that backs a range of an indirect memory object
+//! (see ::helCreateIndirectMemory) by a range of another memory object,
+//! or removes such an indirection. Removal completes once the range is unmapped
+//! from all mappings of the indirect memory object.
+//! All offsets and sizes must be aligned to the system's page size.
+struct HelSqAlterMemoryIndirection {
+	//! Handle to the indirect memory object.
+	HelHandle indirectHandle;
+	//! Handle to the memory object (or slice) that the range delegates to.
+	//! The memory object must not be able to evict pages (e.g., it cannot be managed memory).
+	//! kHelNullHandle removes the indirection that exactly covers the range.
+	HelHandle memoryHandle;
+	//! Offset of the range within the indirect memory object.
+	uintptr_t offset;
+	//! Offset within the memory object (or slice). Ignored on removal.
+	uintptr_t memoryOffset;
+	//! Size of the range. Must be non-zero.
+	//! Installed indirections must not overlap.
+	size_t size;
 };
 
 struct HelSimpleResult {
@@ -1495,31 +1519,14 @@ HEL_C_LINKAGE HelError helAccessPhysical(
 );
 
 //! Creates a memory object that obtains its memory by delegating to other memory objects.
-//! @param[in] numSlots
-//! 	Number of slots, i.e., other memory objects that the indirect memory object refers to.
+//!
+//! Ranges of the memory object are backed by indirections (see ::kHelSubmitAlterMemoryIndirection).
+//! Accesses outside of indirections fault. Indirect memory objects cannot be locked.
+//! @param[in] size
+//! 	Size of the memory object in bytes. Must be aligned to the system's page size.
 //! @param[out] handle
 //!    	Handle to the new memory object.
-HEL_C_LINKAGE HelError helCreateIndirectMemory(size_t numSlots, HelHandle *handle);
-
-//! Modifies indirect memory objects.
-//!
-//! @param[in] indirectHandle
-//!    	Handle to the indirect memory object to be modified.
-//!    	Must refer to a memory object created by ::helCreateIndirectMemory.
-//! @param[in] slotIndex
-//!    	Index of the slot to be modified. Must be a non-negative integer smaller than
-//!    	@p numSlots (see ::helCreateIndirectMemory).
-//!    	The slot must not be in use yet.
-//! @param[in] memoryHandle
-//!    	Handle to the memory object that @p indirectHandle should delegate to.
-//! @param[in] offset
-//!    	Offset in bytes, relative to @p memoryHandle.
-//!    	Must be aligned to the system's page size.
-//! @param[in] size
-//!    	Size of the indirection in bytes.
-//!    	Must be non-zero and aligned to the system's page size.
-HEL_C_LINKAGE HelError helAlterMemoryIndirection(HelHandle indirectHandle, size_t slotIndex,
-		HelHandle memoryHandle, uintptr_t offset, size_t size);
+HEL_C_LINKAGE HelError helCreateIndirectMemory(size_t size, HelHandle *handle);
 
 HEL_C_LINKAGE HelError helCreateSliceView(HelHandle bundle, uintptr_t offset, size_t size,
 		uint32_t flags, HelHandle *handle);
