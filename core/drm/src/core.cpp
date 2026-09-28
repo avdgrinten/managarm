@@ -65,10 +65,14 @@ uint32_t drm_core::File::createHandle(std::shared_ptr<BufferObject> bo) {
 	if(logDrmRequests)
 		std::println("core/drm: createHandle for BufferObject {} -> handle {}", static_cast<void *>(bo.get()), handle);
 
+	// Indirections stay installed after the handle is closed since existing mmap()s remain valid.
+	// Hence, re-importing a BufferObject finds its indirection already installed.
 	auto [boMemory, boOffset] = bo->getMemory();
-	HEL_CHECK(helAlterMemoryIndirection(_memory.getHandle(),
+	auto error = helAlterMemoryIndirection(_memory.getHandle(),
 			bo->getMapping() >> 32, boMemory.getHandle(),
-			boOffset, bo->getSize()));
+			boOffset, bo->getSize());
+	if(error != kHelErrAlreadyExists)
+		HEL_CHECK(error);
 
 	return handle;
 }
