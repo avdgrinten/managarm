@@ -10,6 +10,7 @@
 #include <async/recurring-event.hpp>
 #include <async/wait-group.hpp>
 #include <frg/list.hpp>
+#include <frg/rcu_btree.hpp>
 #include <frg/rcu_radixtree.hpp>
 #include <frg/shared_ptr.hpp>
 #include <frg/vector.hpp>
@@ -1304,6 +1305,10 @@ private:
 		: owner{owner}, slot{slot}, memory{std::move(memory)}, offset{offset},
 			size{size}, flags{flags}, observer{} { }
 
+		// Offsets of the first and last byte of this slot within the IndirectMemory.
+		uintptr_t first() const { return uintptr_t{slot} << 32; }
+		uintptr_t last() const { return first() + size - 1; }
+
 		IndirectMemory *owner;
 		size_t slot;
 		smarter::shared_ptr<MemoryView> memory;
@@ -1311,10 +1316,22 @@ private:
 		size_t size;
 		CachingFlags flags;
 		MemoryObserver observer;
+		smarter::weak_ptr<IndirectionSlot> selfPtr;
 	};
 
+	// Lock-free lookup of the slot that contains the given offset.
+	smarter::shared_ptr<IndirectionSlot> resolve_(uintptr_t offset);
+
+	// Drops the reference of slots_ after the slot was erased from slots_.
+	// Must not be called with mutex_ held.
+	void releaseSlot_(IndirectionSlot *indirection);
+
+	size_t numSlots_;
+	// Only protects writers to slots_; readers use RCU.
 	frg::ticket_spinlock mutex_;
-	frg::vector<smarter::shared_ptr<IndirectionSlot>, KernelAlloc> indirections_;
+	// Slots are keyed by last(), such that lower_bound() finds the slot containing an offset.
+	// Each slot in this tree holds a reference; slots are freed via RCU (allocate_rcu_shared()).
+	frg::rcu_btree<uintptr_t, IndirectionSlot *, KernelAlloc, RcuPolicy> slots_;
 };
 
 enum class CowState {

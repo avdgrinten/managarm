@@ -1509,6 +1509,7 @@ HEL_C_LINKAGE HelError helCreateIndirectMemory(size_t numSlots, HelHandle *handl
 //! @param[in] slotIndex
 //!    	Index of the slot to be modified. Must be a non-negative integer smaller than
 //!    	@p numSlots (see ::helCreateIndirectMemory).
+//!    	The slot must not be in use yet.
 //! @param[in] memoryHandle
 //!    	Handle to the memory object that @p indirectHandle should delegate to.
 //! @param[in] offset
@@ -1516,7 +1517,7 @@ HEL_C_LINKAGE HelError helCreateIndirectMemory(size_t numSlots, HelHandle *handl
 //!    	Must be aligned to the system's page size.
 //! @param[in] size
 //!    	Size of the indirection in bytes.
-//!    	Must be aligned to the system's page size.
+//!    	Must be non-zero and aligned to the system's page size.
 HEL_C_LINKAGE HelError helAlterMemoryIndirection(HelHandle indirectHandle, size_t slotIndex,
 		HelHandle memoryHandle, uintptr_t offset, size_t size);
 

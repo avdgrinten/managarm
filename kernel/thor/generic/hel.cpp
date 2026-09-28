@@ -875,16 +875,8 @@ HelError helAlterMemoryIndirection(HelHandle indirectHandle, size_t slot,
 		cacheFlags = slice->getCachingFlags();
 	}
 
-	if(auto e = indirectView->setIndirection(slot, std::move(memoryView), offset, size, cacheFlags);
-			e != Error::success) {
-		if(e == Error::illegalObject) {
-			return kHelErrUnsupportedOperation;
-		}else{
-			assert(e == Error::outOfBounds);
-			return kHelErrOutOfBounds;
-		}
-	}
-	return kHelErrNone;
+	return translateError(indirectView->setIndirection(slot, std::move(memoryView),
+			offset, size, cacheFlags));
 }
 
 HelError helCreateSliceView(HelHandle memoryHandle,

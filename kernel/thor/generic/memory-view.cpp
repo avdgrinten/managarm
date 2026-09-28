@@ -3123,72 +3123,58 @@ std::expected<smarter::shared_ptr<IndirectMemory>, Error> IndirectMemory::create
 }
 
 IndirectMemory::IndirectMemory(CtorToken, size_t numSlots)
-: indirections_{*kernelAlloc} {
-	indirections_.resize(numSlots);
-}
+: numSlots_{numSlots}, slots_{*kernelAlloc} { }
 
 IndirectMemory::~IndirectMemory() {
-	// For now we do nothing when deallocating hardware memory.
+	while(slots_.begin() != slots_.end())
+		releaseSlot_(slots_.erase(slots_.begin()));
+}
+
+smarter::shared_ptr<IndirectMemory::IndirectionSlot> IndirectMemory::resolve_(uintptr_t offset) {
+	// Disabling scheduling is the RCU read-side lock of the global RcuEngine.
+	IplGuard<ipl::noSchedule> guard;
+
+	auto it = slots_.lower_bound(offset);
+	if(it == slots_.end())
+		return nullptr;
+	auto indirection = (*it).second;
+	if(offset < indirection->first())
+		return nullptr;
+	// Slots are freed only after a grace period but lock() fails if the slot was released.
+	return indirection->selfPtr.lock();
+}
+
+void IndirectMemory::releaseSlot_(IndirectionSlot *indirection) {
+	indirection->memory->removeObserver(&indirection->observer);
+	indirection->selfPtr.policy().decrement();
 }
 
 Error IndirectMemory::lockRange(uintptr_t offset, size_t size) {
-	auto slot = offset >> 32;
-	auto inSlotOffset = offset & ((uintptr_t(1) << 32) - 1);
-
-	smarter::shared_ptr<IndirectionSlot> indirection;
-	{
-		auto irqLock = frg::guard(&irqMutex());
-		auto lock = frg::guard(&mutex_);
-
-		if(slot >= indirections_.size())
-			return Error::fault;
-		if(!indirections_[slot])
-			return Error::fault;
-		if(inSlotOffset + size > indirections_[slot]->size)
-			return Error::fault;
-		indirection = indirections_[slot];
-	}
+	auto indirection = resolve_(offset);
+	if(!indirection)
+		return Error::fault;
+	auto inSlotOffset = offset - indirection->first();
+	if(inSlotOffset + size > indirection->size)
+		return Error::fault;
 
 	return indirection->memory->lockRange(indirection->offset + inSlotOffset, size);
 }
 
 void IndirectMemory::unlockRange(uintptr_t offset, size_t size) {
-	auto slot = offset >> 32;
-	auto inSlotOffset = offset & ((uintptr_t(1) << 32) - 1);
-
-	smarter::shared_ptr<IndirectionSlot> indirection;
-	{
-		auto irqLock = frg::guard(&irqMutex());
-		auto lock = frg::guard(&mutex_);
-
-		// Otherwise, lockRange() would have faulted.
-		assert(slot < indirections_.size());
-		assert(indirections_[slot]);
-		assert(inSlotOffset + size <= indirections_[slot]->size);
-		indirection = indirections_[slot];
-	}
+	auto indirection = resolve_(offset);
+	// Otherwise, lockRange() would have faulted.
+	assert(indirection);
+	auto inSlotOffset = offset - indirection->first();
+	assert(inSlotOffset + size <= indirection->size);
 
 	indirection->memory->unlockRange(indirection->offset + inSlotOffset, size);
 }
 
 PhysicalRange IndirectMemory::peekRange(uintptr_t offset, FetchFlags flags) {
-	auto slot = offset >> 32;
-	auto inSlotOffset = offset & ((uintptr_t(1) << 32) - 1);
-
-	smarter::shared_ptr<IndirectionSlot> indirection;
-	{
-		auto irqLock = frg::guard(&irqMutex());
-		auto lock = frg::guard(&mutex_);
-
-		if (slot >= indirections_.size())
-			return PhysicalRange{};
-		if (!indirections_[slot])
-			return PhysicalRange{};
-		indirection = indirections_[slot];
-	}
-
-	if (inSlotOffset >= indirection->size)
+	auto indirection = resolve_(offset);
+	if (!indirection)
 		return PhysicalRange{};
+	auto inSlotOffset = offset - indirection->first();
 
 	auto physicalRange = indirection->memory->peekRange(indirection->offset + inSlotOffset, flags);
 	if (physicalRange.physical == ~PhysicalAddr{0})
@@ -3208,23 +3194,10 @@ PhysicalRange IndirectMemory::peekRange(uintptr_t offset, FetchFlags flags) {
 
 std::expected<size_t, Error> IndirectMemory::accessRange(uintptr_t offset, size_t size,
 		FetchFlags flags, PageAccessFn fn) {
-	auto slot = offset >> 32;
-	auto inSlotOffset = offset & ((uintptr_t(1) << 32) - 1);
-
-	smarter::shared_ptr<IndirectionSlot> indirection;
-	{
-		auto irqLock = frg::guard(&irqMutex());
-		auto lock = frg::guard(&mutex_);
-
-		if(slot >= indirections_.size())
-			return std::unexpected{Error::fault};
-		if(!indirections_[slot])
-			return std::unexpected{Error::fault};
-		indirection = indirections_[slot];
-	}
-
-	if(inSlotOffset >= indirection->size)
+	auto indirection = resolve_(offset);
+	if(!indirection)
 		return std::unexpected{Error::fault};
+	auto inSlotOffset = offset - indirection->first();
 
 	auto chunk = frg::min(size, indirection->size - inSlotOffset);
 	return indirection->memory->accessRange(indirection->offset + inSlotOffset, chunk, flags, fn);
@@ -3234,23 +3207,10 @@ coroutine<frg::expected<Error, size_t>>
 IndirectMemory::touchRange(uintptr_t offset, size_t sizeHint, FetchFlags flags) {
 	assert(currentIpl() == ipl::exceptionalWork);
 
-	auto slot = offset >> 32;
-	auto inSlotOffset = offset & ((uintptr_t(1) << 32) - 1);
-
-	smarter::shared_ptr<IndirectionSlot> indirection;
-	{
-		auto irqLock = frg::guard(&irqMutex());
-		auto lock = frg::guard(&mutex_);
-
-		if (slot >= indirections_.size())
-			co_return Error::fault;
-		if (!indirections_[slot])
-			co_return Error::fault;
-		indirection = indirections_[slot];
-	}
-
-	if (inSlotOffset >= indirection->size)
+	auto indirection = resolve_(offset);
+	if (!indirection)
 		co_return Error::fault;
+	auto inSlotOffset = offset - indirection->first();
 
 	auto affectedSize = FRG_CO_TRY(
 		co_await indirection->memory->touchRange(indirection->offset + inSlotOffset, sizeHint, flags)
@@ -3259,21 +3219,37 @@ IndirectMemory::touchRange(uintptr_t offset, size_t sizeHint, FetchFlags flags) 
 }
 
 size_t IndirectMemory::getLength() {
-	return indirections_.size() << 32;
+	return numSlots_ << 32;
 }
 
 Error IndirectMemory::setIndirection(size_t slot, smarter::shared_ptr<MemoryView> memory,
 		uintptr_t offset, size_t size, CachingFlags flags) {
-	auto irqLock = frg::guard(&irqMutex());
-	auto lock = frg::guard(&mutex_);
-
-	if(slot >= indirections_.size())
+	if(!size)
+		return Error::illegalArgs;
+	// Slots must not overlap in slots_, and offsets beyond slot 2^32 are unreachable anyway.
+	if(slot >= numSlots_ || slot >= (size_t{1} << 32) || size > (size_t{1} << 32))
 		return Error::outOfBounds;
-	auto indirection = smarter::allocate_shared<IndirectionSlot>(*kernelAlloc,
+
+	auto indirection = allocate_rcu_shared<IndirectionSlot>(*kernelAlloc,
 			this, slot, memory, offset, size, flags);
+	indirection->selfPtr = indirection;
+
+	{
+		auto irqLock = frg::guard(&irqMutex());
+		auto lock = frg::guard(&mutex_);
+
+		// Since slots have at most 2^32 bytes, this is either the slot or a later one.
+		auto it = slots_.lower_bound(uintptr_t{slot} << 32);
+		// Replacing a slot would require evicting its pages from all mappings.
+		if(it != slots_.end() && (*it).second->slot == slot)
+			return Error::alreadyExists;
+
+		indirection.policy().increment();
+		slots_.insert(indirection->last(), indirection.get());
+	}
+
 	// TODO: start a coroutine to observe evictions.
 	memory->addObserver(&indirection->observer);
-	indirections_[slot] = std::move(indirection);
 	return Error::success;
 }
 
