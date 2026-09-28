@@ -3149,25 +3149,13 @@ void IndirectMemory::releaseSlot_(IndirectionSlot *indirection) {
 	indirection->selfPtr.policy().decrement();
 }
 
-Error IndirectMemory::lockRange(uintptr_t offset, size_t size) {
-	auto indirection = resolve_(offset);
-	if(!indirection)
-		return Error::fault;
-	auto inSlotOffset = offset - indirection->first();
-	if(inSlotOffset + size > indirection->size)
-		return Error::fault;
-
-	return indirection->memory->lockRange(indirection->offset + inSlotOffset, size);
+// Locking is not supported: accessRange() covers its use cases without pinning the indirection.
+Error IndirectMemory::lockRange(uintptr_t, size_t) {
+	return Error::illegalObject;
 }
 
-void IndirectMemory::unlockRange(uintptr_t offset, size_t size) {
-	auto indirection = resolve_(offset);
-	// Otherwise, lockRange() would have faulted.
-	assert(indirection);
-	auto inSlotOffset = offset - indirection->first();
-	assert(inSlotOffset + size <= indirection->size);
-
-	indirection->memory->unlockRange(indirection->offset + inSlotOffset, size);
+void IndirectMemory::unlockRange(uintptr_t, size_t) {
+	panicLogger() << "thor: IndirectMemory::unlockRange() without lockRange()" << frg::endlog;
 }
 
 PhysicalRange IndirectMemory::peekRange(uintptr_t offset, FetchFlags flags) {
