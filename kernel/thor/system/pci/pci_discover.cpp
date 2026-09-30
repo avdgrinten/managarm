@@ -2138,7 +2138,7 @@ void configureDevice(PciDevice *device) {
 			KernelPageSpace::global().mapSingle4k(
 					reinterpret_cast<uintptr_t>(window) + page,
 					(bar.address + tableOffset + page) & ~(kPageSize - 1),
-					page_access::write, CachingMode::null);
+					page_access::write, CachingMode::mmio);
 		device->msixMapping = reinterpret_cast<std::byte *>(window) + mappingDisp;
 
 		// Mask all MSIs.
