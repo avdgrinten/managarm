@@ -261,7 +261,12 @@ extern "C" void onPlatformAsyncFault(FaultImageAccessor image) {
 
 			log << frg::endlog;
 
-			if (aet == 2 || aet == 12)
+			uint64_t pfr0;
+			asm volatile("mrs %0, id_aa64pfr0_el1" : "=r"(pfr0));
+			bool hasRas = (pfr0 >> 28) & 0xF;
+
+			// Like Linux, survive restartable (UEO) and corrected (CE) errors; AET needs FEAT_RAS.
+			if (hasRas && dfsc == 0x11 && (aet == 2 || aet == 6))
 				recoverable = true;
 		}
 	} else {
