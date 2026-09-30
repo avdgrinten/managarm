@@ -224,8 +224,10 @@ static initgraph::Task discoverConfigIoSpaces{&globalInitEngine, "pci.discover-a
 				<< ", buses " << entry.start_bus << "-" << entry.end_bus
 				<< ", ECAM MMIO base at " << (void *)entry.address << frg::endlog;
 
+			// MCFG base addresses are relative to bus 0, while EcamPcieConfigIo expects
+			// a window that starts at the first bus that it decodes.
 			auto io = frg::construct<EcamPcieConfigIo>(*kernelAlloc,
-					entry.address, entry.segment,
+					entry.address + (uintptr_t{entry.start_bus} << 20), entry.segment,
 					entry.start_bus, entry.end_bus);
 
 			for (int j = entry.start_bus; j <= entry.end_bus; j++) {
