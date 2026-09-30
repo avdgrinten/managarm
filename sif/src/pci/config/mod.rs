@@ -311,8 +311,10 @@ pub fn discover_config_spaces() -> anyhow::Result<()> {
             region.segment, region.start_bus, region.end_bus, region.address
         );
 
+        // MCFG base addresses are relative to bus 0, while EcamPcieConfigIo expects
+        // a window that starts at the first bus that it decodes.
         let io: &'static EcamPcieConfigIo = Box::leak(Box::new(EcamPcieConfigIo::new(
-            region.address,
+            region.address + ((region.start_bus as u64) << 20),
             region.segment,
             region.start_bus,
             region.end_bus,
