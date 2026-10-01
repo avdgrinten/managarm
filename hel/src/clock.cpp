@@ -45,11 +45,11 @@ bool readRawTicks(uint32_t clockType, uint64_t &ticks) {
 	}
 #elif defined(__aarch64__)
 	if(clockType == kHelClockCntpct) {
-		asm volatile ("mrs %0, cntpct_el0" : "=r"(ticks) : : "memory");
+		asm volatile ("isb; mrs %0, cntpct_el0" : "=r"(ticks) : : "memory");
 		return true;
 	}
 	if(clockType == kHelClockCntvct) {
-		asm volatile ("mrs %0, cntvct_el0" : "=r"(ticks) : : "memory");
+		asm volatile ("isb; mrs %0, cntvct_el0" : "=r"(ticks) : : "memory");
 		return true;
 	}
 #elif defined(__riscv) && __riscv_xlen == 64
