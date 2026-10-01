@@ -124,6 +124,7 @@ private:
 	void closeRX();
 
 	void maskIRQsAndAck();
+	void updateLinkState();
 	async::result<void> enableRXDVGate();
 	void disableRXDVGate();
 	void setHardwareASPMClockEnable(bool val);

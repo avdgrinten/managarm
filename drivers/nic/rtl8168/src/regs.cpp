@@ -3,6 +3,7 @@
 #include <nic/rtl8168/common.hpp>
 #include <nic/rtl8168/rtl8168.hpp>
 #include <nic/rtl8168/regs.hpp>
+#include <format>
 #include <frg/logging.hpp>
 #include <helix/timer.hpp>
 #include <unistd.h>
@@ -25,6 +26,16 @@ void RealtekNic::maskIRQsAndAck() {
 		_mmio.store(regs::interrupt_status_val, ~0);
 	}
 	forcePCICommit();
+}
+
+void RealtekNic::updateLinkState() {
+	auto status = _mmio.load(regs::phy_status);
+	bool up = status & flags::phy_status::link_status;
+	if(up == l1_up_)
+		return;
+	l1_up_ = up;
+	std::cout << std::format("drivers/rtl8168: {} link {} (PHYstatus 0x{:02x})",
+			mac_, up ? "up" : "down", uint8_t(status)) << std::endl;
 }
 
 async::result<void> RealtekNic::enableRXDVGate() {

@@ -541,6 +541,7 @@ async::result<void> RealtekNic::init() {
 	if(logDriverStart) {
 		std::cout << "drivers/rtl8168: started card" << std::endl;
 	}
+	updateLinkState();
 
 	// Enable IRQs
 	if(is8125Family()) {
@@ -619,6 +620,7 @@ async::detached RealtekNic::processIrqs() {
 			if(logIRQs) {
 				puts("drivers/rtl8168: link change");
 			}
+			updateLinkState();
 		}
 
 		// Did we successfully transmit information?

@@ -126,6 +126,10 @@ namespace interrupt_status {
 	constexpr arch::field<uint32_t, bool> system_error{15, 1};
 }
 
+namespace phy_status {
+	constexpr arch::field<uint8_t, bool> link_status{1, 1};
+}
+
 namespace phy_access {
 	constexpr arch::field<uint32_t, bool> bmcr_auto_negotiation{12, 1};
 	constexpr arch::field<uint32_t, bool> bmcr_reset{15, 1};
