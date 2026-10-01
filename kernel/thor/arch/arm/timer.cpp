@@ -37,9 +37,9 @@ constinit Pow2Fraction<Rounding::up> timerTickFreq;
 uint64_t getRawTimestampCounter() {
 	uint64_t cnt;
 	if (isKernelInEl2()) {
-		asm volatile ("mrs %0, cntpct_el0" : "=r"(cnt));
+		asm volatile ("isb; mrs %0, cntpct_el0" : "=r"(cnt) : : "memory");
 	} else {
-		asm volatile ("mrs %0, cntvct_el0" : "=r"(cnt));
+		asm volatile ("isb; mrs %0, cntvct_el0" : "=r"(cnt) : : "memory");
 	}
 	return cnt;
 }
