@@ -17,6 +17,8 @@
 #include <sys/socket.h>
 #include <sys/sysmacros.h>
 #include <linux/netlink.h>
+#include <linux/rtnetlink.h>
+#include <net/if.h>
 #include <unistd.h>
 #include <string.h>
 #include <iostream>
@@ -148,6 +150,70 @@ bool isEarlyNic(const std::string &device) {
 	});
 }
 
+// Waits until a network interface reports a carrier and returns its name. Not all drivers
+// report the carrier, so after a timeout any interface is good enough.
+std::string waitForCarrier() {
+	constexpr int carrierTimeoutMs = 10'000;
+	constexpr int pollIntervalMs = 250;
+
+	int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+	if(fd < 0)
+		throw std::runtime_error("socket(NETLINK_ROUTE) failed");
+
+	for(int waitedMs = 0; ; waitedMs += pollIntervalMs) {
+		struct {
+			nlmsghdr hdr;
+			ifinfomsg ifi;
+		} req{};
+		req.hdr.nlmsg_len = NLMSG_LENGTH(sizeof(ifinfomsg));
+		req.hdr.nlmsg_type = RTM_GETLINK;
+		req.hdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+		req.ifi.ifi_family = AF_UNSPEC;
+		if(send(fd, &req, req.hdr.nlmsg_len, 0) < 0)
+			throw std::runtime_error("send(RTM_GETLINK) failed");
+
+		std::optional<std::string> up;
+		std::optional<std::string> any;
+		std::vector<char> buffer(16384);
+		bool done = false;
+		while(!done) {
+			int len = recv(fd, buffer.data(), buffer.size(), 0);
+			if(len < 0)
+				throw std::runtime_error("recv(RTM_GETLINK) failed");
+			for(auto hdr = reinterpret_cast<nlmsghdr *>(buffer.data()); NLMSG_OK(hdr, static_cast<unsigned int>(len));
+					hdr = NLMSG_NEXT(hdr, len)) {
+				if(hdr->nlmsg_type == NLMSG_DONE || hdr->nlmsg_type == NLMSG_ERROR) {
+					done = true;
+					break;
+				}
+				if(hdr->nlmsg_type != RTM_NEWLINK)
+					continue;
+				auto ifi = reinterpret_cast<ifinfomsg *>(NLMSG_DATA(hdr));
+				if(ifi->ifi_flags & IFF_LOOPBACK)
+					continue;
+				std::string name;
+				int attrLen = IFLA_PAYLOAD(hdr);
+				for(auto rta = IFLA_RTA(ifi); RTA_OK(rta, attrLen); rta = RTA_NEXT(rta, attrLen)) {
+					if(rta->rta_type == IFLA_IFNAME)
+						name = reinterpret_cast<char *>(RTA_DATA(rta));
+				}
+				if(!up && (ifi->ifi_flags & IFF_LOWER_UP))
+					up = name;
+				if(!any)
+					any = name;
+			}
+		}
+
+		if(up || (any && waitedMs >= carrierTimeoutMs)) {
+			if(!up)
+				std::cout << std::format("init: No carrier on any network link, using {}", *any) << std::endl;
+			close(fd);
+			return up ? *up : *any;
+		}
+		usleep(pollIntervalMs * 1000);
+	}
+}
+
 std::optional<std::string> checkRootDevice(std::string device) {
 	if(logDiscovery)
 		std::cout << "init: Considering device " << device << std::endl;
@@ -256,16 +322,17 @@ int main() {
 	auto cmdline = async::run(cmdlineHelper.get(), helix::currentDispatcher);
 
 	frg::string_view uefiNetDevpath = "";
+	bool nvmeOverFabric = false;
 
 	frg::array args = {
 		frg::option{"netserver.device", frg::as_string_view(uefiNetDevpath)},
 		frg::option{"nosystemd", frg::store_false(systemd)},
+		frg::option{"nvme.over-fabric", frg::store_true(nvmeOverFabric)},
 	};
 	frg::parse_arguments(cmdline.c_str(), args);
 
 	std::filesystem::path dpSysfsPath{};
 	bool uefiNetDevpathResolved = uefiNetDevpath.size() == 0;
-	bool interfaceUp = uefiNetDevpathResolved;
 
 	if(!uefiNetDevpathResolved) {
 		auto dp_res = DevicePathParser::fromString(std::string{uefiNetDevpath.data(), uefiNetDevpath.size()});
@@ -275,6 +342,27 @@ int main() {
 		} else {
 			std::cout << std::format("init: failed to parse device path '{}'", std::string{uefiNetDevpath.data(), uefiNetDevpath.size()}) << std::endl;
 		}
+	}
+
+	// netserver's TCP does not retransmit, so a SYN sent before a link is up would be lost.
+	if(nvmeOverFabric) {
+		auto filter = mbus_ng::Conjunction{{
+			mbus_ng::EqualsFilter{"class", "netserver"}
+		}};
+
+		auto enumerator = mbus_ng::Instance::global().enumerate(filter);
+		auto [_, events] = async::run(enumerator.nextEvents(), helix::currentDispatcher).unwrap();
+		assert(events.size() == 1);
+
+		auto mbus_str = std::format("MBUS_ID={}", events[0].id);
+		auto nvme = fork();
+		if(!nvme) {
+			std::cout << "init: Waiting for a network link for NVMe-oF" << std::endl;
+			auto ifname = waitForCarrier();
+			std::cout << std::format("init: {} is up, starting NVMe-oF", ifname) << std::endl;
+			const char *env[] = { mbus_str.c_str(), nullptr };
+			execle("/usr/bin/runsvr", "/usr/bin/runsvr", "--fork", "bind", "/usr/lib/managarm/server/block-nvme.bin", nullptr, env);
+		}else assert(nvme != -1);
 	}
 
 	std::optional<std::string> rootPath;
@@ -287,7 +375,7 @@ int main() {
 	ueventEngine.init();
 	ueventEngine.trigger();
 
-	while (!rootPath || !uefiNetDevpathResolved || !interfaceUp) {
+	while (!rootPath || !uefiNetDevpathResolved) {
 		auto uevent = ueventEngine.nextUevent();
 		if (!uevent) {
 			std::cout << "Failed to receive uevent" << std::endl;
@@ -332,25 +420,6 @@ int main() {
 					execl("/usr/bin/runsvr", "/usr/bin/runsvr", "--fork", "bind", "/usr/lib/managarm/server/netserver.bin", nullptr);
 				}else assert(netserver != -1);
 				uefiNetDevpathResolved = true;
-			}
-		} else if(!interfaceUp) {
-			if(subsystemIt != uevent->end() && subsystemIt->second == "net" && ("/sys" + devpath).starts_with(dpSysfsPath.string())) {
-				auto filter = mbus_ng::Conjunction{{
-					mbus_ng::EqualsFilter{"class", "netserver"}
-				}};
-
-				auto enumerator = mbus_ng::Instance::global().enumerate(filter);
-				auto [_, events] = async::run(enumerator.nextEvents(), helix::currentDispatcher).unwrap();
-				assert(events.size() == 1);
-
-				auto mbus_str = std::format("MBUS_ID={}", events[0].id);
-				auto nvme = fork();
-				if(!nvme) {
-					const char *env[] = { mbus_str.c_str(), nullptr };
-					execle("/usr/bin/runsvr", "/usr/bin/runsvr", "--fork", "bind", "/usr/lib/managarm/server/block-nvme.bin", nullptr, env);
-				}else assert(nvme != -1);
-
-				interfaceUp = true;
 			}
 		}
 	}
