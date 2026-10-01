@@ -91,7 +91,9 @@ async::result<void> Command::setupBuffer(Controller *controller, arch::dma_buffe
 		command_.common.flags |= 0x40;
 		command_.common.dataPtr.sgl.dataBlock.length = view.size();
 
-		if(view.size() && (command_.common.opcode & 1)) {
+		// Fabrics commands (i.e., Connect) always carry their data in the capsule. For other
+		// writes, the transport decides based on the in-capsule data size of the queue.
+		if(view.size() && command_.common.opcode == static_cast<uint8_t>(spec::AdminOpcode::Fabrics)) {
 			command_.common.dataPtr.sgl.generic.sglDescriptorType = 0;
 			command_.common.dataPtr.sgl.generic.sglSubType = 1;
 		} else {

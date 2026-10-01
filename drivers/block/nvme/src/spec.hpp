@@ -487,6 +487,26 @@ struct C2HData {
 	uint8_t __reserved2[4];
 };
 
+struct H2CData {
+	PduCommonHeader ch;
+	uint16_t commandCapsuleId;
+	uint16_t transferTag;
+	uint32_t dataOffset;
+	uint32_t dataLength;
+	uint8_t __reserved[4];
+};
+
+struct R2T {
+	PduCommonHeader ch;
+	uint16_t commandCapsuleId;
+	uint16_t transferTag;
+	uint32_t r2tOffset;
+	uint32_t r2tLength;
+	uint8_t __reserved[4];
+};
+
+constexpr uint8_t pduFlagDataLast = 1 << 2;
+
 } // namespace tcp
 
 } // namespace spec

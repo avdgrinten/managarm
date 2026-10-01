@@ -32,11 +32,16 @@ struct TcpQueue final : public Queue {
 	uint16_t controllerId() {
 		return controllerId_;
 	}
+
+	void setInCapsuleDataSize(size_t size) {
+		inCapsuleDataSize_ = size;
+	}
 private:
 	async::result<protocols::fs::Error> connect();
 	async::detached keepAlive();
 	async::detached submitPendingLoop();
 	async::result<void> submitCommandToDevice(std::unique_ptr<Command> cmd);
+	async::detached sendH2CData(uint16_t slot, uint16_t transferTag, uint32_t offset, uint32_t length);
 
 	in_addr addr_;
 	in_port_t port_;
@@ -47,6 +52,8 @@ private:
 	std::span<uint8_t, 16> uuid_;
 
 	std::vector<std::byte> buf_{8256};
+	uint32_t maxH2CData_ = 0;
+	size_t inCapsuleDataSize_ = 0;
 
 	async::oneshot_event connectedEvent_;
 

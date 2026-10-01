@@ -47,6 +47,8 @@ async::result<protocols::fs::Error> TcpQueue::connect() {
 	if(resp.ch.pduType != spec::tcp::PduType::ICResp)
 		co_return protocols::fs::Error::addressNotAvailable;
 
+	maxH2CData_ = resp.maxh2cdata;
+
 	connectedEvent_.raise();
 
 	co_return protocols::fs::Error::none;
@@ -177,6 +179,16 @@ async::detached TcpQueue::run() {
 				}
 				break;
 			}
+			case spec::tcp::PduType::R2T: {
+				auto r2t = reinterpret_cast<spec::tcp::R2T *>(recvbuf.data());
+				auto slot = r2t->commandCapsuleId;
+				if(slot >= queuedCmds_.size() || !queuedCmds_[slot]) {
+					std::cout << std::format("block/nvme: R2T for unknown command {}", slot) << std::endl;
+					co_return;
+				}
+				sendH2CData(slot, r2t->transferTag, r2t->r2tOffset, r2t->r2tLength);
+				break;
+			}
 			case spec::tcp::PduType::C2HData: {
 				auto resp = reinterpret_cast<spec::tcp::C2HData *>(recvbuf.data());
 
@@ -232,19 +244,34 @@ async::result<void> TcpQueue::submitCommandToDevice(std::unique_ptr<Command> cmd
 
 	auto genericCommand = reinterpret_cast<spec::Command *>(&buf_[sizeof(spec::tcp::CapsuleCmd)]);
 	genericCommand->common.commandId = slot;
-	auto opcode = cmd->getCommandBuffer().common.opcode;
 
-	if(data_len && opcode & 1) {
-		if(data_len > capsuleCmd->ch.pduDataOffset + buf_.size())
-			buf_.resize(capsuleCmd->ch.pduDataOffset + buf_.size());
+	// Like Linux, send write data in-capsule whenever it fits. Besides saving a round trip,
+	// nvmet may not send an R2T for a write that it expects in-capsule data for.
+	auto &sgl = genericCommand->common.dataPtr.sgl.generic;
+	if(data_len && (genericCommand->common.opcode & 1) && data_len <= inCapsuleDataSize_) {
+		sgl.sglDescriptorType = 0;
+		sgl.sglSubType = 1;
+	}
 
-		capsuleCmd->ch.pduDataOffset = sizeof(spec::tcp::CapsuleCmd) + sizeof(cmd->getCommandBuffer());
-		memcpy(&buf_[capsuleCmd->ch.pduDataOffset], reinterpret_cast<void *>(cmd->view().byte_data()), data_len);
+	// An SGL data block descriptor of subtype offset denotes in-capsule data.
+	if(data_len && sgl.sglDescriptorType == 0 && sgl.sglSubType == 1) {
+		size_t dataOffset = sizeof(spec::tcp::CapsuleCmd) + sizeof(cmd->getCommandBuffer());
+		if(dataOffset + data_len > buf_.size())
+			buf_.resize(dataOffset + data_len);
+
+		// The resize may have moved the buffer.
+		capsuleCmd = reinterpret_cast<spec::tcp::CapsuleCmd *>(buf_.data());
+		capsuleCmd->ch.pduDataOffset = dataOffset;
+		memcpy(&buf_[dataOffset], reinterpret_cast<void *>(cmd->view().byte_data()), data_len);
 		capsuleCmd->ch.pduLength += data_len;
 	}
 
 	queuedCmds_[slot] = std::move(cmd);
 	commandsInFlight_++;
+
+	// H2C data PDUs are sent concurrently; PDUs must not interleave on the stream.
+	co_await sendMutex.async_lock();
+	frg::unique_lock lock{frg::adopt_lock, sendMutex};
 
 	size_t sent = 0;
 
@@ -255,6 +282,50 @@ async::result<void> TcpQueue::submitCommandToDevice(std::unique_ptr<Command> cmd
 			co_return;
 		}
 		sent += send_err.value();
+	}
+}
+
+async::detached TcpQueue::sendH2CData(uint16_t slot, uint16_t transferTag, uint32_t offset, uint32_t length) {
+	// The command stays in queuedCmds_ until its response, which follows the data.
+	auto data = queuedCmds_[slot]->view().byte_data();
+	std::vector<std::byte> pdu;
+
+	// MAXH2CDATA must be at least 4096; do not loop forever on a controller that reports 0.
+	auto maxChunk = maxH2CData_ ? maxH2CData_ : length;
+
+	for(uint32_t done = 0; done < length;) {
+		auto chunk = std::min<uint32_t>(length - done, maxChunk);
+		spec::tcp::H2CData header{
+			.ch = {
+				.pduType = spec::tcp::PduType::H2CData,
+				.flags = static_cast<uint8_t>(done + chunk == length ? spec::tcp::pduFlagDataLast : 0),
+				.headerLength = sizeof(spec::tcp::H2CData),
+				.pduDataOffset = sizeof(spec::tcp::H2CData),
+				.pduLength = static_cast<uint32_t>(sizeof(spec::tcp::H2CData) + chunk),
+			},
+			.commandCapsuleId = slot,
+			.transferTag = transferTag,
+			.dataOffset = offset + done,
+			.dataLength = chunk,
+		};
+		pdu.resize(sizeof(header) + chunk);
+		memcpy(pdu.data(), &header, sizeof(header));
+		memcpy(pdu.data() + sizeof(header), data + offset + done, chunk);
+
+		co_await sendMutex.async_lock();
+		frg::unique_lock lock{frg::adopt_lock, sendMutex};
+
+		size_t sent = 0;
+		while(sent < pdu.size()) {
+			auto send_err = co_await file_->sendto(pdu.data() + sent, pdu.size() - sent, 0, nullptr, 0);
+			if(!send_err) {
+				std::cout << "block/nvme: error on send for queue " << qid_ << std::endl;
+				co_return;
+			}
+			sent += send_err.value();
+		}
+
+		done += chunk;
 	}
 }
 
@@ -282,6 +353,8 @@ async::detached Tcp::run(mbus_ng::EntityId subsystem) {
 	uuid[8] = (uuid[8] & 0x3F) | 0x80;
 
 	auto adminq = std::make_unique<TcpQueue>(this, 0xFFFF, 0, 32, serverAddr_, serverPort_, netserverLane_, std::span<uint8_t, 16>{uuid});
+	// The admin queue's command capsules are 8 KiB in NVMe/TCP.
+	adminq->setInCapsuleDataSize(8192 - sizeof(spec::Command));
 	adminq->run();
 	co_await adminq->init();
 	auto cid = adminq->controllerId();
@@ -325,8 +398,18 @@ async::detached Tcp::run(mbus_ng::EntityId subsystem) {
 	co_await cmd->setupBuffer(this, arch::dma_buffer_view{}, preferredDataTransfer_);
 	co_await activeQueues_.front()->submitCommand(std::move(cmd));
 
+	// IOCCSZ bounds the in-capsule data on I/O queues.
+	arch::dma_object<spec::IdentifyController> idCtrl{&pool_};
+	if(!(co_await identifyController({idCtrl})).first.successful()) {
+		std::cout << "block/nvme: failed to identify the controller" << std::endl;
+		co_return;
+	}
+	size_t ioCapsuleSize = idCtrl->ioccsz * 16;
+
 	// // setup I/O queue
 	auto ioq = std::make_unique<TcpQueue>(this, cid, 1, 128, serverAddr_, serverPort_, netserverLane_, std::span<uint8_t, 16>{uuid});
+	if(!idCtrl->icdoff && ioCapsuleSize > sizeof(spec::Command))
+		ioq->setInCapsuleDataSize(ioCapsuleSize - sizeof(spec::Command));
 	ioq->run();
 	co_await ioq->init();
 	activeQueues_.push_back(std::move(ioq));
