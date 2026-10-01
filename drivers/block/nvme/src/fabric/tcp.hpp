@@ -54,6 +54,11 @@ private:
 	std::vector<std::byte> buf_{8256};
 	uint32_t maxH2CData_ = 0;
 	size_t inCapsuleDataSize_ = 0;
+	// DEBUG(sshd)
+	uint64_t debugCompletions_ = 0;
+	uint64_t debugCapsules_ = 0;
+	uint64_t debugR2Ts_ = 0;
+	uint64_t debugH2Cs_ = 0;
 
 	async::oneshot_event connectedEvent_;
 

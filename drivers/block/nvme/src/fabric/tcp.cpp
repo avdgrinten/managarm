@@ -137,6 +137,25 @@ async::detached TcpQueue::run() {
 	if(qid_ == 0)
 		keepAlive();
 
+	// DEBUG(sshd): report commands that make no progress.
+	[] (TcpQueue *self) -> async::detached {
+		uint64_t lastCompletions = 0;
+		while(true) {
+			co_await helix::sleepFor(10'000'000'000);
+			if(self->commandsInFlight_ && self->debugCompletions_ == lastCompletions) {
+				std::string cmds;
+				for(size_t i = 0; i < self->queuedCmds_.size(); i++) {
+					if(self->queuedCmds_[i])
+						cmds += std::format(" {}:{:#x}", i, self->queuedCmds_[i]->getCommandBuffer().common.opcode);
+				}
+				std::cout << std::format("block/nvme: DEBUG queue {} stalled, {} in flight, {} capsules, {} R2Ts, {} H2Cs, {} completions:{}",
+						self->qid_, self->commandsInFlight_, self->debugCapsules_, self->debugR2Ts_,
+						self->debugH2Cs_, self->debugCompletions_, cmds.substr(0, 80)) << std::endl;
+			}
+			lastCompletions = self->debugCompletions_;
+		}
+	}(this);
+
 	auto recvbuf = std::vector<std::byte>(65536);
 
 	while(true) {
@@ -171,6 +190,14 @@ async::detached TcpQueue::run() {
 			case spec::tcp::PduType::CapsuleResp: {
 				auto capsuleResp = reinterpret_cast<spec::tcp::CapsuleResp *>(recvbuf.data());
 				auto slot = capsuleResp->responseCqe.commandId;
+				// DEBUG(sshd)
+				debugCompletions_++;
+				if(!spec::CompletionStatus{capsuleResp->responseCqe.status}.successful())
+					std::cout << std::format("block/nvme: DEBUG queue {} cid {} failed with status {:#x}",
+							qid_, slot, spec::CompletionStatus{capsuleResp->responseCqe.status}.status) << std::endl;
+				if(slot >= queuedCmds_.size() || !queuedCmds_[slot])
+					std::cout << std::format("block/nvme: DEBUG queue {} response for unknown cid {}",
+							qid_, slot) << std::endl;
 				if(slot < queuedCmds_.size() && queuedCmds_[slot]) {
 					auto cmd = std::move(queuedCmds_[slot]);
 					cmd->complete(spec::CompletionStatus{capsuleResp->responseCqe.status}, capsuleResp->responseCqe.result);
@@ -182,6 +209,7 @@ async::detached TcpQueue::run() {
 			case spec::tcp::PduType::R2T: {
 				auto r2t = reinterpret_cast<spec::tcp::R2T *>(recvbuf.data());
 				auto slot = r2t->commandCapsuleId;
+				debugR2Ts_++; // DEBUG(sshd)
 				if(slot >= queuedCmds_.size() || !queuedCmds_[slot]) {
 					std::cout << std::format("block/nvme: R2T for unknown command {}", slot) << std::endl;
 					co_return;
@@ -283,6 +311,7 @@ async::result<void> TcpQueue::submitCommandToDevice(std::unique_ptr<Command> cmd
 		}
 		sent += send_err.value();
 	}
+	debugCapsules_++; // DEBUG(sshd)
 }
 
 async::detached TcpQueue::sendH2CData(uint16_t slot, uint16_t transferTag, uint32_t offset, uint32_t length) {
@@ -325,6 +354,7 @@ async::detached TcpQueue::sendH2CData(uint16_t slot, uint16_t transferTag, uint3
 			sent += send_err.value();
 		}
 
+		debugH2Cs_++; // DEBUG(sshd)
 		done += chunk;
 	}
 }
