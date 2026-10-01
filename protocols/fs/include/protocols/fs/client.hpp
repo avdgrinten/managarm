@@ -53,6 +53,8 @@ struct File {
 
 private:
 	helix::UniqueDescriptor _lane;
+	// Sockets are served on a control and a passthrough lane; closing the former closes the socket.
+	helix::UniqueDescriptor ctrlLane_;
 	HelHandle credsToken_;
 	uint64_t cancellationId_ = 1;
 };

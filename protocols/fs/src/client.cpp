@@ -335,18 +335,18 @@ async::result<frg::expected<Error, File>> File::createSocket(helix::BorrowedLane
 	req.set_protocol(proto);
 	req.set_flags(flags);
 
-	auto [offer, send_req, recv_resp, recv_lane] = co_await helix_ng::exchangeMsgs(
+	auto [offer, send_req, recv_resp, pull_ctrl, pull_pt] = co_await helix_ng::exchangeMsgs(
 		lane,
 		helix_ng::offer(
 			helix_ng::sendBragiHeadOnly(req, frg::stl_allocator{}),
 			helix_ng::recvInline(),
+			helix_ng::pullDescriptor(kHelRightInvoke | kHelRightManage),
 			helix_ng::pullDescriptor(kHelRightInvoke | kHelRightManage)
 		)
 	);
 	HEL_CHECK(offer.error());
 	HEL_CHECK(send_req.error());
 	HEL_CHECK(recv_resp.error());
-	HEL_CHECK(recv_lane.error());
 
 	managarm::fs::SvrResponse resp;
 	resp.ParseFromArray(recv_resp.data(), recv_resp.length());
@@ -354,7 +354,12 @@ async::result<frg::expected<Error, File>> File::createSocket(helix::BorrowedLane
 	if(resp.error() != managarm::fs::Errors::SUCCESS)
 		co_return static_cast<Error>(resp.error());
 
-	co_return File{recv_lane.descriptor()};
+	HEL_CHECK(pull_ctrl.error());
+	HEL_CHECK(pull_pt.error());
+
+	File file{pull_pt.descriptor()};
+	file.ctrlLane_ = pull_ctrl.descriptor();
+	co_return std::move(file);
 }
 
 async::result<Error> File::connect(const struct sockaddr *addr_ptr, socklen_t addr_length) {
