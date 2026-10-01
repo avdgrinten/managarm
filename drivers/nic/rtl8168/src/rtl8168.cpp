@@ -655,13 +655,23 @@ async::detached RealtekNic::processIrqs() {
 			if(logIRQs) {
 				std::cout << "drivers/rtl8168: RX_OK" << std::endl;
 			}
-			_rxQueue->handleRxOk();
 		}
 
 		// Did the NIC encounter an error doing receive?
 		if(status & flags::interrupt_status::rx_err) {
 			std::cout << "drivers/rtl8168: got RX_ERR interrupt!" << std::endl;
 		}
+
+		// Did the NIC run out of RX descriptors?
+		if((status & flags::interrupt_status::rx_overflow) && !_loggedRxOverflow) {
+			std::cout << "drivers/rtl8168: ran out of RX descriptors" << std::endl;
+			_loggedRxOverflow = true;
+		}
+
+		if((status & flags::interrupt_status::rx_ok) || (status & flags::interrupt_status::rx_err)
+				|| (status & flags::interrupt_status::rx_overflow)
+				|| (status & flags::interrupt_status::rx_fifo_overflow))
+			_rxQueue->handleRxOk();
 
 		// Did we get a timer interrupt?
 		if(status & flags::interrupt_status::pcs_timeout) {

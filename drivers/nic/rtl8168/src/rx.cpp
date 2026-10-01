@@ -131,6 +131,9 @@ async::result<void> RxQueue::postDescriptor(arch::dma_buffer_view frame, Realtek
 
 	++_next_index;
 
+	// The frame may have arrived before the request; its RX_OK IRQ found no request to complete.
+	handleRxOk();
+
 	co_return;
 }
 
