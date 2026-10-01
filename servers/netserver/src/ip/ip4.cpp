@@ -520,6 +520,7 @@ void Ip4::feedPacket(nic::MacAddress, nic::MacAddress,
 
 	auto begin = sockets.lower_bound(proto);
 	if (begin == sockets.end()
+			&& proto != static_cast<uint16_t>(IpProto::icmp)
 			&& proto != static_cast<uint16_t>(IpProto::udp)
 			&& proto != static_cast<uint16_t>(IpProto::tcp)) {
 		return;
