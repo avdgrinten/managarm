@@ -76,6 +76,11 @@ pub trait PciDevice {
     fn get_dma_space(&self) -> hel::Result<(bool, Handle)> {
         Ok((false, hel::create_dma_space(None, &[])?))
     }
+    /// Whether DMA by the device snoops the CPU caches. Unless the server knows, drivers have
+    /// to assume that it does not.
+    fn dma_coherent(&self) -> bool {
+        false
+    }
     fn claim_device(&self) {}
 }
 
@@ -332,6 +337,7 @@ async fn handle_one<D: PciDevice>(lane: &Handle, request: &[u8], device: &D) -> 
             let (iommu_active, space) = device.get_dma_space()?;
             let mut resp = bindings::GetDmaSpaceResponse::default();
             resp.set_iommu_active(iommu_active as i8);
+            resp.set_dma_coherent(device.dma_coherent() as i8);
             let head = bragi::head_to_bytes(&resp).expect("failed to encode hw response");
             let (head, push) = submit_async(
                 lane,
