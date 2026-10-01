@@ -214,6 +214,10 @@ async::result<protocols::svrctl::Error> doBindPci(mbus_ng::Entity baseEntity) {
 		co_return protocols::svrctl::Error::deviceNotSupported;
 	}
 
+	// The driver declined the device.
+	if(!device)
+		co_return protocols::svrctl::Error::deviceNotSupported;
+
 	baseDeviceMap.insert({baseEntity.id(), device});
 	nic::runDevice(device);
 
