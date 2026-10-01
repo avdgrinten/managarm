@@ -82,13 +82,9 @@ async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, Realt
 
 	memcpy(_descriptor_buffers[tx_index()].data(), payload.data(), payload.size());
 
-	// Force strict ordering of the ownership flag, in the event that we are already transmitting
-	desc->flags |= flags::tx::first_segment(true);
-	desc->flags |= flags::tx::last_segment(true);
-	desc->flags |= flags::tx::frame_length(actual_size);
-	__sync_synchronize();
-	desc->flags |= flags::tx::ownership(flags::tx::owner_nic);
-	__sync_synchronize();
+	storeFlags(*desc, flags::tx::eor(loadFlags(*desc) & flags::tx::eor) |
+		flags::tx::first_segment(true) | flags::tx::last_segment(true) |
+		flags::tx::frame_length(actual_size) | flags::tx::ownership(flags::tx::owner_nic));
 	--_amount_free_descriptors;
 
 	// TOOD: Technically, we should not be ringing the doorbell after every transmision, but only if there
@@ -117,11 +113,12 @@ async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, Realt
 void TxQueue::handleTxOk() {
 	while(hw_tx_index != tx_index) {
 		auto i = hw_tx_index();
-		if((_descriptors[i].flags & flags::tx::ownership) == flags::tx::owner_nic) // Descriptor was not transmitted?
+		auto descFlags = loadFlags(_descriptors[i]);
+		if((descFlags & flags::tx::ownership) == flags::tx::owner_nic) // Descriptor was not transmitted?
 			break;
 
 		// Remove all info except EOR
-		_descriptors[i].flags = flags::tx::eor(_descriptors[i].flags & flags::tx::eor);
+		storeFlags(_descriptors[i], flags::tx::eor(descFlags & flags::tx::eor));
 		_descriptors[i].vlan = 0;
 
 		if(_requests.empty())

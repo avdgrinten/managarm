@@ -3,6 +3,7 @@
 #include <async/result.hpp>
 #include <async/oneshot-event.hpp>
 #include <arch/dma_structs.hpp>
+#include <arch/mem_space.hpp>
 #include <arch/variable.hpp>
 #include <core/queue.hpp>
 #include <stddef.h>
@@ -16,6 +17,16 @@ struct Descriptor {
 };
 
 static_assert(sizeof(Descriptor) == 16);
+
+// The flags word carries the ownership bit. Accessing it through io_mem_space orders it against
+// the other descriptor fields and the buffer as observed by the NIC.
+inline arch::bit_value<uint32_t> loadFlags(Descriptor &desc) {
+	return arch::io_mem_space{&desc}.load(arch::bit_register<uint32_t>{0});
+}
+
+inline void storeFlags(Descriptor &desc, arch::bit_value<uint32_t> flags) {
+	arch::io_mem_space{&desc}.store(arch::bit_register<uint32_t>{0}, flags);
+}
 
 struct Request {
 	Request(size_t size) : index(0, size) { };
