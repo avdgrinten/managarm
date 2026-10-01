@@ -52,7 +52,9 @@ TxQueue::TxQueue(
   _descriptors{std::move(descriptors)},
   _amount_free_descriptors{_descriptors.size()},
   tx_index{0, _descriptors.size()},
-  hw_tx_index{0, _descriptors.size()} {}
+  hw_tx_index{0, _descriptors.size()} {
+	_freeDescriptors.release(_descriptors.size());
+}
 
 async::result<void> TxQueue::submitDescriptor(arch::dma_buffer_view payload, RealtekNic &nic) {
 	auto ev_req = std::make_shared<Request>(_descriptors.size());
@@ -62,8 +64,8 @@ async::result<void> TxQueue::submitDescriptor(arch::dma_buffer_view payload, Rea
 }
 
 // TODO: support large packets
-// TODO: this function should be able to fail; there may not be enough space in the ring buffer, which should be handled gracefully
 async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, RealtekNic &nic, std::shared_ptr<Request> req) {
+	co_await _freeDescriptors.async_acquire();
 	assert(_amount_free_descriptors);
 
 	_requests.push(req);
@@ -129,6 +131,7 @@ void TxQueue::handleTxOk() {
 		_requests.pop();
 		++hw_tx_index;
 		++_amount_free_descriptors;
+		_freeDescriptors.release();
 	}
 	if(logIRQs) {
 		std::cout << "drivers/rtl8168: completed handling of TX_OK"
