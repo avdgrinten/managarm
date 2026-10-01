@@ -361,7 +361,7 @@ async::result<bool> RealtekNic::startCard() {
 
 	if(_revision <= MacRevision::MacVer06) {
 		assert(!"Not Implemented"); // rtl_hw_start_8169
-	} else if(_model == PciModel::RTL8125) {
+	} else if(is8125Family()) {
 		arch::bit_mask<uint8_t> int_cfg0_mask{0xFF};
 		if (_revision == MacVer80)
 			int_cfg0_mask = arch::bit_mask<uint8_t>{0xBF};
@@ -519,7 +519,7 @@ async::result<void> RealtekNic::init() {
 	}
 
 	// Enable IRQs
-	if(_model == PciModel::RTL8125) {
+	if(is8125Family()) {
 		_mmio.store(regs::rtl8125::interrupt_status_val, ~0);
 		_mmio.store(regs::rtl8125::interrupt_mask_val, ~0);
 	} else {
@@ -570,7 +570,7 @@ async::detached RealtekNic::processIrqs() {
 		sequence = await.sequence();
 
 		arch::bit_value<uint32_t> status{0};
-		if(_model == PciModel::RTL8125) {
+		if(is8125Family()) {
 			status = _mmio.load(regs::rtl8125::interrupt_status);
 		} else {
 			status = arch::bit_value<uint32_t>{uint16_t(_mmio.load(regs::interrupt_status))};
@@ -584,7 +584,7 @@ async::detached RealtekNic::processIrqs() {
 			continue;
 		}
 
-		if(_model == PciModel::RTL8125) {
+		if(is8125Family()) {
 			_mmio.store(regs::rtl8125::interrupt_status, arch::bit_value<uint32_t>(status));
 		} else {
 			_mmio.store(regs::interrupt_status, arch::bit_value<uint16_t>(uint32_t(status)));

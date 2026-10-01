@@ -17,7 +17,7 @@ void RealtekNic::lockConfigRegisters() {
 }
 
 void RealtekNic::maskIRQsAndAck() {
-	if(_model == PciModel::RTL8125) {
+	if(is8125Family()) {
 		_mmio.store(regs::rtl8125::interrupt_mask_val, 0);
 		_mmio.store(regs::rtl8125::interrupt_status_val, ~0);
 	} else {
@@ -148,7 +148,7 @@ async::result<void> RealtekNic::enableExitL1() {
 }
 
 void RealtekNic::ringDoorbell() {
-	if(_model == PciModel::RTL8125) {
+	if(is8125Family()) {
 		_mmio.store(regs::rtl8125::tx_start, flags::rtl8125::tx_start::start(true));
 	} else {
 		_mmio.store(regs::tppoll, flags::tppoll::poll_normal_prio(true));
@@ -162,7 +162,7 @@ void RealtekNic::printRegisters() {
 	frg::to(std::cout) << frg::fmt("\t config2: 0x{:02x}", uint8_t(_mmio.load(regs::config2))) << frg::endlog;
 	frg::to(std::cout) << frg::fmt("\t config3: 0x{:02x}", uint8_t(_mmio.load(regs::config3))) << frg::endlog;
 	frg::to(std::cout) << frg::fmt("\t config5: 0x{:02x}", uint8_t(_mmio.load(regs::config5))) << frg::endlog;
-	if(_model == PciModel::RTL8125) {
+	if(is8125Family()) {
 		frg::to(std::cout) << frg::fmt("\t interrupt_mask: 0x{:08x}", uint32_t(_mmio.load(regs::rtl8125::interrupt_mask))) << frg::endlog;
 		frg::to(std::cout) << frg::fmt("\t interrupt_status: 0x{:08x}", uint32_t(_mmio.load(regs::rtl8125::interrupt_status))) << frg::endlog;
 	} else {

@@ -107,6 +107,11 @@ private:
 	void determineMacRevision();
 	void determineDashType();
 
+	// The RTL8125, RTL8126 and RTL8127 share their register layout; Linux' rtl_is_8125().
+	bool is8125Family() const {
+		return _revision >= MacRevision::MacVer61;
+	}
+
 	// The core configuration registers have a hardware lock
 	void unlockConfigRegisters();
 	void lockConfigRegisters();
