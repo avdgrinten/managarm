@@ -821,6 +821,8 @@ coroutine<frg::expected<Error>> PciEntity::handleRequest(smarter::shared_ptr<Str
 
 		managarm::hw::GetDmaSpaceResponse<KernelAlloc> resp{*kernelAlloc};
 		resp.set_iommu_active(static_cast<bool>(dmaSpace));
+		// thor does not evaluate _CCA or dma-coherent; PCI drivers have always assumed coherency.
+		resp.set_dma_coherent(true);
 
 		FRG_CO_TRY(co_await sendResponseHead(conversation, std::move(resp)));
 		auto descError = co_await pushDescriptor(conversation, std::move(descriptor));
