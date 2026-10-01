@@ -473,13 +473,30 @@ async::result<protocols::svrctl::Error> bindDevice(int64_t base_id) {
 	frg::string_view station = "";
 	frg::string_view subnet = "";
 	frg::string_view gateway = "";
+	frg::string_view mac = "";
 
 	frg::array args = {
 		frg::option{"netserver.ip", frg::as_string_view(station)},
 		frg::option{"netserver.subnet", frg::as_string_view(subnet)},
 		frg::option{"netserver.gateway", frg::as_string_view(gateway)},
+		frg::option{"netserver.mac", frg::as_string_view(mac)},
 	};
 	frg::parse_arguments(cmdline.c_str(), args);
+
+	// With netserver.mac, only the NIC with that address gets the static configuration.
+	if(mac.size()) {
+		std::array<uint8_t, 6> bytes;
+		std::string macStr{mac.data(), mac.size()};
+		if(sscanf(macStr.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+				&bytes[0], &bytes[1], &bytes[2], &bytes[3], &bytes[4], &bytes[5]) != 6) {
+			std::cout << "netserver: invalid netserver.mac " << macStr << std::endl;
+			station = "";
+			gateway = "";
+		} else if(nic::MacAddress{bytes} != device->deviceMac()) {
+			station = "";
+			gateway = "";
+		}
+	}
 
 	auto convert_ip = [](frg::string_view &str, in_addr *addr) -> bool {
 		std::string strbuf{str.data(), str.size()};
