@@ -1,4 +1,5 @@
 
+#include <algorithm>
 #include <assert.h>
 #include <core/cmdline.hpp>
 #include <core/device-path.hpp>
@@ -126,6 +127,26 @@ private:
 	int nlFd_{-1};
 	std::unordered_set<std::string> knownDevices_;
 };
+
+// NICs that netserver binds to in the first stage, such that we can netboot through them.
+constexpr std::pair<std::string_view, std::string_view> earlyNics[] = {
+	{"0x10ec", "0x8126"}, // RTL8126
+};
+
+std::string readAttribute(const std::string &device, const char *name) {
+	std::ifstream ifs{device + "/" + name};
+	std::string value;
+	std::getline(ifs, value);
+	return value;
+}
+
+bool isEarlyNic(const std::string &device) {
+	auto vendor = readAttribute(device, "vendor");
+	auto deviceId = readAttribute(device, "device");
+	return std::ranges::any_of(earlyNics, [&] (const auto &nic) {
+		return vendor == nic.first && deviceId == nic.second;
+	});
+}
 
 std::optional<std::string> checkRootDevice(std::string device) {
 	if(logDiscovery)
@@ -290,6 +311,14 @@ int main() {
 				setenv("MBUS_ID", uevent->at("MBUS_ID").c_str(), 1);
 				execl("/usr/bin/runsvr", "/usr/bin/runsvr", "--fork", "bind", "/usr/lib/managarm/server/block-nvme.bin", nullptr);
 			}else assert(nvme_server != -1);
+		}
+
+		if(subsystemIt != uevent->end() && subsystemIt->second == "pci" && isEarlyNic("/sys" + devpath)) {
+			auto netserver = fork();
+			if(!netserver) {
+				setenv("MBUS_ID", uevent->at("MBUS_ID").c_str(), 1);
+				execl("/usr/bin/runsvr", "/usr/bin/runsvr", "--fork", "bind", "/usr/lib/managarm/server/netserver.bin", nullptr);
+			}else assert(netserver != -1);
 		}
 
 		if (!rootPath && subsystemIt != uevent->end() && subsystemIt->second == "block")
