@@ -399,6 +399,9 @@ struct Tcp4Socket {
 	static async::result<protocols::fs::Error> listen(void *object) {
 		auto self = static_cast<Tcp4Socket *>(object);
 		self->listening_ = true;
+		// DEBUG(sshd)
+		std::cout << std::format("netserver: DEBUG(sshd) listen {} on {:#x}:{}", (void *)self,
+				self->localEp_.ipAddress, self->localEp_.port) << std::endl;
 
 		co_return protocols::fs::Error::none;
 	}
@@ -417,6 +420,9 @@ struct Tcp4Socket {
 
 		auto sock = self->pendingConnections_.front();
 		self->pendingConnections_.erase(self->pendingConnections_.begin());
+		// DEBUG(sshd)
+		std::cout << std::format("netserver: DEBUG(sshd) accept on {} -> {}", (void *)self,
+				(void *)sock.get()) << std::endl;
 
 		auto [localCtrl, remoteCtrl] = helix::createStream();
 		auto [localPt, remotePt] = helix::createStream();
@@ -1009,6 +1015,9 @@ async::result<void> Tcp4Socket::handleIncomingConnection(PendingConnection c) {
 	pendingConnections_.push_back(std::move(sock));
 	listenSeq_ = ++currentSeq_;
 	pollEvent_.raise();
+	// DEBUG(sshd)
+	std::cout << std::format("netserver: DEBUG(sshd) queued on listener {} (pending {}, listenSeq {})",
+			(void *)this, pendingConnections_.size(), listenSeq_) << std::endl;
 
 	co_return;
 }
@@ -1031,6 +1040,9 @@ void Tcp4Socket::handleInPacket_(TcpPacket packet) {
 				}
 			}
 
+			// DEBUG(sshd)
+			std::cout << std::format("netserver: DEBUG(sshd) SYN on listener {} for {:#x}:{}",
+					(void *)this, localIp, this->localEp_.port) << std::endl;
 			async::detach(handleIncomingConnection({
 				.localIp = localIp,
 				.remoteIp = ip,
@@ -1236,12 +1248,18 @@ bool Tcp4::tryBind(smarter::shared_ptr<Tcp4Socket> socket, bool unique, TcpEndpo
 			}
 		}
 	}
+	// DEBUG(sshd)
+	std::cout << std::format("netserver: DEBUG(sshd) bind {} to {:#x}:{} (unique {}, {} already)",
+			(void *)socket.get(), wantedEp.ipAddress, wantedEp.port, unique, binds.count(wantedEp)) << std::endl;
 	socket->localEp_ = wantedEp;
 	binds.emplace(wantedEp, std::move(socket));
 	return true;
 }
 
 bool Tcp4::unbind(TcpEndpoint e) {
+	// DEBUG(sshd)
+	std::cout << std::format("netserver: DEBUG(sshd) unbind {:#x}:{} ({} entries)", e.ipAddress, e.port,
+			binds.count(e)) << std::endl;
 	return binds.erase(e) != 0;
 }
 
