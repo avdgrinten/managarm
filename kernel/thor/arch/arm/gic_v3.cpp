@@ -70,12 +70,17 @@ namespace dist_router {
 }
 
 namespace redist_reg {
+	static constexpr arch::bit_register<uint32_t> control{0x0};
 	static constexpr arch::bit_register<uint64_t> type{0x8};
 	static constexpr arch::bit_register<uint32_t> waker{0x14};
 	static constexpr arch::bit_register<uint32_t> pidr2{dist_reg::pidr2};
 }
 
 namespace redist_pidr2 = dist_pidr2;
+
+namespace redist_control {
+	static constexpr arch::field<uint32_t, bool> rwp{3, 1};
+}
 
 namespace redist_waker {
 	static constexpr arch::field<uint32_t, bool> processorSleep{1, 1};
@@ -218,8 +223,19 @@ void GicPinV3::mask() {
 	auto bit = irq_ % 32;
 	auto offset = irq_ / 32 * 4;
 
-	auto space = irq_ < 32 ? getRedistForThisCpu().space_.subspace(0x10000) : dist->space_;
-	arch::scalar_store_relaxed(space, dist_reg::irqClearEnableBase + offset, 1U << bit);
+	// The disable only takes effect once RWP clears (Linux: gic_poke_irq()); until then, a
+	// still-asserted level-triggered IRQ is delivered again after the EOI that follows.
+	if(irq_ < 32) {
+		auto &redist = getRedistForThisCpu();
+		auto sgiSpace = redist.space_.subspace(0x10000);
+		arch::scalar_store_relaxed(sgiSpace, dist_reg::irqClearEnableBase + offset, 1U << bit);
+		while(redist.space_.load_relaxed(redist_reg::control) & redist_control::rwp)
+			;
+	} else {
+		arch::scalar_store_relaxed(dist->space_, dist_reg::irqClearEnableBase + offset, 1U << bit);
+		while(dist->space_.load_relaxed(dist_reg::control) & dist_control::rwp)
+			;
+	}
 }
 
 void GicPinV3::unmask() {
