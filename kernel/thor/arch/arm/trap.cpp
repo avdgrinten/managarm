@@ -123,6 +123,10 @@ extern "C" void onPlatformSyncFault(FaultImageAccessor image) {
 	switch (ec) {
 		case 0x00: // Invalid
 		case 0x18: // Trapped MSR, MRS, or System instruction
+		// We do not enable SVE or SME, so their instructions are undefined (as on Linux without
+		// SVE/SME support); feature probes, e.g. OpenSSL's, rely on getting SIGILL here.
+		case 0x19: // Trapped SVE access
+		case 0x1D: // Trapped SME access
 			iplEnterContext(ipl::exceptional, *image.iplState());
 			enableInts();
 
