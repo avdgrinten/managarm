@@ -700,10 +700,19 @@ private:
 
 	async::result<void> handleIncomingConnection(PendingConnection c);
 
+	// All segments of a connection must carry the same source address, even if the route's
+	// preferred source changes (e.g., when DHCP adds a second address to the link).
+	void pinSource_(Ip4TargetInfo &targetInfo) {
+		if(!sourceIp_)
+			sourceIp_ = localEp_.ipAddress != INADDR_ANY ? localEp_.ipAddress : targetInfo.source;
+		targetInfo.source = sourceIp_;
+	}
+
 	Tcp4 *parent_;
 	bool nonBlock_;
 	TcpEndpoint remoteEp_;
 	TcpEndpoint localEp_;
+	uint32_t sourceIp_ = 0;
 	smarter::weak_ptr<Tcp4Socket> holder_;
 	std::vector<smarter::shared_ptr<Tcp4Socket>> pendingConnections_;
 
@@ -769,6 +778,7 @@ async::result<void> Tcp4Socket::flushOutPackets_() {
 				std::cout << "netserver: Destination unreachable" << std::endl;
 				co_return;
 			}
+			pinSource_(*targetInfo);
 
 			std::vector<char> buf;
 			buf.resize(sizeof(TcpHeader));
@@ -826,6 +836,7 @@ async::result<void> Tcp4Socket::flushOutPackets_() {
 				std::cout << "netserver: Destination unreachable" << std::endl;
 				co_return;
 			}
+			pinSource_(*targetInfo);
 
 			std::vector<char> buf;
 			buf.resize(sizeof(TcpHeader));
@@ -877,6 +888,7 @@ async::result<void> Tcp4Socket::flushOutPackets_() {
 				std::cout << "netserver: Destination unreachable" << std::endl;
 				co_return;
 			}
+			pinSource_(*targetInfo);
 
 			size_t flushPointer = localFlushedSn_ - localSettledSn_;
 			size_t windowPointer = localWindowSn_ - localSettledSn_;
