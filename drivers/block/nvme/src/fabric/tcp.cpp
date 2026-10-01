@@ -115,7 +115,9 @@ async::detached TcpQueue::keepAlive() {
 	assert(keepAliveTimeout_ < 10 * 60 * 1000);
 
 	while(true) {
-		co_await helix::sleepFor((keepAliveTimeout_ - 1000) * 1'000'000);
+		// Like Linux, send at half the timeout; the next sleep only starts once the previous
+		// keep-alive has completed, so a fixed margin is eaten up by any delay.
+		co_await helix::sleepFor(keepAliveTimeout_ / 2 * 1'000'000);
 
 		auto cmd = std::make_unique<Command>();
 		auto &packet = cmd->getCommandBuffer().common;
