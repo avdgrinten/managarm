@@ -77,6 +77,7 @@ std::unordered_set<std::string_view> virtio_device_ids = {
 
 std::unordered_set<std::string_view> rtl8168_device_ids = {
 	"8125", /* RTL8125 */
+	"8126", /* RTL8126 */
 	"8129", /* RTL8129 */
 	"8136", /* RTL8136 */
 	"8161", /* RTL8161 */

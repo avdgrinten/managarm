@@ -8,6 +8,7 @@ ATTR{vendor}=="0x1af4", ATTR{device}=="0x1041", RUN+="/usr/bin/runsvr --fork bin
 ## RTL 8168 Driver.
 # Realtek Vendor cards
 ATTR{vendor}=="0x10ec", ATTR{device}=="0x8125", RUN+="/usr/bin/runsvr --fork bind /usr/lib/managarm/server/netserver.bin", GOTO="managarm_nic_end"
+ATTR{vendor}=="0x10ec", ATTR{device}=="0x8126", RUN+="/usr/bin/runsvr --fork bind /usr/lib/managarm/server/netserver.bin", GOTO="managarm_nic_end"
 ATTR{vendor}=="0x10ec", ATTR{device}=="0x8129", RUN+="/usr/bin/runsvr --fork bind /usr/lib/managarm/server/netserver.bin", GOTO="managarm_nic_end"
 ATTR{vendor}=="0x10ec", ATTR{device}=="0x8136", RUN+="/usr/bin/runsvr --fork bind /usr/lib/managarm/server/netserver.bin", GOTO="managarm_nic_end"
 ATTR{vendor}=="0x10ec", ATTR{device}=="0x8161", RUN+="/usr/bin/runsvr --fork bind /usr/lib/managarm/server/netserver.bin", GOTO="managarm_nic_end"
