@@ -88,6 +88,10 @@ namespace config2 {
 	constexpr arch::field<uint8_t, bool> clk_rq_enable{7, 1};
 }
 
+namespace int_cfg0_8125 {
+	constexpr arch::field<uint8_t, bool> clk_rq_enable{3, 1};
+}
+
 namespace config3 {
 	constexpr arch::field<uint8_t, bool> enable_beacon{0, 1};
 	constexpr arch::field<uint8_t, bool> enable_l2l3{1, 1};

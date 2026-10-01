@@ -19,6 +19,7 @@ struct TxQueue8168;
 enum class PciModel : uint16_t {
 	RTL8136 = 0x8136,
 	RTL8125 = 0x8125,
+	RTL8126 = 0x8126,
 	RTL8161 = 0x8161,
 	RTL8162 = 0x8162,
 	RTL8167 = 0x8167,

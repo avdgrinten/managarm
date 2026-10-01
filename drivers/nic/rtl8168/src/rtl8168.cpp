@@ -112,6 +112,7 @@ void RealtekNic::determineMacRevision() {
 		{ 0x7cf, 0x6c9,	MacRevision::MacVer80 },
 
 		// 8126A family.
+		{ 0x7cf, 0x64a,	MacRevision::MacVer70 },
 		{ 0x7cf, 0x649,	MacRevision::MacVer70 },
 
 		// 8125B family.
@@ -444,6 +445,10 @@ async::result<void> RealtekNic::init() {
 		}
 		case uint16_t(PciModel::RTL8125): {
 			_model = PciModel::RTL8125;
+			break;
+		}
+		case uint16_t(PciModel::RTL8126): {
+			_model = PciModel::RTL8126;
 			break;
 		}
 		case uint16_t(PciModel::RTL8161): {

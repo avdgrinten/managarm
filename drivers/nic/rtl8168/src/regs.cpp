@@ -47,7 +47,11 @@ void RealtekNic::setHardwareASPMClockEnable(bool val) {
 
 	if(val) {
 		_mmio.store(regs::config5, _mmio.load(regs::config5) | flags::config5::aspm_enable(true));
-		_mmio.store(regs::config2, _mmio.load(regs::config2) | flags::config2::clk_rq_enable(true));
+		if(_revision == MacRevision::MacVer70) {
+			_mmio.store(regs::int_cfg0_8125, _mmio.load(regs::int_cfg0_8125) | flags::int_cfg0_8125::clk_rq_enable(true));
+		} else {
+			_mmio.store(regs::config2, _mmio.load(regs::config2) | flags::config2::clk_rq_enable(true));
+		}
 
 		switch(_revision) {
 			case MacRevision::MacVer46 ... MacRevision::MacVer48:
@@ -71,7 +75,11 @@ void RealtekNic::setHardwareASPMClockEnable(bool val) {
 			}
 		}
 
-		_mmio.store(regs::config2, _mmio.load(regs::config2) / flags::config2::clk_rq_enable(false));
+		if(_revision == MacRevision::MacVer70) {
+			_mmio.store(regs::int_cfg0_8125, _mmio.load(regs::int_cfg0_8125) / flags::int_cfg0_8125::clk_rq_enable(false));
+		} else {
+			_mmio.store(regs::config2, _mmio.load(regs::config2) / flags::config2::clk_rq_enable(false));
+		}
 		_mmio.store(regs::config5, _mmio.load(regs::config5) / flags::config5::aspm_enable(false));
 	}
 }
@@ -137,7 +145,7 @@ async::result<void> RealtekNic::enableExitL1() {
 			co_await writeERIRegister(0xD4, 0b1111, co_await readERIRegister(0xD4) | 0x0C00);
 			break;
 		}
-		case MacRevision::MacVer40 ... MacRevision::MacVer63: {
+		case MacRevision::MacVer40 ... MacRevision::MacVer70: {
 			modify8168MacOCPRegister(0xC0AC, 0, 0x1F80);
 			break;
 		}
