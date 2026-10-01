@@ -681,7 +681,13 @@ namespace nic::rtl8168 {
 async::result<std::shared_ptr<nic::Link>> makeShared(protocols::hw::Device device) {
 	co_await device.enableBusmaster();
 	co_await device.enableDma(false);
-	auto [iommuActive, dmaSpace, _] = co_await device.getDmaSpace();
+	auto [iommuActive, dmaSpace, dmaCoherent] = co_await device.getDmaSpace();
+
+	// The descriptor rings would need uncached memory, which dma_pool cannot provide yet.
+	if(!dmaCoherent) {
+		std::cout << "drivers/rtl8168: DMA is not cache-coherent, which is not supported" << std::endl;
+		co_return nullptr;
+	}
 
 	auto nic = std::make_shared<RealtekNic>(std::move(device), std::move(dmaSpace), iommuActive);
 	co_await nic->init();
