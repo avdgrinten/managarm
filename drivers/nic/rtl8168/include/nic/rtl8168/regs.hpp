@@ -49,6 +49,8 @@ namespace regs {
 	constexpr arch::bit_register<uint16_t> cp_cmd{0xE0};
 	constexpr arch::bit_register<uint16_t> interrupt_mitigate{0xE2};
 	constexpr arch::scalar_register<uint8_t> tx_max_size{0xEC};
+	constexpr arch::scalar_register<uint32_t> mac0_bkp_low{0x19E0};
+	constexpr arch::scalar_register<uint32_t> mac0_bkp_high{0x19E4};
 
 	// These registers are named like this!
 	// Yes, they clash, but they also do in the linux driver...

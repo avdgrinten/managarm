@@ -494,15 +494,34 @@ async::result<void> RealtekNic::init() {
 		assert(!"Not Implemented; requires legacy PCI IRQ support / IRQ setup");
 	}
 
-	auto mac_lower = _mmio.load(regs::idr0);
-	auto mac_higher = _mmio.load(regs::idr4);
+	auto readMac = [&] (arch::scalar_register<uint32_t> lowReg, arch::scalar_register<uint32_t> highReg) {
+		auto mac_lower = _mmio.load(lowReg);
+		auto mac_higher = _mmio.load(highReg);
 
-	mac_[0] = (mac_lower >> 0) & 0xFF;
-	mac_[1] = (mac_lower >> 8) & 0xFF;
-	mac_[2] = (mac_lower >> 16) & 0xFF;
-	mac_[3] = (mac_lower >> 24) & 0xFF;
-	mac_[4] = (mac_higher >> 0) & 0xFF;
-	mac_[5] = (mac_higher >> 8) & 0xFF;
+		mac_[0] = (mac_lower >> 0) & 0xFF;
+		mac_[1] = (mac_lower >> 8) & 0xFF;
+		mac_[2] = (mac_lower >> 16) & 0xFF;
+		mac_[3] = (mac_lower >> 24) & 0xFF;
+		mac_[4] = (mac_higher >> 0) & 0xFF;
+		mac_[5] = (mac_higher >> 8) & 0xFF;
+
+		// Reject all-zero and multicast addresses, like Linux' is_valid_ether_addr().
+		bool allZero = !(mac_lower | (mac_higher & 0xFFFF));
+		return !allZero && !(mac_[0] & 1);
+	};
+
+	// Like Linux, prefer the backup copy on the RTL8125 family and fall back to IDR0.
+	if(is8125Family() && readMac(regs::mac0_bkp_low, regs::mac0_bkp_high)) {
+		// IDR0 is what the RX filter matches against (Linux: rtl_rar_set()).
+		unlockConfigRegisters();
+		_mmio.store(regs::idr4, mac_[4] | (mac_[5] << 8));
+		forcePCICommit();
+		_mmio.store(regs::idr0, mac_[0] | (mac_[1] << 8) | (mac_[2] << 16) | (uint32_t(mac_[3]) << 24));
+		forcePCICommit();
+		lockConfigRegisters();
+	} else {
+		readMac(regs::idr0, regs::idr4);
+	}
 
 	std::cout << "drivers/rtl8168: MAC " << mac_ << std::endl;
 
