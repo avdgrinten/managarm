@@ -3,6 +3,7 @@
 #include <nic/rtl8168/common.hpp>
 #include <nic/rtl8168/rtl8168.hpp>
 #include <nic/rtl8168/regs.hpp>
+#include <nic/rtl8168/debug_options.hpp>
 #include <format>
 #include <frg/logging.hpp>
 #include <helix/timer.hpp>
@@ -41,14 +42,16 @@ void RealtekNic::updateLinkState() {
 async::result<void> RealtekNic::enableRXDVGate() {
 	_mmio.store(regs::misc, _mmio.load(regs::misc) | flags::misc::rxdv_gate(true));
 
-	std::cout << "drivers/rtl8168: enabled RXDV gate" << std::endl;
+	if(logDriverStart)
+		std::cout << "drivers/rtl8168: enabled RXDV gate" << std::endl;
 	co_await helix::sleepFor(2'000'000);
 	co_await waitTxRxFifoEmpty();
 }
 
 void RealtekNic::disableRXDVGate() {
 	_mmio.store(regs::misc, _mmio.load(regs::misc) / flags::misc::rxdv_gate(false));
-	std::cout << "drivers/rtl8168: disabled RXDV gate" << std::endl;
+	if(logDriverStart)
+		std::cout << "drivers/rtl8168: disabled RXDV gate" << std::endl;
 }
 
 void RealtekNic::setHardwareASPMClockEnable(bool val) {

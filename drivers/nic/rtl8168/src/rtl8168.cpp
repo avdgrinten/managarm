@@ -557,7 +557,8 @@ async::result<void> RealtekNic::init() {
 		std::cout << "drivers/rtl8168: entering interrupt loop" << std::endl;
 	}
 
-	printRegisters();
+	if(logDriverStart)
+		printRegisters();
 
 	processIrqs();
 }
