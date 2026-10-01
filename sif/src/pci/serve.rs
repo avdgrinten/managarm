@@ -312,6 +312,10 @@ impl managarm::hw::server::PciDevice for ServedEntity {
     fn get_dma_space(&self) -> hel::Result<(bool, hel::Handle)> {
         iommu::dma_space(self.entity())
     }
+
+    fn dma_coherent(&self) -> bool {
+        self.entity().parent_bus.dma_coherent
+    }
 }
 
 async fn serve_entity(manager: &'static EntityManager, served: ServedEntity) {

@@ -257,6 +257,9 @@ pub struct PciBus {
     pub seg_id: u16,
     pub bus_id: u8,
 
+    // Whether DMA by devices below this bus snoops the CPU caches.
+    pub dma_coherent: bool,
+
     pub mbus_id: AtomicI64,
 }
 
@@ -270,6 +273,7 @@ impl PciBus {
         io: &'static dyn PciConfigIo,
         seg_id: u16,
         bus_id: u8,
+        dma_coherent: bool,
     ) -> &'static PciBus {
         leak(PciBus {
             associated_bridge,
@@ -280,6 +284,7 @@ impl PciBus {
             resources: Mutex::new(Vec::new()),
             seg_id,
             bus_id,
+            dma_coherent,
             mbus_id: AtomicI64::new(0),
         })
     }
@@ -289,7 +294,13 @@ impl PciBus {
         bridge: &'static PciBridge,
         downstream_id: u8,
     ) -> &'static PciBus {
-        let new_bus = PciBus::new(Some(bridge), self.io, self.seg_id, downstream_id);
+        let new_bus = PciBus::new(
+            Some(bridge),
+            self.io,
+            self.seg_id,
+            downstream_id,
+            self.dma_coherent,
+        );
 
         let router = self
             .irq_router

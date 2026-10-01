@@ -31,6 +31,19 @@ fn eval_integer_or_zero(node: NamespaceNode, path: &CStr) -> u64 {
     }
 }
 
+/// Evaluates _CCA of a host bridge. ACPI only allows omitting it on x86, where DMA is always
+/// coherent.
+fn eval_cca(node: NamespaceNode) -> bool {
+    match node.eval_simple_integer(c"_CCA") {
+        Ok(Some(cca)) => cca != 0,
+        Ok(None) => cfg!(target_arch = "x86_64"),
+        Err(err) => {
+            println!("sif: Failed to evaluate _CCA: {err}");
+            false
+        }
+    }
+}
+
 fn find_root_buses() -> Vec<RootBus> {
     let mut roots: Vec<RootBus> = Vec::new();
 
@@ -270,7 +283,7 @@ pub fn discover_root_buses() {
             root.seg, root.bus
         );
 
-        let root_bus = PciBus::new(None, io, root.seg, root.bus);
+        let root_bus = PciBus::new(None, io, root.seg, root.bus, eval_cca(root.node));
         let router = AcpiPciIrqRouter::new(None, root_bus, Some(root.node));
         assert!(
             root_bus.irq_router.set(router).is_ok(),

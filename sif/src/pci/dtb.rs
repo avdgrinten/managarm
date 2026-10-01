@@ -135,6 +135,19 @@ impl PciIrqRouter for DtbPciIrqRouter {
     }
 }
 
+/// Follows Linux's of_dma_is_coherent(): dma-coherent applies to the node and everything below
+/// it, and RISC-V defaults to coherent DMA.
+fn is_dma_coherent(node: &'static DeviceTreeNode) -> bool {
+    let mut current = Some(node);
+    while let Some(n) = current {
+        if n.dt_node().find_property("dma-coherent").is_some() {
+            return true;
+        }
+        current = n.parent();
+    }
+    cfg!(target_arch = "riscv64")
+}
+
 fn init_pci_node(node: &'static DeviceTreeNode) {
     println!("sif: Initializing node \"{}\":", node.path());
 
@@ -156,7 +169,7 @@ fn init_pci_node(node: &'static DeviceTreeNode) {
         return;
     };
 
-    let root_bus = PciBus::new(None, io, 0, range.from as u8);
+    let root_bus = PciBus::new(None, io, 0, range.from as u8, is_dma_coherent(node));
     let router = DtbPciIrqRouter::new(None, root_bus, Some(node));
     assert!(
         root_bus.irq_router.set(router).is_ok(),
