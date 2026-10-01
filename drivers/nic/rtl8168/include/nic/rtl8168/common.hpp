@@ -140,6 +140,7 @@ private:
 
 	// Busy wait loops
 	async::result<bool> RTL8168gWaitLLShareFifoReady();
+	async::result<bool> RTL8125WaitMacOCPE00EClear();
 	async::result<bool> waitTxRxFifoEmpty();
 
 	async::result<bool> waitEPHYARReadReady();
@@ -204,6 +205,8 @@ private:
 	async::result<void> RTL8168gCommonConfiguration();
 	async::result<void> RTL8168fCommonConfiguration();
 	async::result<void> configureHardware();
+	async::result<void> RTL8125CommonConfiguration();
+	async::result<void> configure8125Hardware();
 
 	async::result<void> setFifoSize(uint16_t rx_static, uint16_t tx_static, uint16_t rx_dynamic, uint16_t tx_dynamic) {
 		co_await writeERIRegister(0xC8, 0b1111, (rx_static << 16) | rx_dynamic);

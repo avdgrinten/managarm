@@ -12,8 +12,7 @@ void RealtekNic::setTxConfigRegisters() {
 		flags::transmit_config::ifg(flags::transmit_config::ifg_normal);
 
 	if (_revision >= MacRevision::MacVer34 &&
-		_revision != MacRevision::MacVer39 &&
-		_revision <= MacRevision::MacVer53) {
+		_revision != MacRevision::MacVer39) {
 		val |= flags::transmit_config::auto_fifo(true);
 	}
 

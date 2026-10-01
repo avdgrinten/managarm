@@ -29,6 +29,14 @@ async::result<bool> RealtekNic::RTL8168gWaitLLShareFifoReady() {
 		loopTimes, loopDelay);
 }
 
+async::result<bool> RealtekNic::RTL8125WaitMacOCPE00EClear() {
+	const int loopTimes = 10;
+	const uint64_t loopDelay = 1'000'000;
+
+	co_return co_await busyWaitFor([this] () { return !(read8168MacOCPRegister(0xe00e) & (1 << 13)); },
+		loopTimes, loopDelay);
+}
+
 async::result<bool> RealtekNic::waitEPHYARReadReady() {
 	const int loopTimes = 100;
 	const uint64_t loopDelay = 1'000'00;

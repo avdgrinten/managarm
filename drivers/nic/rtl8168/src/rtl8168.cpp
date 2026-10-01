@@ -390,7 +390,7 @@ async::result<bool> RealtekNic::startCard() {
 				break;
 		}
 
-		disableRXDVGate();
+		co_await configure8125Hardware();
 	} else {
 		if (_revision >= MacRevision::MacVer34 &&
 			_revision != MacRevision::MacVer37 &&

@@ -65,6 +65,11 @@ namespace rtl8125 {
 	constexpr arch::bit_register<uint32_t> interrupt_status{0x3C};
 	constexpr arch::scalar_register<uint32_t> interrupt_status_val{0x3C};
 	constexpr arch::bit_register<uint16_t> tx_start{0x90};
+	constexpr arch::scalar_register<uint16_t> reg_0x382{0x382};
+	constexpr arch::scalar_register<uint8_t> reg_0xd8{0xD8};
+	constexpr arch::scalar_register<uint16_t> reg_0x1880{0x1880};
+	constexpr arch::scalar_register<uint32_t> rss_ctrl{0x4500};
+	constexpr arch::scalar_register<uint16_t> q_num_ctrl{0x4800};
 }
 
 } // namespace regs
@@ -167,6 +172,8 @@ namespace receive_config {
 	constexpr arch::field<uint32_t, bool> wrap{7, 1};
 
 	constexpr arch::field<uint32_t, bool> rx_early_off{11, 1};
+	// Same bit as rx_early_off; only on the RTL8125B and later.
+	constexpr arch::field<uint32_t, bool> rx_pause_slot_on{11, 1};
 	constexpr arch::field<uint32_t, bool> rx_multi_en{14, 1};
 	constexpr arch::field<uint32_t, bool> rx128_int_en{15, 1};
 

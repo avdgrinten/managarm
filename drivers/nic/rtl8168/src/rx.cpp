@@ -51,6 +51,7 @@ void RealtekNic::setRxConfigRegisters() {
 			_mmio.store(regs::receive_config,
 				flags::receive_config::rx_fetch(flags::receive_config::rx_fetch_default_8125) |
 				flags::receive_config::mxdma(flags::receive_config::mxdma_unlimited) |
+				flags::receive_config::rx_pause_slot_on(_revision >= MacRevision::MacVer63) |
 				flags::receive_config::accept_packet_with_destination_addr(false) |
 				flags::receive_config::accept_packet_with_physical_match(true) |
 				flags::receive_config::accept_multicast_packets(true) |

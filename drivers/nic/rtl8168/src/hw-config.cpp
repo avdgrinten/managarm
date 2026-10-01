@@ -259,3 +259,129 @@ async::result<void> RealtekNic::configureHardware() {
 		}
 	}
 }
+
+// Linux: rtl_hw_start_8125_common().
+async::result<void> RealtekNic::RTL8125CommonConfiguration() {
+	disablePCIeL2L3State();
+
+	_mmio.store(regs::rtl8125::reg_0x382, 0x221b);
+	_mmio.store(regs::rtl8125::rss_ctrl, 0);
+	_mmio.store(regs::rtl8125::q_num_ctrl, 0);
+
+	// Disable UPS.
+	modify8168MacOCPRegister(0xd40a, 0x0010, 0x0000);
+
+	_mmio.store(regs::config1, _mmio.load(regs::config1) & arch::bit_mask<uint8_t>{0xEF});
+
+	write8168MacOCPRegister(0xc140, 0xffff);
+	write8168MacOCPRegister(0xc142, 0xffff);
+
+	modify8168MacOCPRegister(0xd3e2, 0x0fff, 0x03a9);
+	modify8168MacOCPRegister(0xd3e4, 0x00ff, 0x0000);
+	modify8168MacOCPRegister(0xe860, 0x0000, 0x0080);
+
+	// Disable the new TX descriptor format; we use the legacy one.
+	modify8168MacOCPRegister(0xeb58, 0x0001, 0x0000);
+
+	if(_revision == MacRevision::MacVer70)
+		_mmio.store(regs::rtl8125::reg_0xd8, _mmio.load(regs::rtl8125::reg_0xd8) & ~0x02);
+
+	if(_revision == MacRevision::MacVer70)
+		modify8168MacOCPRegister(0xe614, 0x0700, 0x0400);
+	else if(_revision == MacRevision::MacVer63)
+		modify8168MacOCPRegister(0xe614, 0x0700, 0x0200);
+	else
+		modify8168MacOCPRegister(0xe614, 0x0700, 0x0300);
+
+	if(_revision == MacRevision::MacVer63)
+		modify8168MacOCPRegister(0xe63e, 0x0c30, 0x0000);
+	else
+		modify8168MacOCPRegister(0xe63e, 0x0c30, 0x0020);
+
+	modify8168MacOCPRegister(0xc0b4, 0x0000, 0x000c);
+	modify8168MacOCPRegister(0xeb6a, 0x00ff, 0x0033);
+	modify8168MacOCPRegister(0xeb50, 0x03e0, 0x0040);
+	modify8168MacOCPRegister(0xe056, 0x00f0, 0x0000);
+	modify8168MacOCPRegister(0xe040, 0x1000, 0x0000);
+	modify8168MacOCPRegister(0xea1c, 0x0003, 0x0001);
+	if(_revision == MacRevision::MacVer70)
+		modify8168MacOCPRegister(0xea1c, 0x0300, 0x0000);
+	else
+		modify8168MacOCPRegister(0xea1c, 0x0004, 0x0000);
+	modify8168MacOCPRegister(0xe0c0, 0x4f0f, 0x4403);
+	modify8168MacOCPRegister(0xe052, 0x0080, 0x0068);
+	modify8168MacOCPRegister(0xd430, 0x0fff, 0x047f);
+
+	modify8168MacOCPRegister(0xea1c, 0x0004, 0x0000);
+	modify8168MacOCPRegister(0xeb54, 0x0000, 0x0001);
+	co_await helix::sleepFor(1'000);
+	modify8168MacOCPRegister(0xeb54, 0x0001, 0x0000);
+	_mmio.store(regs::rtl8125::reg_0x1880, _mmio.load(regs::rtl8125::reg_0x1880) & ~0x0030);
+
+	write8168MacOCPRegister(0xe098, 0xc302);
+
+	co_await RTL8125WaitMacOCPE00EClear();
+
+	disableRXDVGate();
+}
+
+// Linux: rtl_hw_start_8125() after the interrupt setup.
+async::result<void> RealtekNic::configure8125Hardware() {
+	// Enable the extended tally counter.
+	modify8168MacOCPRegister(0xea84, 0, (1 << 1) | (1 << 0));
+
+	// Use CSI to set the ASPM latency
+	auto setDefaultAspmLatency = [this] () -> async::result<void> {
+		co_await writeCSIRegister(0x070C, (co_await readCSIRegister(0x070C) & 0x00FFFFFF) | (0x27 << 24));
+	};
+
+	switch(_revision) {
+		case MacRevision::MacVer61: {
+			auto e_info_8125a_2 = std::to_array<struct ephy_info>({
+				{ 0x04, 0xffff, 0xd000 },
+				{ 0x0a, 0xffff, 0x8653 },
+				{ 0x23, 0xffff, 0xab66 },
+				{ 0x20, 0xffff, 0x9455 },
+				{ 0x21, 0xffff, 0x99ff },
+				{ 0x29, 0xffff, 0xfe04 },
+
+				{ 0x44, 0xffff, 0xd000 },
+				{ 0x4a, 0xffff, 0x8653 },
+				{ 0x63, 0xffff, 0xab66 },
+				{ 0x60, 0xffff, 0x9455 },
+				{ 0x61, 0xffff, 0x99ff },
+				{ 0x69, 0xffff, 0xfe04 },
+			});
+
+			co_await setDefaultAspmLatency();
+			co_await initializeEPHY(e_info_8125a_2.data(), e_info_8125a_2.size());
+			break;
+		}
+		case MacRevision::MacVer63: {
+			auto e_info_8125b = std::to_array<struct ephy_info>({
+				{ 0x0b, 0xffff, 0xa908 },
+				{ 0x1e, 0xffff, 0x20eb },
+				{ 0x4b, 0xffff, 0xa908 },
+				{ 0x5e, 0xffff, 0x20eb },
+				{ 0x22, 0x0030, 0x0020 },
+				{ 0x62, 0x0030, 0x0020 },
+			});
+
+			co_await setDefaultAspmLatency();
+			co_await initializeEPHY(e_info_8125b.data(), e_info_8125b.size());
+			break;
+		}
+		case MacRevision::MacVer70: {
+			// Clear the PCIe Gen3 ZRX-DC non-compliance bit (Linux: rtl_disable_zrxdc_timeout()).
+			co_await writeCSIRegister(0x0890, co_await readCSIRegister(0x0890) & ~1);
+			co_await setDefaultAspmLatency();
+			break;
+		}
+		default: {
+			std::cerr << "drivers/rtl8168: no hardware configuration logic for MacVer" << _revision << "!" << std::endl;
+			assert(!"Not implemented");
+		}
+	}
+
+	co_await RTL8125CommonConfiguration();
+}
