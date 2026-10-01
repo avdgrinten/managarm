@@ -53,6 +53,13 @@ struct PciInfo {
 	bool msiX = false;
 };
 
+struct DmaSpaceInfo {
+	bool iommuActive;
+	helix::UniqueDescriptor space;
+	// Whether DMA by the device snoops the CPU caches.
+	bool dmaCoherent;
+};
+
 struct FbInfo {
 	uint64_t pitch;
 	uint64_t width;
@@ -177,7 +184,7 @@ struct Device {
 	async::result<helix::UniqueDescriptor> accessFbMemory();
 	async::result<std::pair<helix::UniqueDescriptor, uint32_t>> getVbt();
 
-	async::result<std::pair<bool, helix::UniqueDescriptor>> getDmaSpace();
+	async::result<DmaSpaceInfo> getDmaSpace();
 
 	async::result<void> getBatteryState(BatteryState &state, bool block = false);
 

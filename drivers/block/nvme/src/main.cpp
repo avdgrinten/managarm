@@ -82,7 +82,7 @@ async::result<protocols::svrctl::Error> bindDevice(int64_t base_id) {
 		co_await device.enableBusmaster();
 		co_await device.enableDma(false);
 		auto info = co_await device.getPciInfo();
-		auto [iommuActive, ioSpace] = co_await device.getDmaSpace();
+		auto [iommuActive, ioSpace, _] = co_await device.getDmaSpace();
 
 		auto &barInfo = info.barInfo[0];
 		assert(barInfo.ioType == protocols::hw::IoType::kIoTypeMemory);

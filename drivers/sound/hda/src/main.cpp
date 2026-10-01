@@ -43,7 +43,7 @@ async::detached bindController(mbus_ng::Entity entity) {
 	auto info = co_await dev.getPciInfo();
 	co_await dev.enableBusmaster();
 	co_await dev.enableDma(false);
-	auto [iommuActive, dmaSpace] = co_await dev.getDmaSpace();
+	auto [iommuActive, dmaSpace, _] = co_await dev.getDmaSpace();
 
 	auto controller = std::make_unique<Controller>(std::move(dev), info.numMsis != 0, std::move(dmaSpace), iommuActive);
 

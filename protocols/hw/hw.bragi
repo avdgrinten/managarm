@@ -273,4 +273,5 @@ head(128):
 message GetDmaSpaceResponse 37 {
 head(128):
 	int8 iommu_active;
+	int8 dma_coherent;
 }

@@ -1110,7 +1110,7 @@ async::detached bindController(mbus_ng::Entity entity) {
 
 	co_await device.enableBusmaster();
 	co_await device.enableDma(false);
-	auto [iommuActive, dmaSpaceHandle] = co_await device.getDmaSpace();
+	auto [iommuActive, dmaSpaceHandle, _] = co_await device.getDmaSpace();
 
 	HEL_CHECK(helEnableIo(bar.getHandle()));
 

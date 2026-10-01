@@ -336,7 +336,7 @@ async::result<std::shared_ptr<nic::Link>> makeShared(protocols::hw::Device devic
 	co_await device.enableBusmaster();
 
 	co_await device.enableDma(false);
-	auto [iommuActive, dmaSpace] = co_await device.getDmaSpace();
+	auto [iommuActive, dmaSpace, _] = co_await device.getDmaSpace();
 
 	auto nic = std::make_shared<E1000Nic>(std::move(device), std::move(dmaSpace), iommuActive);
 	co_await nic->init();

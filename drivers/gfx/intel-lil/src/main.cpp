@@ -26,7 +26,7 @@ async::result<void> setupDevice(mbus_ng::Entity entity) {
 
 	co_await dev.enableBusmaster();
 	co_await dev.enableDma(false);
-	auto [iommuActive, dmaSpace] = co_await dev.getDmaSpace();
+	auto [iommuActive, dmaSpace, _] = co_await dev.getDmaSpace();
 
 	auto gfx = std::make_shared<GfxDevice>(std::move(dev), *pch_dev, iommuActive, std::move(dmaSpace));
 	auto config = co_await gfx->initialize();

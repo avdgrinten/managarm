@@ -811,7 +811,7 @@ discover(protocols::hw::Device hw_device, DiscoverMode mode) {
 	auto irq = co_await hw_device.accessIrq();
 	co_await hw_device.enableBusmaster();
 	co_await hw_device.enableDma(false);
-	auto [iommuActive, dmaSpace] = co_await hw_device.getDmaSpace();
+	auto [iommuActive, dmaSpace, _] = co_await hw_device.getDmaSpace();
 
 	if(mode == DiscoverMode::transitional || mode == DiscoverMode::modernOnly) {
 		std::optional<Mapping> common_mapping;

@@ -31,7 +31,7 @@ async::detached bindController(mbus_ng::Entity hwEntity) {
 
 	co_await device.enableBusmaster();
 	co_await device.enableDma(false);
-	auto [iommuActive, dmaSpace] = co_await device.getDmaSpace();
+	auto [iommuActive, dmaSpace, _] = co_await device.getDmaSpace();
 
 	helix::Mapping mapping{ahciBar, ahciBarInfo.offset, ahciBarInfo.length};
 
