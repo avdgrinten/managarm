@@ -4,14 +4,15 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use managarm::hw::Error as HwError;
-use managarm::hw::server::{AcpiObject, AcpiResources, serve_acpi_object};
+use managarm::hw::server::{AcpiMemoryRange, AcpiObject, AcpiResources, serve_acpi_object};
 use managarm::mbus::{EntityManager, create_entity};
 use managarm::svrctl::hardware_access_handle;
 
+use crate::acpi::{PAGE_MASK, PAGE_SIZE, eval_cca};
 use crate::entity::{serve_entity_lanes, string};
 use crate::leak;
 use crate::uacpi::namespace::{self, IterationDecision, NamespaceNode};
-use crate::uacpi::resources::Resource;
+use crate::uacpi::resources::{Memory, Resource};
 
 const EXPECT_LOCK: &str = "sif: ACPI IRQ object mutex was poisoned";
 
@@ -49,6 +50,14 @@ fn irq_list(resource: &Resource) -> Option<Vec<u32>> {
     }
 }
 
+/// Returns the page-aligned base and the size of the memory view that covers a memory resource.
+fn memory_view(memory: Memory) -> (usize, usize) {
+    let aligned = (memory.address() as usize) & !PAGE_MASK;
+    let page_off = (memory.address() as usize) & PAGE_MASK;
+    let span = ((memory.length() as usize) + page_off + PAGE_MASK) & !PAGE_MASK;
+    (aligned, span.max(PAGE_SIZE))
+}
+
 fn resolve_irq_to_gsi(irq: u32) -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -71,6 +80,11 @@ impl AcpiObject for NodeObject {
                 Resource::FixedIo(io) => out
                     .fixed_io_ports
                     .extend((0..u16::from(io.length())).map(|i| io.address() + i)),
+                Resource::Memory(memory) => out.memory_ranges.push(AcpiMemoryRange {
+                    address: memory.address(),
+                    length: memory.length(),
+                    offset: ((memory.address() as usize) & PAGE_MASK) as u32,
+                }),
                 Resource::Other(type_) => {
                     println!("sif: acpi: ignoring _CRS resource of type {type_}")
                 }
@@ -128,6 +142,33 @@ impl AcpiObject for NodeObject {
         let object = leak(hel::handle_irq(&pin)?);
         objects.insert(index, object);
         Ok(object)
+    }
+
+    fn access_memory(&self, index: usize) -> managarm::hw::Result<hel::Handle> {
+        let resources = self
+            .node
+            .current_resources()
+            .map_err(|_| HwError::DeviceError)?;
+
+        let memory = resources
+            .iter()
+            .filter_map(|resource| match resource {
+                Resource::Memory(memory) => Some(memory),
+                _ => None,
+            })
+            .nth(index)
+            .ok_or(HwError::OutOfBounds)?;
+        let (base, size) = memory_view(memory);
+        Ok(hel::access_physical(
+            hardware_access_handle(),
+            base,
+            size,
+            hel::CachingMode::Mmio,
+        )?)
+    }
+
+    fn dma_coherent(&self) -> bool {
+        eval_cca(self.node)
     }
 }
 

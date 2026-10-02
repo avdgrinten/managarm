@@ -58,7 +58,7 @@ pub fn configure_log_level(cmdline: &str) {
     unsafe { uacpi_sys::uacpi_context_set_log_level(level) };
 }
 
-/// Evaluates _CCA of a host bridge. ACPI only allows omitting it on x86, where DMA is always
+/// Evaluates _CCA of a device. ACPI only allows omitting it on x86, where DMA is always
 /// coherent.
 pub(crate) fn eval_cca(node: NamespaceNode) -> bool {
     match node.eval_simple_integer(c"_CCA") {

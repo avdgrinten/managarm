@@ -2,8 +2,10 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use uacpi_sys::{
-    uacpi_resource, uacpi_resource_extended_irq, uacpi_resource_fixed_io, uacpi_resource_io,
-    uacpi_resource_irq, uacpi_resource_type, uacpi_resources,
+    uacpi_resource, uacpi_resource_address_common, uacpi_resource_address32,
+    uacpi_resource_address64, uacpi_resource_extended_irq, uacpi_resource_fixed_io,
+    uacpi_resource_fixed_memory32, uacpi_resource_io, uacpi_resource_irq, uacpi_resource_memory32,
+    uacpi_resource_type, uacpi_resources,
 };
 
 use super::namespace::NamespaceNode;
@@ -128,14 +130,38 @@ impl FixedIo<'_> {
     }
 }
 
+/// A memory range resource, i.e., a resource of type UACPI_RESOURCE_TYPE_FIXED_MEMORY32,
+/// UACPI_RESOURCE_TYPE_MEMORY32 or a memory UACPI_RESOURCE_TYPE_ADDRESS32/64.
+#[derive(Clone, Copy)]
+pub struct Memory {
+    address: u64,
+    length: u64,
+}
+
+impl Memory {
+    pub fn address(self) -> u64 {
+        self.address
+    }
+
+    pub fn length(self) -> u64 {
+        self.length
+    }
+}
+
 /// A single resource of a [`Resources`] list.
 pub enum Resource<'a> {
     Irq(Irq<'a>),
     ExtendedIrq(ExtendedIrq<'a>),
     Io(Io<'a>),
     FixedIo(FixedIo<'a>),
+    Memory(Memory),
     /// A resource of a type that we do not wrap yet, i.e., a UACPI_RESOURCE_TYPE_* value.
     Other(uacpi_resource_type),
+}
+
+/// Whether an address space resource describes memory (and not IO ports or bus numbers).
+fn is_memory_range(common: &uacpi_resource_address_common) -> bool {
+    u32::from(common.type_) == uacpi_sys::UACPI_RANGE_MEMORY
 }
 
 /// A list of resources that uACPI allocated for us.
@@ -228,6 +254,43 @@ impl<'a> Iterator for ResourceIter<'a> {
                 uacpi_sys::UACPI_RESOURCE_TYPE_FIXED_IO => Resource::FixedIo(FixedIo {
                     io: &*payload.cast::<uacpi_resource_fixed_io>(),
                 }),
+                uacpi_sys::UACPI_RESOURCE_TYPE_FIXED_MEMORY32 => {
+                    let memory = &*payload.cast::<uacpi_resource_fixed_memory32>();
+                    Resource::Memory(Memory {
+                        address: memory.address.into(),
+                        length: memory.length.into(),
+                    })
+                }
+                uacpi_sys::UACPI_RESOURCE_TYPE_MEMORY32 => {
+                    let memory = &*payload.cast::<uacpi_resource_memory32>();
+                    Resource::Memory(Memory {
+                        address: memory.minimum.into(),
+                        length: memory.length.into(),
+                    })
+                }
+                uacpi_sys::UACPI_RESOURCE_TYPE_ADDRESS32 => {
+                    let address = &*payload.cast::<uacpi_resource_address32>();
+                    if is_memory_range(&address.common) {
+                        Resource::Memory(Memory {
+                            address: u64::from(address.minimum)
+                                + u64::from(address.translation_offset),
+                            length: address.address_length.into(),
+                        })
+                    } else {
+                        Resource::Other(type_)
+                    }
+                }
+                uacpi_sys::UACPI_RESOURCE_TYPE_ADDRESS64 => {
+                    let address = &*payload.cast::<uacpi_resource_address64>();
+                    if is_memory_range(&address.common) {
+                        Resource::Memory(Memory {
+                            address: address.minimum.wrapping_add(address.translation_offset),
+                            length: address.address_length,
+                        })
+                    } else {
+                        Resource::Other(type_)
+                    }
+                }
                 _ => Resource::Other(type_),
             }
         };
