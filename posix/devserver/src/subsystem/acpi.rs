@@ -8,6 +8,13 @@ use managarm::mbus;
 use crate::device::{DeviceKey, DeviceSpec, Membership, Model, Parent};
 use crate::subsystem::{Installed, attr, observe, parse_prop, required_prop, string_prop};
 
+/// The device name of an ACPI object, i.e., its _HID followed by its instance number.
+pub fn device_name(properties: &mbus::Properties) -> Result<String> {
+    let hid = required_prop(properties, "acpi.hid")?;
+    let instance: u32 = parse_prop(properties, "acpi.instance")?;
+    Ok(format!("{hid}:{instance:02}"))
+}
+
 async fn install_entity(
     model: Arc<Model>,
     event: mbus::EnumerationEvent,
@@ -16,7 +23,6 @@ async fn install_entity(
     let mbus_id = event.entity_id();
     let hid = required_prop(properties, "acpi.hid")?;
     let path = required_prop(properties, "acpi.path")?;
-    let instance: u32 = parse_prop(properties, "acpi.instance")?;
     let physical_node: Option<i64> = match string_prop(properties, "acpi.physical_node") {
         Some(_) => Some(parse_prop(properties, "acpi.physical_node")?),
         None => None,
@@ -31,7 +37,7 @@ async fn install_entity(
     }
 
     let spec = DeviceSpec::new(
-        format!("{hid}:{instance:02}"),
+        device_name(properties)?,
         Parent::None,
         Membership::bus("acpi"),
     )
