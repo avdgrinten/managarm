@@ -12,7 +12,7 @@ use crate::acpi::{PAGE_MASK, PAGE_SIZE, eval_cca};
 use crate::entity::{serve_entity_lanes, string};
 use crate::leak;
 use crate::uacpi::namespace::{self, IterationDecision, NamespaceNode};
-use crate::uacpi::resources::{Memory, Resource};
+use crate::uacpi::resources::{Memory, Polarity, Resource, Triggering};
 
 const EXPECT_LOCK: &str = "sif: ACPI IRQ object mutex was poisoned";
 
@@ -58,15 +58,39 @@ fn memory_view(memory: Memory) -> (usize, usize) {
     (aligned, span.max(PAGE_SIZE))
 }
 
-fn resolve_irq_to_gsi(irq: u32) -> u32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        crate::isa::resolve_isa_irq(irq).gsi
+fn irq_config(resource: &Resource) -> Option<(Triggering, Polarity)> {
+    match resource {
+        Resource::Irq(irq) => Some((irq.triggering(), irq.polarity())),
+        Resource::ExtendedIrq(irq) => Some((irq.triggering(), irq.polarity())),
+        _ => None,
     }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        irq
-    }
+}
+
+// On x86, ACPI objects use ISA IRQs, which configure_isa_irqs() sets up with their overrides.
+#[cfg(target_arch = "x86_64")]
+fn irq_object(
+    irq: u32,
+    _triggering: Triggering,
+    _polarity: Polarity,
+) -> managarm::hw::Result<hel::Handle> {
+    let gsi = crate::isa::resolve_isa_irq(irq).gsi;
+    let pin = hel::access_irq_by_gsi(hardware_access_handle(), u64::from(gsi))?;
+    Ok(hel::handle_irq(&pin)?)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn irq_object(
+    irq: u32,
+    triggering: Triggering,
+    polarity: Polarity,
+) -> managarm::hw::Result<hel::Handle> {
+    let pin = crate::irq::system_irq(
+        irq,
+        crate::acpi::trigger_of(triggering),
+        crate::acpi::polarity_of(polarity),
+    )
+    .ok_or(HwError::DeviceError)?;
+    Ok(hel::handle_irq(pin.handle())?)
 }
 
 impl AcpiObject for NodeObject {
@@ -131,15 +155,15 @@ impl AcpiObject for NodeObject {
 
         let mut irqs = Vec::new();
         for resource in resources.iter() {
-            if let Some(list) = irq_list(&resource) {
-                irqs.extend(list);
+            if let (Some(list), Some((triggering, polarity))) =
+                (irq_list(&resource), irq_config(&resource))
+            {
+                irqs.extend(list.into_iter().map(|irq| (irq, triggering, polarity)));
             }
         }
 
-        let &irq = irqs.get(index).ok_or(HwError::OutOfBounds)?;
-        let gsi = resolve_irq_to_gsi(irq);
-        let pin = hel::access_irq_by_gsi(hardware_access_handle(), u64::from(gsi))?;
-        let object = leak(hel::handle_irq(&pin)?);
+        let &(irq, triggering, polarity) = irqs.get(index).ok_or(HwError::OutOfBounds)?;
+        let object = leak(irq_object(irq, triggering, polarity)?);
         objects.insert(index, object);
         Ok(object)
     }
