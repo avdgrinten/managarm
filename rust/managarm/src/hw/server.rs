@@ -168,6 +168,28 @@ async fn send_response_with_push<M: Message>(
     Ok(())
 }
 
+async fn send_dma_space(
+    lane: &Handle,
+    iommu_active: bool,
+    dma_coherent: bool,
+    space: &Handle,
+) -> hel::Result<()> {
+    let mut resp = bindings::GetDmaSpaceResponse::default();
+    resp.set_iommu_active(iommu_active as i8);
+    resp.set_dma_coherent(dma_coherent as i8);
+    let head = bragi::head_to_bytes(&resp).expect("failed to encode hw response");
+    let (head, push) = submit_async(
+        lane,
+        (
+            SendBuffer::new(&head),
+            PushDescriptor::new(space, hel_sys::kHelRightGrant | hel_sys::kHelRightProvision),
+        ),
+    )
+    .await?;
+    (head?, push?);
+    Ok(())
+}
+
 fn error_response(error: Errors) -> bindings::SvrResponse {
     let mut resp = bindings::SvrResponse::default();
     resp.set_error(error);
@@ -335,22 +357,7 @@ async fn handle_one<D: PciDevice>(lane: &Handle, request: &[u8], device: &D) -> 
         }
         bindings::GetDmaSpaceRequest::MESSAGE_ID => {
             let (iommu_active, space) = device.get_dma_space()?;
-            let mut resp = bindings::GetDmaSpaceResponse::default();
-            resp.set_iommu_active(iommu_active as i8);
-            resp.set_dma_coherent(device.dma_coherent() as i8);
-            let head = bragi::head_to_bytes(&resp).expect("failed to encode hw response");
-            let (head, push) = submit_async(
-                lane,
-                (
-                    SendBuffer::new(&head),
-                    PushDescriptor::new(
-                        &space,
-                        hel_sys::kHelRightGrant | hel_sys::kHelRightProvision,
-                    ),
-                ),
-            )
-            .await?;
-            (head?, push?);
+            send_dma_space(lane, iommu_active, device.dma_coherent(), &space).await?;
         }
         bindings::ClaimDeviceRequest::MESSAGE_ID => {
             device.claim_device();
