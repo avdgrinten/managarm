@@ -45,6 +45,12 @@ struct DtProperty {
 	byte[] data;
 }
 
+struct AcpiMemoryRange {
+	uint64 address;
+	uint64 length;
+	uint32 offset;
+}
+
 message GetPciInfoRequest 1 {
 head(128):
 }
@@ -184,6 +190,7 @@ tail:
 	uint16[] io_ports;
 	uint16[] fixed_io_ports;
 	uint32[] irqs;
+	AcpiMemoryRange[] memory_ranges;
 }
 
 message GetDtInfoRequest 21 {
@@ -274,4 +281,9 @@ message GetDmaSpaceResponse 37 {
 head(128):
 	int8 iommu_active;
 	int8 dma_coherent;
+}
+
+message AcpiAccessMemoryRequest 38 {
+head(128):
+	uint32 index;
 }

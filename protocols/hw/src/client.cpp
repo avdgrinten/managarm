@@ -724,8 +724,53 @@ async::result<std::shared_ptr<AcpiResources>> Device::getResources() {
 	auto res = std::make_shared<AcpiResources>();
 	res->io_ports = resp.io_ports();
 	res->irqs = resp.irqs();
+	for (auto &range : resp.memory_ranges())
+		res->memoryRanges.push_back({range.address(), range.length(), range.offset()});
 
 	co_return res;
+}
+
+async::result<helix::UniqueDescriptor> Device::accessAcpiMemory(uint32_t index) {
+	managarm::hw::AcpiAccessMemoryRequest req;
+	req.set_index(index);
+
+	auto [offer, send_req, recv_head] = co_await helix_ng::exchangeMsgs(
+			_lane,
+			helix_ng::offer(
+				helix_ng::want_lane,
+				helix_ng::sendBragiHeadOnly(req, frg::stl_allocator{}),
+				helix_ng::recvInline()
+			)
+		);
+
+	HEL_CHECK(offer.error());
+	HEL_CHECK(send_req.error());
+	HEL_CHECK(recv_head.error());
+
+	auto preamble = bragi::read_preamble(recv_head);
+	assert(!preamble.error());
+
+	auto resp = *bragi::parse_head_only<managarm::hw::SvrResponse>(recv_head);
+	recv_head.reset();
+
+	std::vector<std::byte> tailBuffer(preamble.tail_size());
+	auto [recv_tail, pull_memory] = co_await helix_ng::exchangeMsgs(
+			offer.descriptor(),
+			helix_ng::recvBuffer(tailBuffer.data(), tailBuffer.size()),
+			helix_ng::pullDescriptor(kHelRightRead | kHelRightWrite | kHelRightAssign)
+		);
+
+	HEL_CHECK(recv_tail.error());
+
+	bragi::limited_reader reader{tailBuffer.data(), tailBuffer.size()};
+	auto ok = resp.decode_tail(reader);
+	assert(ok);
+
+	assert(resp.error() == managarm::hw::Errors::SUCCESS);
+
+	HEL_CHECK(pull_memory.error());
+
+	co_return pull_memory.descriptor();
 }
 
 async::result<DtInfo> Device::getDtInfo() {

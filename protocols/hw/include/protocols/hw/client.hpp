@@ -79,9 +79,16 @@ struct BatteryState {
 	std::optional<uint64_t> voltage_min_design = std::nullopt;
 };
 
+struct AcpiMemoryRange {
+	uintptr_t address;
+	size_t length;
+	ptrdiff_t offset;
+};
+
 struct AcpiResources {
 	std::vector<uint16_t> io_ports;
 	std::vector<uint32_t> irqs;
+	std::vector<AcpiMemoryRange> memoryRanges;
 };
 
 struct DtRegister {
@@ -189,6 +196,7 @@ struct Device {
 	async::result<void> getBatteryState(BatteryState &state, bool block = false);
 
 	async::result<std::shared_ptr<AcpiResources>> getResources();
+	async::result<helix::UniqueDescriptor> accessAcpiMemory(uint32_t index);
 
 	async::result<std::vector<uint8_t>> getSmbiosHeader();
 	async::result<std::vector<uint8_t>> getSmbiosTable();
