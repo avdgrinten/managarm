@@ -247,6 +247,7 @@ struct Controller final : proto::BaseController {
 			helix::UniqueDescriptor mmio,
 			helix::UniqueIrq irq,
 			std::string name,
+			size_t dmaAddressBits,
 			bool iommuActive,
 			helix::UniqueDescriptor dmaSpaceHandle);
 

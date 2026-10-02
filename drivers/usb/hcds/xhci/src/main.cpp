@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <algorithm>
 #include <optional>
 #include <memory>
 #include <bit>
@@ -44,13 +45,8 @@ namespace {
 bool powerCyclePorts = false;
 
 // Number of address bits that the controller can use for DMA.
-size_t dmaAddressBits([[maybe_unused]] arch::mem_space space) {
-#ifdef __aarch64__
-	// TODO: When we have a way to query the platform this could be restricted to RPI4 only.
-	return 31;
-#else
+size_t dmaAddressBits(arch::mem_space space) {
 	return (space.load(cap_regs::hccparams1) & hccparams1::ac64) ? 64 : 32;
-#endif
 }
 
 } // namespace
@@ -62,6 +58,7 @@ Controller::Controller(
     helix::UniqueDescriptor mmio,
     helix::UniqueIrq irq,
     std::string name,
+    size_t dmaAddressBits,
     bool iommuActive,
     helix::UniqueDescriptor dmaSpaceHandle
 )
@@ -71,7 +68,7 @@ Controller::Controller(
   _irq{std::move(irq)},
   _space{_mapping.get()},
   _name{name},
-  _memoryPool{&_dmaRealm, {.addressBits = dmaAddressBits(_space)}},
+  _memoryPool{&_dmaRealm, {.addressBits = dmaAddressBits}},
   _dmaSpaceHandle{std::move(dmaSpaceHandle)},
   _dmaSpace{_dmaRealm.attachDmaSpace(_dmaSpaceHandle, iommuActive)},
   _dcbaa{&_memoryPool, 256},
@@ -1369,8 +1366,15 @@ async::detached bindController(mbus_ng::Entity entity) {
 
 	helix::Mapping mapping{bar, info.barInfo[0].offset, info.barInfo[0].length};
 
+	auto addressBits = dmaAddressBits(arch::mem_space{mapping.get()});
+#ifdef __aarch64__
+	// TODO: When we have a way to query the platform this could be restricted to RPI4 only.
+	addressBits = std::min<size_t>(addressBits, 31);
+#endif
+
 	auto controller = std::make_shared<Controller>(std::move(device), std::move(entity), std::move(mapping),
-			std::move(bar), std::move(irq), std::format("pci.{:08x}", info.barInfo[0].address), iommuActive, std::move(dmaSpaceHandle));
+			std::move(bar), std::move(irq), std::format("pci.{:08x}", info.barInfo[0].address), addressBits,
+			iommuActive, std::move(dmaSpaceHandle));
 	controller->initialize();
 	globalControllers.push_back(std::move(controller));
 }
