@@ -13,7 +13,8 @@ use crate::device::{
     NodeType, Parent, Role,
 };
 use crate::subsystem::{
-    Installed, attr, hex_prop, interface_key, observe, parse_prop, remote_lane, required_prop,
+    Installed, acpi, attr, hex_prop, interface_key, observe, parse_prop, remote_lane,
+    required_prop, string_prop,
 };
 use crate::sysfs::StaticAttribute;
 
@@ -195,12 +196,16 @@ fn endpoint_group(ep: &descriptor::EndpointDescriptor) -> AttrGroup {
     group.attrs(attrs)
 }
 
-/// The PCI address of the controller, which its root hub reports as serial.
-async fn pci_address(pci_id: i64) -> Result<String> {
-    let properties = mbus::Entity::from_id(pci_id)
+/// The name of the controller, which its root hub reports as serial: the PCI address of a PCI
+/// controller or the device name of an ACPI one.
+async fn controller_name(parent_id: i64) -> Result<String> {
+    let properties = mbus::Entity::from_id(parent_id)
         .get_properties()
         .await
-        .map_err(|e| anyhow!("failed to query the PCI controller properties: {e}"))?;
+        .map_err(|e| anyhow!("failed to query the controller properties: {e}"))?;
+    if string_prop(&properties, "acpi.hid").is_some() {
+        return Ok(format!("{}\n", acpi::device_name(&properties)?));
+    }
     Ok(format!(
         "{:04x}:{:02x}:{:02x}.{:x}\n",
         hex_prop(&properties, "pci-segment")?,
@@ -216,7 +221,7 @@ async fn install_controller(
 ) -> Result<Vec<Box<dyn Installed>>> {
     let properties = event.properties();
     let mbus_id = event.entity_id();
-    let pci_parent: i64 = parse_prop(properties, "usb.root.parent")?;
+    let parent: i64 = parse_prop(properties, "usb.root.parent")?;
     let controller_type = required_prop(properties, "generic.devsubtype")?;
     let major: u32 = parse_prop(properties, "usb.version.major")?;
     let minor: u32 = parse_prop(properties, "usb.version.minor")?;
@@ -246,14 +251,11 @@ async fn install_controller(
     let name = format!("usb{bus}");
     println!("devserver: Installing USB controller {name} (mbus ID: {mbus_id})");
 
-    // The controller is published before its PCI device in sif mode; wait for it.
-    let pci = state
-        .model
-        .wait_device(&DeviceKey::primary(pci_parent))
-        .await;
-    let serial = pci_address(pci_parent).await?;
+    // The controller is published before its parent device in sif mode; wait for it.
+    let parent_device = state.model.wait_device(&DeviceKey::primary(parent)).await;
+    let serial = controller_name(parent).await?;
 
-    let spec = DeviceSpec::new(name, Parent::Device(pci), Membership::bus("usb"))
+    let spec = DeviceSpec::new(name, Parent::Device(parent_device), Membership::bus("usb"))
         .key(DeviceKey::primary(mbus_id))
         .devtype("usb_device")
         .devnode(devnode(bus, 1))
