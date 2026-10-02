@@ -60,6 +60,9 @@ fn main() -> Result<()> {
             if let Err(err) = acpi::battery::publish().await {
                 println!("sif: acpi: failed to publish batteries: {err}");
             }
+            if let Err(err) = acpi::usb::publish().await {
+                println!("sif: acpi: failed to publish USB controllers: {err}");
+            }
         }
 
         dt::serve::publish_all().await?;
