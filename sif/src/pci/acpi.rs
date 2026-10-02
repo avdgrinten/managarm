@@ -2,6 +2,7 @@ use std::ffi::CStr;
 
 use hel::{IrqPolarity, IrqTrigger};
 
+use crate::acpi::eval_cca;
 use crate::uacpi::namespace::{
     IterationDecision, NamespaceNode, PredefinedNamespace, find_devices_at,
 };
@@ -27,19 +28,6 @@ fn eval_integer_or_zero(node: NamespaceNode, path: &CStr) -> u64 {
         Err(err) => {
             println!("sif: Failed to evaluate {}: {err}", path.to_string_lossy());
             0
-        }
-    }
-}
-
-/// Evaluates _CCA of a host bridge. ACPI only allows omitting it on x86, where DMA is always
-/// coherent.
-fn eval_cca(node: NamespaceNode) -> bool {
-    match node.eval_simple_integer(c"_CCA") {
-        Ok(Some(cca)) => cca != 0,
-        Ok(None) => cfg!(target_arch = "x86_64"),
-        Err(err) => {
-            println!("sif: Failed to evaluate _CCA: {err}");
-            false
         }
     }
 }

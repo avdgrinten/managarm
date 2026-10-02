@@ -6,9 +6,9 @@ use std::ffi::CStr;
 use anyhow::Result;
 use managarm::mbus::create_entity;
 
+use crate::acpi::object::publish_devices;
 use crate::entity::{dismiss_requests, serve_entity_lanes, string};
 use crate::leak;
-use crate::uacpi::namespace::{self, IterationDecision, NamespaceNode};
 
 const ACPI_HID_PS2_KEYBOARDS: &[&CStr] = &[
     c"PNP0300", c"PNP0301", c"PNP0302", c"PNP0303", c"PNP0304", c"PNP0305", c"PNP0306", c"PNP0307",
@@ -24,19 +24,6 @@ const ACPI_HID_PS2_MICE: &[&CStr] = &[
     c"PNP0F18", c"PNP0F19", c"PNP0F1A", c"PNP0F1B", c"PNP0F1C", c"PNP0F1D", c"PNP0F1E", c"PNP0F1F",
     c"PNP0F20", c"PNP0F21", c"PNP0F22", c"PNP0F23", c"PNP0FFC", c"PNP0FFF",
 ];
-
-async fn publish_devices(hids: &[&CStr]) -> Result<()> {
-    let mut nodes = Vec::new();
-    namespace::find_devices_at(NamespaceNode::root(), hids, |node| {
-        nodes.push(node);
-        IterationDecision::Continue
-    })?;
-
-    for (instance, node) in nodes.into_iter().enumerate() {
-        crate::acpi::object::publish(node, instance).await?;
-    }
-    Ok(())
-}
 
 // Notifies listeners that all PS/2 objects of the ACPI namespace have been published,
 // so that they can stop running mbus filters indefinitely.

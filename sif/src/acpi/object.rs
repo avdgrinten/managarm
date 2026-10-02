@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::CStr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -9,7 +10,7 @@ use managarm::svrctl::hardware_access_handle;
 
 use crate::entity::{serve_entity_lanes, string};
 use crate::leak;
-use crate::uacpi::namespace::NamespaceNode;
+use crate::uacpi::namespace::{self, IterationDecision, NamespaceNode};
 use crate::uacpi::resources::Resource;
 
 const EXPECT_LOCK: &str = "sif: ACPI IRQ object mutex was poisoned";
@@ -158,4 +159,17 @@ pub async fn publish(node: NamespaceNode, instance: usize) -> Result<&'static En
     }));
 
     Ok(manager)
+}
+
+pub async fn publish_devices(hids: &[&CStr]) -> Result<()> {
+    let mut nodes = Vec::new();
+    namespace::find_devices_at(NamespaceNode::root(), hids, |node| {
+        nodes.push(node);
+        IterationDecision::Continue
+    })?;
+
+    for (instance, node) in nodes.into_iter().enumerate() {
+        publish(node, instance).await?;
+    }
+    Ok(())
 }
