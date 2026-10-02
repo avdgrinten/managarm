@@ -399,12 +399,22 @@ pub async fn serve_pci_device<D: PciDevice + 'static>(lane: Handle, device: Arc<
     .await
 }
 
-/// The IO ports and IRQs that an ACPI object's _CRS describes.
+/// A memory resource of an ACPI object's _CRS.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AcpiMemoryRange {
+    pub address: u64,
+    pub length: u64,
+    /// Offset of the range into the memory view that access_memory() returns.
+    pub offset: u32,
+}
+
+/// The IO ports, IRQs and memory ranges that an ACPI object's _CRS describes.
 #[derive(Debug, Default)]
 pub struct AcpiResources {
     pub io_ports: Vec<u16>,
     pub fixed_io_ports: Vec<u16>,
     pub irqs: Vec<u32>,
+    pub memory_ranges: Vec<AcpiMemoryRange>,
 }
 
 pub trait AcpiObject {
@@ -414,6 +424,18 @@ pub trait AcpiObject {
     fn access_ports(&self, index: usize) -> super::Result<Handle>;
     /// Returns the IRQ object for the index-th interrupt of _CRS.
     fn access_irq(&self, index: usize) -> super::Result<&Handle>;
+    /// Returns a memory view of the index-th memory resource of _CRS.
+    fn access_memory(&self, _index: usize) -> super::Result<Handle> {
+        Err(super::Error::OutOfBounds)
+    }
+    fn get_dma_space(&self) -> hel::Result<(bool, Handle)> {
+        Ok((false, hel::create_dma_space(None, &[])?))
+    }
+    /// Whether DMA by the device snoops the CPU caches. Unless the server knows, drivers have
+    /// to assume that it does not.
+    fn dma_coherent(&self) -> bool {
+        false
+    }
 }
 
 async fn handle_one_acpi<D: AcpiObject>(
@@ -435,6 +457,18 @@ async fn handle_one_acpi<D: AcpiObject>(
                     resp.set_io_ports(resources.io_ports);
                     resp.set_fixed_io_ports(resources.fixed_io_ports);
                     resp.set_irqs(resources.irqs);
+                    let ranges = resources
+                        .memory_ranges
+                        .iter()
+                        .map(|range| {
+                            let mut msg = bindings::AcpiMemoryRange::default();
+                            msg.set_address(range.address);
+                            msg.set_length(range.length);
+                            msg.set_offset(range.offset);
+                            msg
+                        })
+                        .collect();
+                    resp.set_memory_ranges(ranges);
                 }
                 None => resp.set_error(Errors::DeviceError),
             }
@@ -477,6 +511,30 @@ async fn handle_one_acpi<D: AcpiObject>(
                 }
                 Err(err) => send_response(lane, &error_response(encode_hw_error(&err))).await?,
             }
+        }
+        bindings::AcpiAccessMemoryRequest::MESSAGE_ID => {
+            let req: bindings::AcpiAccessMemoryRequest =
+                bragi::head_from_bytes(request).map_err(|_| hel::Error::IllegalArgs)?;
+            match object.access_memory(req.index() as usize) {
+                Ok(handle) => {
+                    send_response_with_push(
+                        lane,
+                        &error_response(Errors::Success),
+                        &handle,
+                        hel_sys::kHelRightRead
+                            | hel_sys::kHelRightWrite
+                            | hel_sys::kHelRightAssign
+                            | hel_sys::kHelRightProvision
+                            | hel_sys::kHelRightPin,
+                    )
+                    .await?
+                }
+                Err(err) => send_response(lane, &error_response(encode_hw_error(&err))).await?,
+            }
+        }
+        bindings::GetDmaSpaceRequest::MESSAGE_ID => {
+            let (iommu_active, space) = object.get_dma_space()?;
+            send_dma_space(lane, iommu_active, object.dma_coherent(), &space).await?;
         }
         _ => send_response(lane, &error_response(Errors::DeviceError)).await?,
     }
