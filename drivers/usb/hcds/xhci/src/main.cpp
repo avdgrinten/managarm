@@ -1340,7 +1340,7 @@ EndpointState::_resetAfterError(RingPointer nextDequeue) {
 }
 
 // ------------------------------------------------------------------------
-// Freestanding PCI discovery functions.
+// Freestanding PCI and ACPI discovery functions.
 // ------------------------------------------------------------------------
 
 async::detached bindController(mbus_ng::Entity entity) {
@@ -1379,6 +1379,29 @@ async::detached bindController(mbus_ng::Entity entity) {
 	globalControllers.push_back(std::move(controller));
 }
 
+async::detached bindAcpiController(mbus_ng::Entity entity) {
+	protocols::hw::Device device((co_await entity.getRemoteLane()).unwrap());
+	auto resources = co_await device.getResources();
+	if (resources->memoryRanges.empty()) {
+		std::println("xhci: ACPI controller has no memory resource");
+		co_return;
+	}
+	auto range = resources->memoryRanges[0];
+	auto memory = co_await device.accessAcpiMemory(0);
+	auto irq = co_await device.accessIrq();
+
+	auto [iommuActive, dmaSpaceHandle, _] = co_await device.getDmaSpace();
+
+	helix::Mapping mapping{memory, range.offset, range.length};
+	auto addressBits = dmaAddressBits(arch::mem_space{mapping.get()});
+
+	auto controller = std::make_shared<Controller>(std::move(device), std::move(entity), std::move(mapping),
+			std::move(memory), std::move(irq), std::format("acpi.{:08x}", range.address), addressBits,
+			iommuActive, std::move(dmaSpaceHandle));
+	controller->initialize();
+	globalControllers.push_back(std::move(controller));
+}
+
 async::detached observeControllers() {
 	Cmdline cmdlineHelper{};
 	auto cmdline = co_await cmdlineHelper.get();
@@ -1387,10 +1410,16 @@ async::detached observeControllers() {
 	};
 	frg::parse_arguments({cmdline.data(), cmdline.size()}, args);
 
-	auto filter = mbus_ng::Conjunction{{
-		mbus_ng::EqualsFilter{"pci-class", "0c"},
-		mbus_ng::EqualsFilter{"pci-subclass", "03"},
-		mbus_ng::EqualsFilter{"pci-interface", "30"}
+	auto filter = mbus_ng::Disjunction{{
+		mbus_ng::Conjunction{{
+			mbus_ng::EqualsFilter{"pci-class", "0c"},
+			mbus_ng::EqualsFilter{"pci-subclass", "03"},
+			mbus_ng::EqualsFilter{"pci-interface", "30"}
+		}},
+		mbus_ng::EqualsFilter{"acpi.hid", "PNP0D10"},
+		mbus_ng::EqualsFilter{"acpi.hid", "PNP0D15"},
+		mbus_ng::EqualsFilter{"acpi.cid", "PNP0D10"},
+		mbus_ng::EqualsFilter{"acpi.cid", "PNP0D15"}
 	}};
 
 	auto enumerator = mbus_ng::Instance::global().enumerate(filter);
@@ -1403,7 +1432,10 @@ async::detached observeControllers() {
 
 			auto entity = co_await mbus_ng::Instance::global().getEntity(event.id);
 			std::println("xhci: Detected controller");
-			bindController(std::move(entity));
+			if (event.properties.contains("acpi.path"))
+				bindAcpiController(std::move(entity));
+			else
+				bindController(std::move(entity));
 		}
 	}
 }
