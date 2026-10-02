@@ -10,9 +10,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Result, anyhow};
 
+use hel::{IrqPolarity, IrqTrigger};
 use uacpi_sys::uacpi_status;
 
 use crate::uacpi::namespace::NamespaceNode;
+use crate::uacpi::resources::{Polarity, Triggering};
 
 pub(crate) const PAGE_SIZE: usize = 0x1000;
 pub(crate) const PAGE_MASK: usize = PAGE_SIZE - 1;
@@ -69,6 +71,20 @@ pub(crate) fn eval_cca(node: NamespaceNode) -> bool {
             println!("sif: Failed to evaluate _CCA: {err}");
             false
         }
+    }
+}
+
+pub(crate) fn trigger_of(triggering: Triggering) -> IrqTrigger {
+    match triggering {
+        Triggering::Edge => IrqTrigger::Edge,
+        Triggering::Level => IrqTrigger::Level,
+    }
+}
+
+pub(crate) fn polarity_of(polarity: Polarity) -> IrqPolarity {
+    match polarity {
+        Polarity::ActiveHigh => IrqPolarity::High,
+        Polarity::ActiveLow | Polarity::ActiveBoth => IrqPolarity::Low,
     }
 }
 

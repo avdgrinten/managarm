@@ -2,11 +2,11 @@ use std::ffi::CStr;
 
 use hel::{IrqPolarity, IrqTrigger};
 
-use crate::acpi::eval_cca;
+use crate::acpi::{eval_cca, polarity_of, trigger_of};
 use crate::uacpi::namespace::{
     IterationDecision, NamespaceNode, PredefinedNamespace, find_devices_at,
 };
-use crate::uacpi::resources::{Polarity, Resource, Triggering};
+use crate::uacpi::resources::Resource;
 
 use super::discover::add_root_bus;
 use super::{
@@ -100,20 +100,6 @@ fn resolve_link(source: NamespaceNode, index: u32) -> Option<(u32, IrqTrigger, I
     };
 
     Some((gsi, trigger_of(triggering), polarity_of(polarity)))
-}
-
-fn trigger_of(triggering: Triggering) -> IrqTrigger {
-    match triggering {
-        Triggering::Edge => IrqTrigger::Edge,
-        Triggering::Level => IrqTrigger::Level,
-    }
-}
-
-fn polarity_of(polarity: Polarity) -> IrqPolarity {
-    match polarity {
-        Polarity::ActiveHigh => IrqPolarity::High,
-        Polarity::ActiveLow | Polarity::ActiveBoth => IrqPolarity::Low,
-    }
 }
 
 pub struct AcpiPciIrqRouter {
