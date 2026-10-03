@@ -85,7 +85,8 @@ coroutine<void> dumpRingToChannel(LogRingBuffer *ringBuffer,
 		if(!success) {
 			// Do not leave output in the channel while we block on the ring.
 			if(unflushed) {
-				auto ioOutcome = co_await channel->issueIo(KernelIoChannel::ioProgressOutput);
+				auto ioOutcome = co_await channel->issueIo(
+						KernelIoChannel::ioProgressOutput | KernelIoChannel::ioFlush);
 				assert(ioOutcome);
 				unflushed = false;
 			}
