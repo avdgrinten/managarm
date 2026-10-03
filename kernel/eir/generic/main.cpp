@@ -431,8 +431,8 @@ void mapRegionsAndStructs() {
 		mapSingle4kPage(page, page, PageFlags::write | PageFlags::global | PageFlags::execute);
 	}
 
-	mapKasanShadow(ml.directPhysical + 0x8000, 0x80000);
-	unpoisonKasanShadow(ml.directPhysical + 0x8000, 0x80000);
+	mapKasanShadow(ml.directPhysical + 0x8000, 0x80000 - 0x8000);
+	unpoisonKasanShadow(ml.directPhysical + 0x8000, 0x80000 - 0x8000);
 #endif
 
 	for (size_t i = 0; i < eirMaxMemoryRegions; ++i) {
