@@ -136,6 +136,56 @@ pub fn create_dma_space(iommu: Option<&Handle>, regions: &[DmaReservedRegion]) -
     Ok(unsafe { Handle::from_raw(handle) })
 }
 
+bitflags::bitflags! {
+    /// Flags that control how a memory object is allocated.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct AllocFlags: u32 {
+        /// The memory is physically contiguous.
+        const CONTINUOUS = hel_sys::kHelAllocContinuous;
+        /// Physical pages are only allocated when they are first touched.
+        const ON_DEMAND = hel_sys::kHelAllocOnDemand;
+    }
+}
+
+/// Allocates a memory object of `size` bytes that is accounted to `hierarchy`, optionally
+/// restricted to physical addresses that fit into `address_bits` (e.g. for devices with a
+/// limited DMA mask).
+pub fn allocate_memory(
+    hierarchy: &Handle,
+    size: usize,
+    flags: AllocFlags,
+    address_bits: Option<u32>,
+) -> Result<Handle> {
+    let restrictions = hel_sys::HelAllocRestrictions {
+        addressBits: address_bits.map_or(64, |bits| bits as i32),
+    };
+    let mut handle = hel_sys::kHelNullHandle as hel_sys::HelHandle;
+    result::hel_check(unsafe {
+        hel_sys::helAllocateMemory(
+            hierarchy.handle(),
+            size,
+            flags.bits(),
+            &restrictions,
+            &mut handle,
+        )
+    })?;
+    Ok(unsafe { Handle::from_raw(handle) })
+}
+
+/// Translates a virtual address of the current address space to the physical address
+/// that backs it. The page must be mapped and populated.
+pub fn pointer_physical(pointer: *const core::ffi::c_void) -> Result<usize> {
+    let mut physical = 0;
+    result::hel_check(unsafe {
+        hel_sys::helPointerPhysical(
+            hel_sys::kHelNullHandle as hel_sys::HelHandle,
+            pointer,
+            &mut physical,
+        )
+    })?;
+    Ok(physical)
+}
+
 /// The caching mode that a memory object is mapped with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CachingMode {
