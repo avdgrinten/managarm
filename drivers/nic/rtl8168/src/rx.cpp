@@ -71,7 +71,8 @@ void RealtekNic::setRxConfigRegisters() {
 		}
 	}
 
-	_mmio.store(regs::rx_max_size, 0x1FFF);
+	// Let the NIC drop frames that do not fit into a single RX descriptor buffer instead of splitting them.
+	_mmio.store(regs::rx_max_size, descriptorBufferSize);
 }
 
 void RealtekNic::closeRX() {
@@ -83,13 +84,13 @@ async::result<std::unique_ptr<RxQueue>> RxQueue::create(RealtekNic &nic, size_t 
 	std::vector<arch::dma_buffer> descriptorBuffers;
 
 	for(size_t i = 0; i < descriptorCount; i++) {
-		descriptorBuffers.emplace_back(nic.dmaPool(), 2048);
-		memset(descriptorBuffers.back().data(), 0, 2048);
+		descriptorBuffers.emplace_back(nic.dmaPool(), descriptorBufferSize);
+		memset(descriptorBuffers.back().data(), 0, descriptorBufferSize);
 
 		co_await nic.dmaSpace().ensure_mapped(descriptorBuffers.back());
 		uintptr_t addr = nic.dmaSpace().iova_of(descriptorBuffers.back());
 
-		descriptors[i].flags = flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(2048);
+		descriptors[i].flags = flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(descriptorBufferSize);
 		descriptors[i].vlan = 0;
 		descriptors[i].base_low = addr & 0xFFFF'FFFF;
 		descriptors[i].base_high = (addr >> 32) & 0xFFFF'FFFF;
@@ -176,7 +177,7 @@ void RxQueue::handleRxOk() {
 		auto recycle = [&] {
 			_descriptors[i].vlan = 0;
 			storeFlags(_descriptors[i], flags::rx::eor(_flags & flags::rx::eor) |
-				flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(2048));
+				flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(descriptorBufferSize));
 			++_next_index;
 		};
 

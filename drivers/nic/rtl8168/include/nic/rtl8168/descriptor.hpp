@@ -18,6 +18,9 @@ struct Descriptor {
 
 static_assert(sizeof(Descriptor) == 16);
 
+// Each frame occupies a single descriptor buffer, so this bounds the frame size in both directions.
+constexpr uint16_t descriptorBufferSize = 2048;
+
 // The flags word carries the ownership bit. Accessing it through io_mem_space orders it against
 // the other descriptor fields and the buffer as observed by the NIC.
 inline arch::bit_value<uint32_t> loadFlags(Descriptor &desc) {
