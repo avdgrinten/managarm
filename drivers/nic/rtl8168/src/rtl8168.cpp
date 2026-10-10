@@ -602,8 +602,12 @@ async::detached RealtekNic::processIrqs() {
 			if(logIRQs) {
 				std::cout << "drivers/rtl8168: TX_OK" << std::endl;
 			}
-			_txQueue->handleTxOk();
 		}
+
+		// Descriptors of failed transmissions are handed back as well; their senders must not wait forever.
+		if((status & flags::interrupt_status::tx_ok) || (status & flags::interrupt_status::tx_err)
+				|| (status & flags::interrupt_status::tx_desc_unavailable))
+			_txQueue->handleTxOk();
 
 		// Did the NIC run out of descriptors to send?
 		if(status & flags::interrupt_status::tx_desc_unavailable) {
