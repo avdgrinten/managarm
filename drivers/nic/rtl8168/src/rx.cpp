@@ -110,7 +110,6 @@ RxQueue::RxQueue(
 )
 : _descriptors{std::move(descriptors)},
   _descriptor_buffers{std::move(descriptorBuffers)},
-  _last_rx_index(0, _descriptors.size()),
   _next_index(0, _descriptors.size()) {}
 
 async::result<size_t> RxQueue::submitDescriptor(arch::dma_buffer_view frame, RealtekNic &nic) {
@@ -132,10 +131,6 @@ async::result<void> RxQueue::postDescriptor(arch::dma_buffer_view frame, Realtek
 	handleRxOk();
 
 	co_return;
-}
-
-bool RxQueue::checkOwnerOfNextDescriptor() {
-	return (loadFlags(_descriptors[_next_index]) & flags::rx::ownership) == flags::rx::owner_nic;
 }
 
 // TODO: support large packets

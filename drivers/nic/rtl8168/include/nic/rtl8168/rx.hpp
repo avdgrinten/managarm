@@ -16,7 +16,6 @@ struct RxQueue {
 	}
 
 	void handleRxOk();
-	bool checkOwnerOfNextDescriptor();
 	async::result<size_t> submitDescriptor(arch::dma_buffer_view frame, RealtekNic &nic);
 	async::result<void> postDescriptor(arch::dma_buffer_view frame, RealtekNic &nic, std::shared_ptr<Request> req);
 private:
@@ -24,7 +23,6 @@ private:
 	arch::dma_array<Descriptor> _descriptors;
 	uintptr_t _descriptorIova;
 	std::vector<arch::dma_buffer> _descriptor_buffers;
-	QueueIndex _last_rx_index;
 	QueueIndex _next_index;
 	bool _loggedOversizedFrame = false;
 };
