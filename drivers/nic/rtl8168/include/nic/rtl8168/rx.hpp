@@ -26,4 +26,5 @@ private:
 	std::vector<arch::dma_buffer> _descriptor_buffers;
 	QueueIndex _last_rx_index;
 	QueueIndex _next_index;
+	bool _loggedOversizedFrame = false;
 };

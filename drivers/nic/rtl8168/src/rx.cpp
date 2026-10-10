@@ -172,6 +172,14 @@ void RxQueue::handleRxOk() {
 			}
 		}
 
+		// Hand the descriptor back to the NIC; frames that cannot be delivered are dropped this way.
+		auto recycle = [&] {
+			_descriptors[i].vlan = 0;
+			storeFlags(_descriptors[i], flags::rx::eor(_flags & flags::rx::eor) |
+				flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(2048));
+			++_next_index;
+		};
+
 		auto size = _flags & flags::rx::frame_length;
 
 		if(size < 4) {
@@ -184,13 +192,21 @@ void RxQueue::handleRxOk() {
 		size -= 4;
 
 		auto req = _requests.front();
+
+		// rx_max_size admits frames (e.g., VLAN-tagged ones) larger than the receiver's buffer.
+		if(size > req->frame.size() || size + 4u > _descriptor_buffers[i].size()) {
+			if(!_loggedOversizedFrame) {
+				std::cout << "drivers/rtl8168: dropping RX frame of " << size
+					<< " bytes that exceeds the receive buffer" << std::endl;
+				_loggedOversizedFrame = true;
+			}
+			recycle();
+			continue;
+		}
+
 		memcpy(req->frame.data(), _descriptor_buffers[i].data(), size);
 		req->frame = req->frame.subview(0, size);
-
-		_descriptors[i].vlan = 0;
-		storeFlags(_descriptors[i], flags::rx::eor(_flags & flags::rx::eor) |
-			flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(2048));
-		++_next_index;
+		recycle();
 
 		_requests.pop();
 		req->event.raise();
