@@ -180,6 +180,13 @@ void RxQueue::handleRxOk() {
 			++_next_index;
 		};
 
+		// Frames spanning several descriptors exceed the MTU; each of their segments is dropped.
+		if((_flags & flags::rx::receive_error) || !(_flags & flags::rx::first_segment)
+				|| !(_flags & flags::rx::last_segment)) {
+			recycle();
+			continue;
+		}
+
 		auto size = _flags & flags::rx::frame_length;
 
 		if(size < 4) {
@@ -195,7 +202,7 @@ void RxQueue::handleRxOk() {
 		auto req = _requests.front();
 
 		// rx_max_size admits frames (e.g., VLAN-tagged ones) larger than the receiver's buffer.
-		if(size > req->frame.size() || size + 4u > _descriptor_buffers[i].size()) {
+		if(size > req->frame.size()) {
 			if(!_loggedOversizedFrame) {
 				std::cout << "drivers/rtl8168: dropping RX frame of " << size
 					<< " bytes that exceeds the receive buffer" << std::endl;
