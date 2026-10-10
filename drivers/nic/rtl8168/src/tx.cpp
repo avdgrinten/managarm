@@ -25,8 +25,8 @@ async::result<std::unique_ptr<TxQueue>> TxQueue::create(RealtekNic &nic, size_t 
 	std::vector<arch::dma_buffer> descriptorBuffers;
 
 	for(size_t i = 0; i < descriptorCount; i++) {
-		descriptorBuffers.emplace_back(nic.dmaPool(), 2048);
-		memset(descriptorBuffers.back().data(), 0, 2048);
+		descriptorBuffers.emplace_back(nic.dmaPool(), descriptorBufferSize);
+		memset(descriptorBuffers.back().data(), 0, descriptorBufferSize);
 
 		co_await nic.dmaSpace().ensure_mapped(descriptorBuffers.back());
 		uintptr_t addr = nic.dmaSpace().iova_of(descriptorBuffers.back());
@@ -56,6 +56,16 @@ TxQueue::TxQueue(
   hw_tx_index{0, _descriptors.size()} {}
 
 async::result<void> TxQueue::submitDescriptor(arch::dma_buffer_view payload, RealtekNic &nic) {
+	// Raw sockets can hand us frames of any size, but each frame has to fit into one descriptor buffer.
+	if(payload.size() > descriptorBufferSize) {
+		if(!_loggedOversizedFrame) {
+			std::cout << "drivers/rtl8168: dropping TX frame of " << payload.size()
+				<< " bytes that exceeds the descriptor buffer" << std::endl;
+			_loggedOversizedFrame = true;
+		}
+		co_return;
+	}
+
 	auto ev_req = std::make_shared<Request>();
 
 	co_await postDescriptor(payload, nic, ev_req);

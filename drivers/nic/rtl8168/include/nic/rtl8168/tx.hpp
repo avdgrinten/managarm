@@ -33,4 +33,5 @@ protected:
 	async::counting_semaphore _freeDescriptors;
 	QueueIndex tx_index;    // Our index into the TX buffer
 	QueueIndex hw_tx_index; // The index into the TX buffer that the card currently has
+	bool _loggedOversizedFrame = false;
 };
