@@ -113,7 +113,7 @@ RxQueue::RxQueue(
   _next_index(0, _descriptors.size()) {}
 
 async::result<size_t> RxQueue::submitDescriptor(arch::dma_buffer_view frame, RealtekNic &nic) {
-	auto ev_req = std::make_shared<Request>(_descriptors.size());
+	auto ev_req = std::make_shared<Request>();
 
 	co_await postDescriptor(frame, nic, ev_req);
 
@@ -124,11 +124,8 @@ async::result<size_t> RxQueue::submitDescriptor(arch::dma_buffer_view frame, Rea
 
 async::result<void> RxQueue::postDescriptor(arch::dma_buffer_view frame, RealtekNic &, std::shared_ptr<Request> req) {
 	req->frame = frame;
-	req->index = _next_index;
 
 	_requests.push(std::move(req));
-
-	++_next_index;
 
 	// The frame may have arrived before the request; its RX_OK IRQ found no request to complete.
 	handleRxOk();
@@ -143,8 +140,7 @@ bool RxQueue::checkOwnerOfNextDescriptor() {
 // TODO: support large packets
 void RxQueue::handleRxOk() {
 	while(!_requests.empty()) {
-		auto req = _requests.front();
-		auto i = req->index;
+		auto i = _next_index();
 
 		auto _flags = loadFlags(_descriptors[i]);
 		if((_flags & flags::rx::ownership) == flags::rx::owner_nic) // Descriptor was not transmitted?
@@ -187,12 +183,14 @@ void RxQueue::handleRxOk() {
 		// the receive buffer by 4 bytes.
 		size -= 4;
 
+		auto req = _requests.front();
 		memcpy(req->frame.data(), _descriptor_buffers[i].data(), size);
 		req->frame = req->frame.subview(0, size);
 
 		_descriptors[i].vlan = 0;
 		storeFlags(_descriptors[i], flags::rx::eor(_flags & flags::rx::eor) |
 			flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(2048));
+		++_next_index;
 
 		_requests.pop();
 		req->event.raise();

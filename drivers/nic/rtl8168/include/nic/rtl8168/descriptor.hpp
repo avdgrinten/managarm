@@ -29,9 +29,6 @@ inline void storeFlags(Descriptor &desc, arch::bit_value<uint32_t> flags) {
 }
 
 struct Request {
-	Request(size_t size) : index(0, size) { };
-
-	QueueIndex index;
 	async::oneshot_primitive event;
 	arch::dma_buffer_view frame;
 };

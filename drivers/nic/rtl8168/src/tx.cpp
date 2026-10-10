@@ -56,7 +56,7 @@ TxQueue::TxQueue(
   hw_tx_index{0, _descriptors.size()} {}
 
 async::result<void> TxQueue::submitDescriptor(arch::dma_buffer_view payload, RealtekNic &nic) {
-	auto ev_req = std::make_shared<Request>(_descriptors.size());
+	auto ev_req = std::make_shared<Request>();
 
 	co_await postDescriptor(payload, nic, ev_req);
 	co_await ev_req->event.wait();
