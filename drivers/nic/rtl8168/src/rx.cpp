@@ -183,7 +183,8 @@ void RxQueue::handleRxOk() {
 		auto size = _flags & flags::rx::frame_length;
 
 		if(size < 4) {
-			break;
+			recycle();
+			continue;
 		}
 
 		// The NIC always includes the FCS in the resulting buffer, while netserver expacts
