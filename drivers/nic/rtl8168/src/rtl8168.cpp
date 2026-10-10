@@ -590,6 +590,9 @@ async::detached RealtekNic::processIrqs() {
 			_mmio.store(regs::interrupt_status, arch::bit_value<uint16_t>(uint32_t(status)));
 		}
 
+		// The status is cleared, so events from here on raise a new IRQ.
+		HEL_CHECK(helAcknowledgeIrq(_irq.getHandle(), kHelAckAcknowledge, sequence));
+
 		// Did the status of the network link change?
 		if(status & flags::interrupt_status::link_change) {
 			if(logIRQs) {
@@ -661,8 +664,6 @@ async::detached RealtekNic::processIrqs() {
 			// Reset the timer
 			_mmio.store(regs::timer_count, 1);
 		}
-
-		HEL_CHECK(helAcknowledgeIrq(_irq.getHandle(), kHelAckAcknowledge, sequence));
 	}
 }
 
