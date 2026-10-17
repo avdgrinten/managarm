@@ -130,6 +130,9 @@ async::result<void> RxQueue::postDescriptor(arch::dma_buffer_view frame, Realtek
 
 	++_next_index;
 
+	// The frame may have arrived before the request; its RX_OK IRQ found no request to complete.
+	handleRxOk();
+
 	co_return;
 }
 
@@ -191,7 +194,7 @@ void RxQueue::handleRxOk() {
 		storeFlags(_descriptors[i], flags::rx::eor(_flags & flags::rx::eor) |
 			flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(2048));
 
-		req->event.raise();
 		_requests.pop();
+		req->event.raise();
 	}
 }

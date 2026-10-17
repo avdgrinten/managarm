@@ -237,6 +237,7 @@ private:
 
 	PciModel _model;
 	bool _has_gmii = true; // Has GMII; basically, is this card gigabit?
+	bool _loggedRxOverflow = false;
 	MacRevision _revision;
 	DashType _dash_type;
 	uint8_t _pci_function = 0;
