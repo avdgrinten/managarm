@@ -51,7 +51,7 @@ TxQueue::TxQueue(
 )
 : _descriptor_buffers{std::move(descriptorBuffers)},
   _descriptors{std::move(descriptors)},
-  _amount_free_descriptors{_descriptors.size()},
+  _freeDescriptors{_descriptors.size()},
   tx_index{0, _descriptors.size()},
   hw_tx_index{0, _descriptors.size()} {}
 
@@ -63,9 +63,8 @@ async::result<void> TxQueue::submitDescriptor(arch::dma_buffer_view payload, Rea
 }
 
 // TODO: support large packets
-// TODO: this function should be able to fail; there may not be enough space in the ring buffer, which should be handled gracefully
 async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, RealtekNic &nic, std::shared_ptr<Request> req) {
-	assert(_amount_free_descriptors);
+	co_await _freeDescriptors.async_acquire();
 
 	_requests.push(req);
 
@@ -85,7 +84,6 @@ async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, Realt
 	storeFlags(*desc, flags::tx::eor(loadFlags(*desc) & flags::tx::eor) |
 		flags::tx::first_segment(true) | flags::tx::last_segment(true) |
 		flags::tx::frame_length(actual_size) | flags::tx::ownership(flags::tx::owner_nic));
-	--_amount_free_descriptors;
 
 	// TOOD: Technically, we should not be ringing the doorbell after every transmision, but only if there
 	//       are no current transmissions in progress.
@@ -96,7 +94,7 @@ async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, Realt
 		std::cout << "drivers/rtl8168: posting TX descriptor: "
 			<< "tx_index: " << tx_index
 			<< ", hw_tx_index: " << hw_tx_index
-			<< ", amount_free_descriptors: " << _amount_free_descriptors
+			<< ", amount_free_descriptors: " << _descriptors.size() - _requests.size()
 			<< std::endl;
 
 		std::cout << "drivers/rtl8168: "
@@ -111,7 +109,8 @@ async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, Realt
 // TODO: potential race conditions?
 // TODO: locking the queue indexes might be a good idea
 void TxQueue::handleTxOk() {
-	while(hw_tx_index != tx_index) {
+	// Each in-flight descriptor has one request; tx_index == hw_tx_index is ambiguous when the ring is full.
+	while(!_requests.empty()) {
 		auto i = hw_tx_index();
 		auto descFlags = loadFlags(_descriptors[i]);
 		if((descFlags & flags::tx::ownership) == flags::tx::owner_nic) // Descriptor was not transmitted?
@@ -121,15 +120,11 @@ void TxQueue::handleTxOk() {
 		storeFlags(_descriptors[i], flags::tx::eor(descFlags & flags::tx::eor));
 		_descriptors[i].vlan = 0;
 
-		if(_requests.empty())
-			break;
-
 		auto req = _requests.front();
-
-		req->event.raise();
 		_requests.pop();
 		++hw_tx_index;
-		++_amount_free_descriptors;
+		_freeDescriptors.release();
+		req->event.raise();
 	}
 	if(logIRQs) {
 		std::cout << "drivers/rtl8168: completed handling of TX_OK"

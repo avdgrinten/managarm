@@ -1,5 +1,6 @@
 #pragma once
 
+#include <async/counting-semaphore.hpp>
 #include <helix/memory.hpp>
 #include <nic/rtl8168/common.hpp>
 #include <nic/rtl8168/descriptor.hpp>
@@ -22,14 +23,14 @@ struct TxQueue {
 	async::result<void> postDescriptor(arch::dma_buffer_view frame, RealtekNic &nic, std::shared_ptr<Request> req);
 
 	bool bufferEmpty() {
-		return _amount_free_descriptors == _descriptors.size();
+		return _requests.empty();
 	}
 protected:
 	std::vector<arch::dma_buffer> _descriptor_buffers;
 	std::queue<std::shared_ptr<Request>> _requests;
 	arch::dma_array<Descriptor> _descriptors;
 	uintptr_t _descriptorIova;
-	size_t _amount_free_descriptors;
+	async::counting_semaphore _freeDescriptors;
 	QueueIndex tx_index;    // Our index into the TX buffer
 	QueueIndex hw_tx_index; // The index into the TX buffer that the card currently has
 };
