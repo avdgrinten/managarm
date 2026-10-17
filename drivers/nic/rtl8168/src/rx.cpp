@@ -134,7 +134,7 @@ async::result<void> RxQueue::postDescriptor(arch::dma_buffer_view frame, Realtek
 }
 
 bool RxQueue::checkOwnerOfNextDescriptor() {
-	return (_descriptors[_next_index].flags & flags::rx::ownership) == flags::rx::owner_nic;
+	return (loadFlags(_descriptors[_next_index]) & flags::rx::ownership) == flags::rx::owner_nic;
 }
 
 // TODO: support large packets
@@ -143,12 +143,9 @@ void RxQueue::handleRxOk() {
 		auto req = _requests.front();
 		auto i = req->index;
 
-		if((_descriptors[i].flags & flags::rx::ownership) == flags::rx::owner_nic) // Descriptor was not transmitted?
+		auto _flags = loadFlags(_descriptors[i]);
+		if((_flags & flags::rx::ownership) == flags::rx::owner_nic) // Descriptor was not transmitted?
 			break;
-
-		__sync_synchronize();
-
-		auto _flags = _descriptors[i].flags;
 
 		if(logRXDescriptor) {
 			std::cout << "drivers/rtl8168: got RX descriptor, flags:" << std::endl;
@@ -190,9 +187,9 @@ void RxQueue::handleRxOk() {
 		memcpy(req->frame.data(), _descriptor_buffers[i].data(), size);
 		req->frame = req->frame.subview(0, size);
 
-		_descriptors[i].flags = flags::rx::eor(_descriptors[i].flags & flags::rx::eor) |
-			flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(2048);
 		_descriptors[i].vlan = 0;
+		storeFlags(_descriptors[i], flags::rx::eor(_flags & flags::rx::eor) |
+			flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(2048));
 
 		req->event.raise();
 		_requests.pop();
