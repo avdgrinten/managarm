@@ -634,11 +634,11 @@ public:
 	std::shared_ptr<ProcessGroup> pgPointer();
 
 	void setSignalMask(uint64_t mask) {
-		_signalMask = mask;
+		_signalMask.store(mask, std::memory_order_relaxed);
 	}
 
 	uint64_t signalMask() {
-		return _signalMask;
+		return _signalMask.load(std::memory_order_relaxed);
 	}
 
 	void issueThreadSignal(int sn, SignalInfo info);
@@ -799,7 +799,8 @@ private:
 	void *_clientAuxBegin = nullptr;
 	void *_clientAuxEnd = nullptr;
 
-	uint64_t _signalMask;
+	// Only written by the thread's own serve tree, but read by pts on behalf of the thread.
+	std::atomic<uint64_t> _signalMask;
 
 	bool _altStackEnabled = false;
 	uint64_t _altStackSp = 0;

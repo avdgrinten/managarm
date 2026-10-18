@@ -1568,7 +1568,7 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 	new (process->_threadPageMapping.get()) posix::ThreadPage{};
 
 	// The initial signal mask allows all signals.
-	process->_signalMask = 0;
+	process->setSignalMask(0);
 
 	auto [server_lane, client_lane] = helix::createStream();
 	HEL_CHECK(helTransferDescriptor(
@@ -1658,7 +1658,7 @@ async::result<std::shared_ptr<Process>> Process::fork(std::shared_ptr<Process> o
 	new (process->_threadPageMapping.get()) posix::ThreadPage{};
 
 	// Signal masks are copied on fork().
-	process->_signalMask = original->_signalMask;
+	process->setSignalMask(original->signalMask());
 
 	auto [server_lane, client_lane] = helix::createStream();
 	HEL_CHECK(helTransferDescriptor(
@@ -1799,7 +1799,7 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 	new (process->_threadPageMapping.get()) posix::ThreadPage{};
 
 	// Signal masks are copied on clone().
-	process->_signalMask = original->_signalMask;
+	process->setSignalMask(original->signalMask());
 
 	auto [server_lane, client_lane] = helix::createStream();
 	HEL_CHECK(helTransferDescriptor(
