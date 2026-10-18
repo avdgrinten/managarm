@@ -311,7 +311,9 @@ private:
 	// The '.' and '..' entries are synthesized before iterating _entries.
 	DotEntriesPhase _dots = DotEntriesPhase::dot;
 
-	std::set<smarter::shared_ptr<Link, LinkRc>, LinkCompare>::iterator _iter;
+	// Name of the last entry that readEntries() returned.
+	std::optional<std::string> _lastName;
+	size_t _numEntries = 0;
 };
 
 struct DirectoryNode final : Node {
@@ -891,10 +893,8 @@ void DirectoryFile::handleClose() {
 
 DirectoryFile::DirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 : FileWithDefaults{FileKind::unknown,  StructName::get("tmpfs.dir"), std::move(mount), std::move(link)},
-		_node{static_cast<DirectoryNode *>(associatedLink()->getTarget().get())},
-		_iter{_node->_entries.begin()} { }
+		_node{static_cast<DirectoryNode *>(associatedLink()->getTarget().get())} { }
 
-// TODO: This iteration mechanism only works as long as _iter is not concurrently deleted.
 async::result<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>>
 DirectoryFile::readEntries() {
 	// '.' and '..' are not stored in _entries; synthesize them before iterating.
@@ -906,11 +906,15 @@ DirectoryFile::readEntries() {
 			co_return *entry;
 	}
 
-	if(_iter != _node->_entries.end()) {
-		auto name = (*_iter)->getName();
-		auto target = static_cast<Node *>((*_iter)->getTarget().get());
+	// Continue after the last name such that concurrent insertions and removals are tolerated.
+	auto it = _lastName ? _node->_entries.upper_bound(*_lastName) : _node->_entries.begin();
+	if(it != _node->_entries.end()) {
+		auto name = (*it)->getName();
+		auto targetPtr = (*it)->getTarget();
+		auto target = static_cast<Node *>(targetPtr.get());
 		auto type = target->getType();
-		_iter++;
+		_lastName = name;
+		_numEntries++;
 
 		int64_t fileType = managarm::fs::FileType::REGULAR;
 
@@ -941,7 +945,7 @@ DirectoryFile::readEntries() {
 		co_return protocols::fs::ReadEntriesResult{
 			.name = name,
 			.inode = static_cast<ino_t>(target->inodeNumber()),
-			.offset = 2 + std::distance(_node->_entries.begin(), _iter),
+			.offset = static_cast<long>(2 + _numEntries),
 			.fileType = fileType
 		};
 	}else{
