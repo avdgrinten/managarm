@@ -522,14 +522,11 @@ HandleRequest::operator()(managarm::posix::SymlinkAtRequest &&req,
 	auto parent = parentLink->getTarget();
 	auto result = co_await parent->symlink(parentLink.get(), resolver.nextComponent(), req.target_path());
 	if(auto error = std::get_if<Error>(&result); error) {
-		if(*error == Error::alreadyExists) {
-			co_await sendErrorResponse<managarm::posix::SymlinkAtResponse>(conversation, managarm::posix::Errors::ALREADY_EXISTS);
-			co_return {};
-		} else {
-			assert(*error == Error::illegalOperationTarget);
-			co_await sendErrorResponse<managarm::posix::SymlinkAtResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
-			co_return {};
-		}
+		auto posixError = *error == Error::illegalOperationTarget
+			? managarm::posix::Errors::ILLEGAL_ARGUMENTS
+			: *error | toPosixProtoError;
+		co_await sendErrorResponse<managarm::posix::SymlinkAtResponse>(conversation, posixError);
+		co_return {};
 	}
 
 	managarm::posix::SymlinkAtResponse resp;
