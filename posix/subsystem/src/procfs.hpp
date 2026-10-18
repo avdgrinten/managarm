@@ -4,6 +4,7 @@
 #include <string>
 
 #include <async/cancellation.hpp>
+#include <async/mutex.hpp>
 #include <protocols/fs/server.hpp>
 
 #include "vfs.hpp"
@@ -60,8 +61,13 @@ private:
 	helix::UniqueLane _passthrough;
 	async::cancellation_event _cancelServe;
 
+	// Held across show().
+	async::mutex _mutex;
+	// Protected by _mutex.
 	bool _cached;
+	// Protected by _mutex.
 	std::string _buffer;
+	// Protected by _mutex.
 	size_t _offset;
 };
 

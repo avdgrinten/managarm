@@ -7,6 +7,7 @@
 #include <sstream>
 #include <iomanip>
 
+#include <frg/mutex.hpp>
 #include <core/clock.hpp>
 #include "common.hpp"
 #include "procfs.hpp"
@@ -73,6 +74,9 @@ void RegularFile::handleClose() {
 }
 
 async::result<frg::expected<Error, off_t>> RegularFile::seek(off_t offset, VfsSeek whence) {
+	co_await _mutex.async_lock();
+	frg::unique_lock lock{frg::adopt_lock, _mutex};
+
 	if(whence == VfsSeek::relative)
 		_offset = _offset + offset;
 	else if(whence == VfsSeek::absolute)
@@ -89,12 +93,17 @@ async::result<frg::expected<Error, off_t>> RegularFile::seek(off_t offset, VfsSe
 }
 
 async::result<frg::expected<Error, off_t>> RegularFile::getPosition() {
+	co_await _mutex.async_lock();
+	frg::unique_lock lock{frg::adopt_lock, _mutex};
 	co_return _offset;
 }
 
 async::result<std::expected<size_t, Error>>
 RegularFile::readSome(Process *process, void *data, size_t max_length, async::cancellation_token) {
 	assert(max_length > 0);
+
+	co_await _mutex.async_lock();
+	frg::unique_lock lock{frg::adopt_lock, _mutex};
 
 	if(!_cached) {
 		assert(!_offset);
