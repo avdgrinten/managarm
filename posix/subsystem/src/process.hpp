@@ -607,9 +607,20 @@ public:
 
 	// As the contexts associated with a process can change (e.g. when unshare() is implemented),
 	// those functions return refcounted pointers.
-	std::shared_ptr<VmContext> vmContext() { return _vmContext; }
-	std::shared_ptr<FsContext> fsContext() { return _fsContext; }
-	std::shared_ptr<FileContext> fileContext() { return _fileContext; }
+	// They return null once the thread terminated; callers other than the thread's own
+	// request handlers have to handle that.
+	std::shared_ptr<VmContext> vmContext() {
+		std::lock_guard lock{taskMutex_};
+		return _vmContext;
+	}
+	std::shared_ptr<FsContext> fsContext() {
+		std::lock_guard lock{taskMutex_};
+		return _fsContext;
+	}
+	std::shared_ptr<FileContext> fileContext() {
+		std::lock_guard lock{taskMutex_};
+		return _fileContext;
+	}
 	ThreadGroup *threadGroup() { return tgPointer_.get(); }
 	std::shared_ptr<ProcessGroup> pgPointer();
 
@@ -748,8 +759,13 @@ private:
 	helix::UniqueLane _posixLane;
 	helix::UniqueDescriptor _threadDescriptor;
 	std::shared_ptr<Generation> _currentGeneration;
+	// The contexts are only written by the thread's own serve tree (exec() and terminate(); fork()
+	// and clone() before they publish the thread), which reads them without taskMutex_.
+	// Protected by taskMutex_.
 	std::shared_ptr<VmContext> _vmContext;
+	// Protected by taskMutex_.
 	std::shared_ptr<FsContext> _fsContext;
+	// Protected by taskMutex_.
 	std::shared_ptr<FileContext> _fileContext;
 
 	smarter::shared_ptr<procfs::Link, LinkRc> procfsTaskLink_;

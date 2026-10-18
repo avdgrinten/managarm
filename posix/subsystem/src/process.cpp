@@ -1929,7 +1929,11 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 	}
 	process->_posixLane = std::move(server_lane);
 	process->_threadDescriptor = std::move(execResult.thread);
-	process->_vmContext = std::move(exec_vm_context);
+	{
+		std::lock_guard lock{process->taskMutex_};
+		std::swap(process->_vmContext, exec_vm_context);
+	}
+	exec_vm_context = nullptr;
 	process->threadGroup()->_signalContext->resetHandlers();
 	process->setAltStackEnabled(false);
 	process->setAltStackSp(0, 0);
@@ -1980,9 +1984,19 @@ async::result<void> Process::terminate(bool *lastInGroup) {
 
 	_posixLane = {};
 	_threadDescriptor = {};
-	_vmContext = nullptr;
-	_fsContext = nullptr;
-	_fileContext = nullptr;
+	// Dropping the contexts closes files, hence do it after releasing the lock.
+	std::shared_ptr<VmContext> vmContext;
+	std::shared_ptr<FsContext> fsContext;
+	std::shared_ptr<FileContext> fileContext;
+	{
+		std::lock_guard lock{taskMutex_};
+		vmContext = std::move(_vmContext);
+		fsContext = std::move(_fsContext);
+		fileContext = std::move(_fileContext);
+	}
+	vmContext = nullptr;
+	fsContext = nullptr;
+	fileContext = nullptr;
 	//_signalContext = nullptr; // TODO: Migrate the notifications to PID 1.
 	_currentGeneration = nullptr;
 

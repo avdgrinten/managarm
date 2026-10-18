@@ -356,8 +356,10 @@ async::result<void> serveServerLane(helix::UniqueDescriptor lane) {
 			if(!maybeProcess) {
 				std::cout << "posix: FD_SERVE with unknown process credentials" << std::endl;
 				resp.set_error(Error::badProcessCredentials | toPosixProtoError);
+			} else if(auto fileContext = (*maybeProcess)->fileContext(); !fileContext) {
+				resp.set_error(managarm::posix::Errors::NO_SUCH_RESOURCE);
 			} else {
-				auto fd = (*maybeProcess)->fileContext()->attachFile(file);
+				auto fd = fileContext->attachFile(file);
 				if (fd) {
 					resp.set_error(managarm::posix::Errors::SUCCESS);
 					resp.set_fd(fd.value());

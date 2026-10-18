@@ -454,14 +454,19 @@ public:
 		if(hasFiles) {
 			auto [truncated, payload_len] = ctrl.message_truncated(SOL_SOCKET, SCM_RIGHTS, sizeof(int) * files.size(), sizeof(int));
 			assert(!(payload_len % sizeof(int)));
+			// The receiving thread may have exited in the meantime.
 			auto fileContext = process->fileContext();
 			for(auto &file : files) {
 				if(truncated && payload_len < sizeof(int))
 					break;
 
-				ctrl.write<int>(
-					fileContext->attachFile(std::move(file), flags & MSG_CMSG_CLOEXEC)
-					.value_or(-1));
+				if(fileContext) {
+					ctrl.write<int>(
+						fileContext->attachFile(std::move(file), flags & MSG_CMSG_CLOEXEC)
+						.value_or(-1));
+				}else{
+					ctrl.write<int>(-1);
+				}
 
 				if(truncated)
 					payload_len -= sizeof(int);
@@ -511,8 +516,11 @@ public:
 				path.resize(strnlen(sa.sun_path, addr_length - offsetof(sockaddr_un, sun_path)));
 				memcpy(path.data(), sa.sun_path, strnlen(sa.sun_path, addr_length - offsetof(sockaddr_un, sun_path)));
 				PathResolver resolver;
-				resolver.setup(process->fsContext()->getRoot(),
-						process->fsContext()->getWorkingDirectory(), std::move(path), process);
+				auto fsContext = process->fsContext();
+				if(!fsContext)
+					co_return protocols::fs::Error::noSuchProcess;
+				resolver.setup(fsContext->getRoot(),
+						fsContext->getWorkingDirectory(), std::move(path), process);
 				auto resolveResult = co_await resolver.resolve();
 				if(!resolveResult) {
 					co_return resolveResult.error();
@@ -783,8 +791,11 @@ public:
 		} else {
 			auto sockpath = path;
 			PathResolver resolver;
-			resolver.setup(process->fsContext()->getRoot(),
-					process->fsContext()->getWorkingDirectory(), std::move(path), process);
+			auto fsContext = process->fsContext();
+			if(!fsContext)
+				co_return protocols::fs::Error::noSuchProcess;
+			resolver.setup(fsContext->getRoot(),
+					fsContext->getWorkingDirectory(), std::move(path), process);
 			auto resolveResult = co_await resolver.resolve(resolvePrefix | resolveCreatesNonDirectory);
 			if(!resolveResult) {
 				co_return resolveResult.error();
@@ -795,7 +806,7 @@ public:
 
 			auto parentLink = resolver.currentLink();
 			auto nodeResult = co_await parentLink->getTarget()->mksocket(parentLink.get(),
-					resolver.nextComponent(), (0666 & ~process->fsContext()->getUmask()), process->threadGroup()->uid(), process->threadGroup()->gid());
+					resolver.nextComponent(), (0666 & ~fsContext->getUmask()), process->threadGroup()->uid(), process->threadGroup()->gid());
 			if(!nodeResult) {
 				co_return nodeResult.error() | protocols::fs::toFsProtoError;
 			}
@@ -864,8 +875,11 @@ public:
 		smarter::shared_ptr<FsNode> node;
 		if (sa.sun_path[0] != '\0') {
 			PathResolver resolver;
-			resolver.setup(process->fsContext()->getRoot(),
-					process->fsContext()->getWorkingDirectory(), path, process);
+			auto fsContext = process->fsContext();
+			if(!fsContext)
+				co_return protocols::fs::Error::noSuchProcess;
+			resolver.setup(fsContext->getRoot(),
+					fsContext->getWorkingDirectory(), path, process);
 			auto resolveResult = co_await resolver.resolve();
 			if(!resolveResult) {
 				co_return resolveResult.error();
@@ -1090,7 +1104,10 @@ public:
 
 				if(remoteProc) {
 					auto pidfd = createPidfdFile(remoteProc->weak_from_this(), false);
-					result = process->fileContext()->attachFile(pidfd).value_or(-EMFILE);
+					if(auto fileContext = process->fileContext(); fileContext)
+						result = fileContext->attachFile(pidfd).value_or(-EMFILE);
+					else
+						result = -ESRCH;
 				} else {
 					result = -ENODATA;
 				}
