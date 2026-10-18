@@ -8,6 +8,7 @@
 #include <iomanip>
 
 #include <frg/mutex.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include <core/clock.hpp>
 #include "common.hpp"
 #include "procfs.hpp"
@@ -61,7 +62,7 @@ void RegularFile::serve(smarter::shared_ptr<RegularFile> file) {
 
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 
@@ -164,7 +165,7 @@ void DirectoryFile::serve(smarter::shared_ptr<DirectoryFile> file) {
 
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 
@@ -1209,7 +1210,7 @@ async::result<frg::expected<Error, FileStats>> CgroupNode::getStats() {
 void FdDirectoryFile::serve(smarter::shared_ptr<FdDirectoryFile> file) {
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 
@@ -1508,7 +1509,7 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> FdInfoD
 void FdInfoDirectoryFile::serve(smarter::shared_ptr<FdInfoDirectoryFile> file) {
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 
