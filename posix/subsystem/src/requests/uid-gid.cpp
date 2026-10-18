@@ -350,7 +350,7 @@ HandleRequest::operator()(managarm::posix::GetGroupsRequest &&req,
 
 	logRequest(logRequests, self, "GET_GROUPS");
 
-	const auto &groups = self->threadGroup()->supplementaryGroups();
+	auto groups = self->threadGroup()->supplementaryGroups();
 	size_t sendEntries = groups.size();
 
 	managarm::posix::GetGroupsResponse resp;
