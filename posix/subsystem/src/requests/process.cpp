@@ -185,25 +185,24 @@ HandleRequest::operator()(managarm::posix::SetAffinityRequest &&req,
 
 	logRequest(logRequests, self, "SET_AFFINITY");
 
-	auto handle = self->threadDescriptor().getHandle();
+	auto target = self;
 
 	if(self->pid() != req.pid()) {
 		// TODO: permission checking
-		auto target = Process::findProcess(req.pid());
+		target = Process::findProcess(req.pid());
 		if(!target) {
 			co_await sendErrorResponse<managarm::posix::SetAffinityResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 			co_return {};
 		}
-		handle = target->threadDescriptor().getHandle();
 	}
 
 	// Applications may pass masks that are larger than what thor accepts (e.g., sizeof(cpu_set_t)).
 	// Like Linux, ignore the bits beyond the last CPU instead of rejecting the oversized mask.
 	auto maskSize = std::min(req.mask().size(), getAffinityMaskSize());
 
-	HelError e = helSetAffinity(handle, req.mask().data(), maskSize);
+	HelError e = target->setAffinity(req.mask().data(), maskSize);
 
-	if(e == kHelErrIllegalArgs) {
+	if(e == kHelErrIllegalArgs || e == kHelErrThreadTerminated) {
 		co_await sendErrorResponse<managarm::posix::SetAffinityResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 		co_return {};
 	} else if(e != kHelErrNone) {
@@ -240,22 +239,21 @@ HandleRequest::operator()(managarm::posix::GetAffinityRequest &&req,
 
 	std::vector<uint8_t> affinity(req.size());
 
-	auto handle = self->threadDescriptor().getHandle();
+	auto target = self;
 
 	if(req.pid() && self->pid() != req.pid()) {
 		// TODO: permission checking
-		auto target = Process::findProcess(req.pid());
+		target = Process::findProcess(req.pid());
 		if(!target) {
 			co_await sendErrorResponse<managarm::posix::GetAffinityResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 			co_return {};
 		}
-		handle = target->threadDescriptor().getHandle();
 	}
 
 	size_t actual_size;
-	HelError e = helGetAffinity(handle, affinity.data(), req.size(), &actual_size);
+	HelError e = target->getAffinity(affinity.data(), req.size(), &actual_size);
 
-	if(e == kHelErrBufferTooSmall) {
+	if(e == kHelErrBufferTooSmall || e == kHelErrThreadTerminated) {
 		co_await sendErrorResponse<managarm::posix::GetAffinityResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 		co_return {};
 	} else if(e != kHelErrNone) {

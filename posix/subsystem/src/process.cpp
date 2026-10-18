@@ -1392,6 +1392,26 @@ std::shared_ptr<ProcessGroup> Process::pgPointer() {
 	return threadGroup()->pgPointer();
 }
 
+void Process::interruptThread() {
+	std::lock_guard lock{taskMutex_};
+	if(_threadDescriptor)
+		HEL_CHECK(helInterruptThread(_threadDescriptor.getHandle()));
+}
+
+HelError Process::setAffinity(uint8_t *mask, size_t size) {
+	std::lock_guard lock{taskMutex_};
+	if(!_threadDescriptor)
+		return kHelErrThreadTerminated;
+	return helSetAffinity(_threadDescriptor.getHandle(), mask, size);
+}
+
+HelError Process::getAffinity(uint8_t *mask, size_t size, size_t *actualSize) {
+	std::lock_guard lock{taskMutex_};
+	if(!_threadDescriptor)
+		return kHelErrThreadTerminated;
+	return helGetAffinity(_threadDescriptor.getHandle(), mask, size, actualSize);
+}
+
 void Process::cancelPosixRequest(uint64_t cancelId) {
 	if (cancelId != 0)
 		cancelEventRegistry_.cancel(helix_ng::CredentialsView{credentials_}, cancelId);
@@ -1932,9 +1952,9 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 		process->_path = std::move(path);
 	}
 	process->_posixLane = std::move(server_lane);
-	process->_threadDescriptor = std::move(execResult.thread);
 	{
 		std::lock_guard lock{process->taskMutex_};
+		process->_threadDescriptor = std::move(execResult.thread);
 		std::swap(process->_vmContext, exec_vm_context);
 	}
 	exec_vm_context = nullptr;
@@ -1987,17 +2007,19 @@ async::result<void> Process::terminate(bool *lastInGroup) {
 	}
 
 	_posixLane = {};
-	_threadDescriptor = {};
 	// Dropping the contexts closes files, hence do it after releasing the lock.
+	helix::UniqueDescriptor threadDescriptor;
 	std::shared_ptr<VmContext> vmContext;
 	std::shared_ptr<FsContext> fsContext;
 	std::shared_ptr<FileContext> fileContext;
 	{
 		std::lock_guard lock{taskMutex_};
+		threadDescriptor = std::move(_threadDescriptor);
 		vmContext = std::move(_vmContext);
 		fsContext = std::move(_fsContext);
 		fileContext = std::move(_fileContext);
 	}
+	threadDescriptor = {};
 	vmContext = nullptr;
 	fsContext = nullptr;
 	fileContext = nullptr;
@@ -2370,7 +2392,7 @@ async::result<void> ThreadGroup::terminateGroup(TerminationState state) {
 			if (process->forceTermination)
 				continue;
 			process->forceTermination = true;
-			HEL_CHECK(helInterruptThread(process->threadDescriptor().getHandle()));
+			process->interruptThread();
 		}
 
 		if (threads_.empty())

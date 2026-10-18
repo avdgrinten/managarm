@@ -601,9 +601,18 @@ public:
 		return _posixLane;
 	}
 
+	// Only for the thread's own serve tree, which is the only writer of the descriptor, and for the
+	// caller of fork() and clone() until it resumes the new thread (the new thread's serve() runs
+	// on the caller's thread, which does not suspend until then).
+	// Other callers use interruptThread(), setAffinity() and getAffinity().
 	helix::BorrowedDescriptor threadDescriptor() {
 		return _threadDescriptor;
 	}
+
+	// These do nothing and return kHelErrThreadTerminated once the thread terminated.
+	void interruptThread();
+	HelError setAffinity(uint8_t *mask, size_t size);
+	HelError getAffinity(uint8_t *mask, size_t size, size_t *actualSize);
 
 	// As the contexts associated with a process can change (e.g. when unshare() is implemented),
 	// those functions return refcounted pointers.
@@ -757,10 +766,12 @@ private:
 	// Protected by taskMutex_.
 	std::string _name;
 	helix::UniqueLane _posixLane;
+	// The thread descriptor and the contexts are only written by the thread's own serve tree
+	// (exec() and terminate(); fork() and clone() before they publish the thread), which reads
+	// them without taskMutex_.
+	// Protected by taskMutex_.
 	helix::UniqueDescriptor _threadDescriptor;
 	std::shared_ptr<Generation> _currentGeneration;
-	// The contexts are only written by the thread's own serve tree (exec() and terminate(); fork()
-	// and clone() before they publish the thread), which reads them without taskMutex_.
 	// Protected by taskMutex_.
 	std::shared_ptr<VmContext> _vmContext;
 	// Protected by taskMutex_.
