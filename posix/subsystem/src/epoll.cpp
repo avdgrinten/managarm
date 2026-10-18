@@ -66,7 +66,9 @@ private:
 		int eventMask;
 		uint64_t cookie;
 
-		async::cancellation_event cancelPoll;
+		// Cancels the current pollOperation. Each operation gets a fresh event, such that
+		// cancelling it never races with resetting it for the next operation.
+		std::shared_ptr<async::cancellation_event> cancelPoll;
 
 		frg::manual_box<
 			async::execution::operation_t<
@@ -137,12 +139,12 @@ private:
 					"Mask is {:#x}, while edges are {:#x}",
 					item->epoll->structName(), item->file->structName(), item->eventMask, std::get<1>(result));
 
-			item->cancelPoll.reset();
+			item->cancelPoll = std::make_shared<async::cancellation_event>();
 			auto process = item->process.lock();
 			item->pollOperation.construct_with([&] {
 				return async::execution::connect(
 					item->file->pollWait(process.get(), std::get<0>(result),
-							(item->eventMask & epollEvents) | EPOLLERR | EPOLLHUP, item->cancelPoll),
+							(item->eventMask & epollEvents) | EPOLLERR | EPOLLHUP, *item->cancelPoll),
 					Receiver{item->self.lock()}
 				);
 			});
@@ -200,7 +202,8 @@ public:
 
 		item->eventMask = mask;
 		item->cookie = cookie;
-		item->cancelPoll.cancel();
+		if(item->cancelPoll)
+			item->cancelPoll->cancel();
 
 		// Mark the item as pending.
 		if(!(item->state & statePending)) {
@@ -225,7 +228,8 @@ public:
 		}
 		auto item = it->second;
 
-		item->cancelPoll.cancel();
+		if(item->cancelPoll)
+			item->cancelPoll->cancel();
 
 		_fileMap.erase(it);
 		item->state &= ~stateAlive;
@@ -322,11 +326,11 @@ public:
 						item->state |= statePolling;
 
 						// Once an item is not pending anymore, we continue watching it.
-						item->cancelPoll.reset();
+						item->cancelPoll = std::make_shared<async::cancellation_event>();
 						item->pollOperation.construct_with([&] {
 							return async::execution::connect(
 								item->file->pollWait(process.get(), std::get<0>(result),
-										itemEvents | EPOLLERR | EPOLLHUP, item->cancelPoll),
+										itemEvents | EPOLLERR | EPOLLHUP, *item->cancelPoll),
 								Receiver{item}
 							);
 						});
@@ -380,7 +384,7 @@ public:
 			item->state &= ~stateAlive;
 
 			if(item->state & statePolling)
-				item->cancelPoll.cancel();
+				item->cancelPoll->cancel();
 		}
 
 		while(!_pendingQueue.empty()) {
