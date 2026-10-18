@@ -14,6 +14,7 @@
 #include <bragi/helpers-std.hpp>
 
 #include <core/dispatch.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include "core/tty.hpp"
 #include "file.hpp"
 #include "process.hpp"
@@ -397,7 +398,7 @@ public:
 
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				file, &File::fileOperations, file->cancelServe_));
 	}
 
@@ -472,7 +473,7 @@ public:
 
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				file, &File::fileOperations, file->cancelServe_));
 	}
 
