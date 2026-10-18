@@ -553,11 +553,12 @@ struct MemoryNode final : Node {
 
 	async::result<frg::expected<Error, FileStats>> getStats() override {
 		auto stats = baseStats();
-		stats.fileSize = _fileSize;
+		stats.fileSize = _fileSize.load(std::memory_order_relaxed);
 		co_return stats;
 	}
 
 private:
+	// Must be called with _dataMutex held exclusively.
 	async::result<void> _resizeFile(size_t new_size) {
 		_fileSize = new_size;
 
@@ -598,9 +599,14 @@ private:
 		co_return {};
 	}
 
+	// Never held together with a directory lock.
+	async::shared_mutex _dataMutex;
+	// Protected by _dataMutex.
 	helix::UniqueDescriptor _memory;
+	// Protected by _dataMutex.
 	size_t _areaSize;
-	size_t _fileSize;
+	// Only written with _dataMutex held exclusively; atomic such that getStats() can read it.
+	std::atomic<size_t> _fileSize;
 };
 
 struct Superblock final : FsSuperblock {
@@ -783,7 +789,7 @@ MemoryFile::seek(off_t delta, VfsSeek whence) {
 		_offset += delta;
 	}else if(whence == VfsSeek::eof) {
 		auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
-		_offset = delta + node->_fileSize;
+		_offset = delta + node->_fileSize.load(std::memory_order_relaxed);
 	} else {
 		co_return Error::illegalArguments;
 	}
@@ -798,10 +804,13 @@ MemoryFile::readSome(Process *, void *buffer, size_t max_length, async::cancella
 	{
 		co_await _offsetMutex.async_lock();
 		frg::unique_lock offset_lock{frg::adopt_lock, _offsetMutex};
+		co_await node->_dataMutex.async_lock_shared();
+		frg::shared_lock data_lock{frg::adopt_lock, node->_dataMutex};
 
-		if(!(_offset <= node->_fileSize))
+		size_t file_size = node->_fileSize.load(std::memory_order_relaxed);
+		if(!(_offset <= file_size))
 			co_return std::unexpected{Error::eof};
-		chunk = std::min(node->_fileSize - _offset, max_length);
+		chunk = std::min(file_size - _offset, max_length);
 
 		if(auto result = co_await node->_readData(_offset, buffer, chunk); !result)
 			co_return std::unexpected{result.error()};
@@ -821,11 +830,13 @@ MemoryFile::writeAll(Process *, const void *buffer, size_t length) {
 	{
 		co_await _offsetMutex.async_lock();
 		frg::unique_lock offset_lock{frg::adopt_lock, _offsetMutex};
+		co_await node->_dataMutex.async_lock();
+		frg::unique_lock data_lock{frg::adopt_lock, node->_dataMutex};
 
 		if(flags_ & semanticAppend)
-			_offset = node->_fileSize;
+			_offset = node->_fileSize.load(std::memory_order_relaxed);
 
-		if(_offset + length > node->_fileSize)
+		if(_offset + length > node->_fileSize.load(std::memory_order_relaxed))
 			co_await node->_resizeFile(_offset + length);
 
 		FRG_CO_TRY(co_await node->_writeData(_offset, buffer, length));
@@ -839,9 +850,13 @@ async::result<std::expected<size_t, Error>>
 MemoryFile::pread(Process *, int64_t offset, void *buffer, size_t length) {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
 
-	if(static_cast<size_t>(offset) >= node->_fileSize)
+	co_await node->_dataMutex.async_lock_shared();
+	frg::shared_lock data_lock{frg::adopt_lock, node->_dataMutex};
+
+	size_t file_size = node->_fileSize.load(std::memory_order_relaxed);
+	if(static_cast<size_t>(offset) >= file_size)
 		co_return std::unexpected{Error::eof};
-	auto chunk = std::min(node->_fileSize - offset, length);
+	auto chunk = std::min(file_size - offset, length);
 
 	if(auto result = co_await node->_readData(offset, buffer, chunk); !result)
 		co_return std::unexpected{result.error()};
@@ -853,7 +868,10 @@ async::result<frg::expected<Error, size_t>>
 MemoryFile::pwrite(Process *, int64_t offset, const void *buffer, size_t length) {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
 
-	if(offset + length > node->_fileSize)
+	co_await node->_dataMutex.async_lock();
+	frg::unique_lock data_lock{frg::adopt_lock, node->_dataMutex};
+
+	if(offset + length > node->_fileSize.load(std::memory_order_relaxed))
 		co_await node->_resizeFile(offset + length);
 
 	FRG_CO_TRY(co_await node->_writeData(offset, buffer, length));
@@ -864,6 +882,9 @@ async::result<frg::expected<protocols::fs::Error>>
 MemoryFile::truncate(size_t size) {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
 
+	co_await node->_dataMutex.async_lock();
+	frg::unique_lock data_lock{frg::adopt_lock, node->_dataMutex};
+
 	co_await node->_resizeFile(size);
 	co_return {};
 }
@@ -872,8 +893,11 @@ async::result<frg::expected<protocols::fs::Error>>
 MemoryFile::allocate(int64_t offset, size_t size) {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
 
+	co_await node->_dataMutex.async_lock();
+	frg::unique_lock data_lock{frg::adopt_lock, node->_dataMutex};
+
 	// TODO: Careful about overflow.
-	if(offset + size <= node->_fileSize)
+	if(offset + size <= node->_fileSize.load(std::memory_order_relaxed))
 		co_return {};
 	co_await node->_resizeFile(offset + size);
 	co_return {};
@@ -900,6 +924,10 @@ async::result<int> MemoryFile::getFileFlags() {
 FutureMaybe<helix::UniqueDescriptor>
 MemoryFile::accessMemory() {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
+
+	co_await node->_dataMutex.async_lock_shared();
+	frg::shared_lock data_lock{frg::adopt_lock, node->_dataMutex};
+
 	co_return node->_memory.dup();
 }
 
