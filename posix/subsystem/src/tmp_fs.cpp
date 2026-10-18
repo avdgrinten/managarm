@@ -1,6 +1,8 @@
 #include <fcntl.h>
 #include <linux/magic.h>
 #include <unistd.h>
+#include <atomic>
+#include <mutex>
 #include <set>
 
 #include <async/mutex.hpp>
@@ -48,11 +50,11 @@ protected:
 		_gid = gid;
 	}
 
-public:
-	async::result<frg::expected<Error, FileStats>> getStats() override {
+	// Returns the stats of this node except for the file size.
+	FileStats baseStats() {
+		std::lock_guard lock{_metaMutex};
 		FileStats stats{};
 		stats.inodeNumber = _inodeNumber;
-		stats.fileSize = 0;
 		stats.numLinks = _numLinks;
 		stats.mode = _mode;
 		stats.uid = _uid;
@@ -63,52 +65,32 @@ public:
 		stats.mtimeNanos = _mtime.tv_nsec;
 		stats.ctimeSecs = _ctime.tv_sec;
 		stats.ctimeNanos = _ctime.tv_nsec;
-		co_return stats;
+		return stats;
+	}
+
+public:
+	async::result<frg::expected<Error, FileStats>> getStats() override {
+		co_return baseStats();
 	}
 
 	int64_t inodeNumber() {
 		return _inodeNumber;
 	}
 
-	int numLinks() {
-		return _numLinks;
-	}
-
 	void adjustLinkCount(int delta) {
+		std::lock_guard lock{_metaMutex};
 		_numLinks += delta;
 	}
 
-	mode_t mode() {
-		return _mode;
-	}
-
-	uid_t uid() {
-		return _uid;
-	}
-
-	gid_t gid() {
-		return _gid;
-	}
-
-	timespec atime() {
-		return _atime;
-	}
-
-	timespec mtime() {
-		return _mtime;
-	}
-
-	timespec ctime() {
-		return _ctime;
-	}
-
 	async::result<Error> chmod(int mode) override {
+		std::lock_guard lock{_metaMutex};
 		_mode = (_mode & 0xFFFFF000) | mode;
 		co_return Error::success;
 	}
 
 	async::result<Error> utimensat(std::optional<timespec> atime, std::optional<timespec> mtime,
 			timespec ctime) override {
+		std::lock_guard lock{_metaMutex};
 		if(atime) {
 			_atime.tv_sec = atime->tv_sec;
 			_atime.tv_nsec = atime->tv_nsec;
@@ -125,6 +107,7 @@ public:
 	}
 
 	async::result<std::expected<void, Error>> chown(std::optional<uid_t> uid, std::optional<gid_t> gid) override {
+		std::lock_guard lock{_metaMutex};
 		if(uid)
 			_uid = *uid;
 		if(gid)
@@ -134,12 +117,22 @@ public:
 
 private:
 	int64_t _inodeNumber;
+
+	// Leaf lock.
+	std::mutex _metaMutex;
+	// Protected by _metaMutex.
 	int _numLinks = 1;
+	// Protected by _metaMutex.
 	mode_t _mode = 0;
+	// Protected by _metaMutex.
 	uid_t _uid = 0;
+	// Protected by _metaMutex.
 	gid_t _gid = 0;
+	// Protected by _metaMutex.
 	timespec _atime = {0, 0};
+	// Protected by _metaMutex.
 	timespec _mtime = {0, 0};
+	// Protected by _metaMutex.
 	timespec _ctime = {0, 0};
 };
 
@@ -157,19 +150,8 @@ public:
 	SymlinkNode(Superblock *superblock, std::string link);
 
 	async::result<frg::expected<Error, FileStats>> getStats() override {
-		FileStats stats{};
-		stats.inodeNumber = inodeNumber();
+		auto stats = baseStats();
 		stats.fileSize = _link.size();
-		stats.numLinks = numLinks();
-		stats.mode = mode();
-		stats.uid = uid();
-		stats.gid = gid();
-		stats.atimeSecs = atime().tv_sec;
-		stats.atimeNanos = atime().tv_nsec;
-		stats.mtimeSecs = mtime().tv_sec;
-		stats.mtimeNanos = mtime().tv_nsec;
-		stats.ctimeSecs = ctime().tv_sec;
-		stats.ctimeNanos = ctime().tv_nsec;
 		co_return stats;
 	}
 
@@ -555,19 +537,8 @@ struct MemoryNode final : Node {
 	}
 
 	async::result<frg::expected<Error, FileStats>> getStats() override {
-		FileStats stats{};
-		stats.inodeNumber = inodeNumber();
+		auto stats = baseStats();
 		stats.fileSize = _fileSize;
-		stats.numLinks = numLinks();
-		stats.mode = mode();
-		stats.uid = uid();
-		stats.gid = gid();
-		stats.atimeSecs = atime().tv_sec;
-		stats.atimeNanos = atime().tv_nsec;
-		stats.mtimeSecs = mtime().tv_sec;
-		stats.mtimeNanos = mtime().tv_nsec;
-		stats.ctimeSecs = ctime().tv_sec;
-		stats.ctimeNanos = ctime().tv_nsec;
 		co_return stats;
 	}
 
@@ -702,7 +673,7 @@ struct Superblock final : FsSuperblock {
 	}
 
 	int64_t allocateInode() {
-		return _inodeCounter++;
+		return _inodeCounter.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	dev_t deviceNumber() override {
@@ -710,7 +681,7 @@ struct Superblock final : FsSuperblock {
 	}
 
 private:
-	int64_t _inodeCounter = 1;
+	std::atomic<int64_t> _inodeCounter = 1;
 
 	std::string fsType_;
 	unsigned int deviceMinor_;
