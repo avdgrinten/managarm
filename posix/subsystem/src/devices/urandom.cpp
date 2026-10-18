@@ -1,5 +1,6 @@
 #include <string.h>
 #include <sys/random.h>
+#include <helix/dispatcher-pool.hpp>
 
 #include "../common.hpp"
 #include "protocols/fs/common.hpp"
@@ -56,7 +57,7 @@ public:
 	static void serve(smarter::shared_ptr<UrandomFile> file) {
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				file, &fileOperations, file->_cancelServe));
 	}
 
