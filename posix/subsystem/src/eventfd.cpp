@@ -6,6 +6,7 @@
 #include <print>
 
 #include <async/recurring-event.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include <helix/ipc.hpp>
 #include "eventfd.hpp"
 #include "process.hpp"
@@ -25,7 +26,7 @@ struct OpenFile : FileWithDefaults {
 	static void serve(smarter::shared_ptr<OpenFile> file) {
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				smarter::shared_ptr<File>{file}, &File::fileOperations, file->cancelServe_));
 	}
 
