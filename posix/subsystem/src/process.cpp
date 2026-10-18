@@ -1640,6 +1640,7 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 
 	auto procfs_root = smarter::static_pointer_cast<procfs::DirectoryNode>(getProcfs()->getTarget());
 	process->procfsTaskLink_ = procfs_root->createProcTaskDirectory(getProcfs().get(), process.get());
+	registerProcessCredentials(process.get());
 
 	auto generation = std::make_shared<Generation>();
 	process->_currentGeneration = generation;
@@ -1746,6 +1747,7 @@ Process::fork(std::shared_ptr<Process> original) {
 
 	auto procfs_root = smarter::static_pointer_cast<procfs::DirectoryNode>(getProcfs()->getTarget());
 	process->procfsTaskLink_ = procfs_root->createProcTaskDirectory(getProcfs().get(), process.get());
+	registerProcessCredentials(process.get());
 
 	co_return process;
 }
@@ -1908,6 +1910,7 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 
 	auto procfs_root = smarter::static_pointer_cast<procfs::DirectoryNode>(getProcfs()->getTarget());
 	process->procfsTaskLink_ = procfs_root->createProcTaskDirectory(getProcfs().get(), process.get());
+	registerProcessCredentials(process.get());
 
 	co_return process;
 }
@@ -2009,6 +2012,7 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 	process->_clientAuxEnd = execResult.auxEnd;
 	process->threadGroup()->didExecute_ = true;
 	HEL_CHECK(helGetCredentials(process->_threadDescriptor.getHandle(), 0, process->credentials_.data()));
+	registerProcessCredentials(process.get());
 
 	auto generation = std::make_shared<Generation>();
 	process->_currentGeneration = generation;

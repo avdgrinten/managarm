@@ -53,6 +53,14 @@ std::optional<std::shared_ptr<Process>> findProcessWithCredentials(helix_ng::Cre
 	return it->second->shared_from_this();
 }
 
+void registerProcessCredentials(Process *process) {
+	std::array<char, 16> creds;
+	memcpy(creds.data(), process->credentials().data(), 16);
+	std::lock_guard lock{globalCredentialsMutex};
+	auto res = globalCredentialsMap.insert({creds, process});
+	assert(res.second);
+}
+
 async::result<void> serveSignals(std::shared_ptr<Process> self,
 		std::shared_ptr<Generation> generation) {
 	auto thread = self->threadDescriptor();
@@ -79,11 +87,6 @@ async::result<void> serve(std::shared_ptr<Process> self, std::shared_ptr<Generat
 
 	std::array<char, 16> creds;
 	HEL_CHECK(helGetCredentials(thread.getHandle(), 0, creds.data()));
-	{
-		std::lock_guard lock{globalCredentialsMutex};
-		auto res = globalCredentialsMap.insert({creds, self.get()});
-		assert(res.second);
-	}
 
 	co_await async::when_all(
 		observeThread(self, generation),

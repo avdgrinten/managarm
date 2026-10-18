@@ -838,6 +838,10 @@ private:
 
 std::optional<std::shared_ptr<Process>> findProcessWithCredentials(helix_ng::CredentialsView);
 
+// Makes the thread findable by findProcessWithCredentials() until its serve() returns.
+// Must be called before the thread is resumed: it can already use files that look it up.
+void registerProcessCredentials(Process *process);
+
 struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	friend struct Process;
 	friend struct ProcessGroup;
