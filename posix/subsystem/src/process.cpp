@@ -1645,26 +1645,38 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 	co_return threadGroup;
 }
 
-async::result<std::shared_ptr<Process>> Process::fork(std::shared_ptr<Process> original) {
-	auto hull = std::make_shared<PidHull>(nextPid++);
-	auto threadGroup = ThreadGroup::create(hull, original->threadGroup());
-	auto hierarchy = extendHierarchyForProcess(hull->getPid(), original->path());
-	auto process = std::make_shared<Process>(threadGroup, std::move(hull));
-	{
-		std::unique_lock lock{processGraphMutex};
-		process->threadGroup()->associateProcessLocked(process);
+bool Process::publishChild_(Process *original, std::shared_ptr<Process> process,
+		std::shared_ptr<ThreadGroup> newGroup, bool cloneParent) {
+	auto originalGroup = original->threadGroup();
+	std::unique_lock lock{processGraphMutex};
+	// Refuse to add threads or children to a group that is exiting: terminateGroup() would
+	// miss the thread, or it might already have reparented the group's children.
+	if (!std::holds_alternative<std::monostate>(originalGroup->_state))
+		return false;
+
+	if (newGroup) {
+		auto parent = cloneParent ? originalGroup->parent_ : originalGroup;
+		newGroup->parent_ = parent;
+		parent->_children.push_back(newGroup);
+		originalGroup->pgPointer_->reassociateProcessLocked(newGroup.get());
+		newGroup->getHull()->initializeThreadGroup(newGroup.get());
 	}
+	process->threadGroup()->associateProcessLocked(std::move(process));
+	return true;
+}
+
+async::result<std::expected<std::shared_ptr<Process>, Error>>
+Process::fork(std::shared_ptr<Process> original) {
+	auto hull = std::make_shared<PidHull>(nextPid++);
+	auto threadGroup = ThreadGroup::create(hull);
+	auto hierarchy = extendHierarchyForProcess(hull->getPid(), original->path());
+	auto process = std::make_shared<Process>(threadGroup.get(), std::move(hull));
 	process->_path = original->path();
 	process->_name = original->name();
 	process->_vmContext = co_await VmContext::clone(std::move(hierarchy), original->_vmContext);
 	process->_fsContext = FsContext::clone(original->_fsContext);
 	process->_fileContext = FileContext::clone(original->_fileContext);
 	process->threadGroup()->_signalContext = SignalContext::clone(original->threadGroup()->_signalContext);
-
-	{
-		std::unique_lock lock{processGraphMutex};
-		original->threadGroup()->pgPointer_->reassociateProcessLocked(threadGroup);
-	}
 
 	HelHandle thread_memory;
 	HEL_CHECK(helAllocateMemory(core::getProcessHierarchy(), 0x1000, 0, nullptr, &thread_memory));
@@ -1711,11 +1723,7 @@ async::result<std::shared_ptr<Process>> Process::fork(std::shared_ptr<Process> o
 	process->_clientAuxBegin = original->_clientAuxBegin;
 	process->_clientAuxEnd = original->_clientAuxEnd;
 	process->threadGroup()->inheritCredentials(original->threadGroup());
-	process->getTidHull()->initializeThreadGroup(threadGroup);
 	process->threadGroup()->didExecute_ = false;
-
-	auto procfs_root = smarter::static_pointer_cast<procfs::DirectoryNode>(getProcfs()->getTarget());
-	process->procfsTaskLink_ = procfs_root->createProcTaskDirectory(getProcfs().get(), process.get());
 
 	HelHandle new_thread;
 	HEL_CHECK(helCreateThread(process->vmContext()->getHierarchy().getHandle(),
@@ -1725,6 +1733,13 @@ async::result<std::shared_ptr<Process>> Process::fork(std::shared_ptr<Process> o
 	process->_threadDescriptor = helix::UniqueDescriptor{new_thread};
 	process->_posixLane = std::move(server_lane);
 	HEL_CHECK(helGetCredentials(process->_threadDescriptor.getHandle(), 0, process->credentials_.data()));
+
+	// The thread exists before it is published, such that terminateGroup() can interrupt it.
+	if(!publishChild_(original.get(), process, threadGroup, false))
+		co_return std::unexpected{Error::interrupted};
+
+	auto procfs_root = smarter::static_pointer_cast<procfs::DirectoryNode>(getProcfs()->getTarget());
+	process->procfsTaskLink_ = procfs_root->createProcTaskDirectory(getProcfs().get(), process.get());
 
 	auto generation = std::make_shared<Generation>();
 	process->_currentGeneration = generation;
@@ -1752,24 +1767,20 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 		co_return std::unexpected{Error::illegalArguments};
 	}
 
-	ThreadGroup *parentPtr = original->threadGroup();
-	if (args->flags & CLONE_PARENT) {
-		std::shared_lock lock{processGraphMutex};
-		parentPtr = original->threadGroup()->parent_;
+	// The signal handlers belong to the thread group, like on Linux.
+	if ((args->flags & CLONE_THREAD) && !(args->flags & CLONE_SIGHAND)) {
+		co_return std::unexpected{Error::illegalArguments};
 	}
 
 	ThreadGroup *threadGroup;
+	std::shared_ptr<ThreadGroup> newGroup;
 
 	if (args->flags & CLONE_THREAD) {
 		threadGroup = original->tgPointer_.get();
 	} else {
 		auto pidHull = std::make_shared<PidHull>(nextPid++);
-		threadGroup = ThreadGroup::create(std::move(pidHull), parentPtr);
-		{
-			std::unique_lock lock{processGraphMutex};
-			original->threadGroup()->pgPointer_->reassociateProcessLocked(threadGroup);
-		}
-		threadGroup->getHull()->initializeThreadGroup(threadGroup);
+		newGroup = ThreadGroup::create(std::move(pidHull));
+		threadGroup = newGroup.get();
 	}
 
 	auto tidHull = std::make_shared<PidHull>(nextPid++);
@@ -1794,12 +1805,15 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 	else
 		process->_fileContext = FileContext::clone(original->_fileContext);
 
-	if (args->flags & CLONE_SIGHAND) {
-		process->threadGroup()->_signalContext = original->threadGroup()->_signalContext;
-	} else {
-		process->threadGroup()->_signalContext = SignalContext::clone(original->threadGroup()->_signalContext);
-		if (args->flags & CLONE_CLEAR_SIGHAND)
-			process->threadGroup()->_signalContext->resetHandlers();
+	// Under CLONE_THREAD, the group is already published; only a new group is initialized here.
+	if (!(args->flags & CLONE_THREAD)) {
+		if (args->flags & CLONE_SIGHAND) {
+			process->threadGroup()->_signalContext = original->threadGroup()->_signalContext;
+		} else {
+			process->threadGroup()->_signalContext = SignalContext::clone(original->threadGroup()->_signalContext);
+			if (args->flags & CLONE_CLEAR_SIGHAND)
+				process->threadGroup()->_signalContext->resetHandlers();
+		}
 	}
 
 	if ((args->flags & CLONE_VM) && !(args->flags & CLONE_VFORK)) {
@@ -1859,18 +1873,8 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 
 	if (!(args->flags & CLONE_THREAD)) {
 		process->threadGroup()->inheritCredentials(original->threadGroup());
+		process->threadGroup()->didExecute_ = false;
 	}
-
-	process->getTidHull()->initializeProcess(process.get());
-	{
-		std::unique_lock lock{processGraphMutex};
-		process->threadGroup()->associateProcessLocked(process);
-	}
-
-	process->threadGroup()->didExecute_ = false;
-
-	auto procfs_root = smarter::static_pointer_cast<procfs::DirectoryNode>(getProcfs()->getTarget());
-	process->procfsTaskLink_ = procfs_root->createProcTaskDirectory(getProcfs().get(), process.get());
 
 	HelHandle new_thread;
 	HEL_CHECK(helCreateThread(process->vmContext()->getHierarchy().getHandle(),
@@ -1892,6 +1896,14 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 
 	process->_posixLane = std::move(server_lane);
 	HEL_CHECK(helGetCredentials(process->_threadDescriptor.getHandle(), 0, process->credentials_.data()));
+
+	// The thread exists before it is published, such that terminateGroup() can interrupt it.
+	if(!publishChild_(original.get(), process, newGroup, args->flags & CLONE_PARENT))
+		co_return std::unexpected{Error::interrupted};
+	process->getTidHull()->initializeProcess(process.get());
+
+	auto procfs_root = smarter::static_pointer_cast<procfs::DirectoryNode>(getProcfs()->getTarget());
+	process->procfsTaskLink_ = procfs_root->createProcTaskDirectory(getProcfs().get(), process.get());
 
 	auto generation = std::make_shared<Generation>();
 	process->_currentGeneration = generation;
@@ -2196,11 +2208,8 @@ std::shared_ptr<ThreadGroup> ThreadGroup::init(std::shared_ptr<PidHull> hull) {
 	return initThreadGroup;
 }
 
-ThreadGroup *ThreadGroup::create(std::shared_ptr<PidHull> hull, ThreadGroup *parent) {
-	auto tg = std::make_shared<ThreadGroup>(std::move(hull), parent);
-	std::unique_lock lock{processGraphMutex};
-	parent->_children.push_back(tg);
-	return tg.get();
+std::shared_ptr<ThreadGroup> ThreadGroup::create(std::shared_ptr<PidHull> hull) {
+	return std::make_shared<ThreadGroup>(std::move(hull), nullptr);
 }
 
 void ThreadGroup::inheritCredentials(ThreadGroup *other) {

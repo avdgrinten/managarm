@@ -176,7 +176,14 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 		}else if(observe.observation() == kHelObserveSuperCall + posix::superFork) {
 			if(logRequests)
 				std::cout << "posix: fork supercall" << std::endl;
-			auto child = co_await Process::fork(self);
+			auto forkResult = co_await Process::fork(self);
+			if(!forkResult) {
+				// The group is exiting; terminateGroup() waits for this thread.
+				assert(forkResult.error() == Error::interrupted);
+				co_await self->terminate();
+				break;
+			}
+			auto child = forkResult.value();
 
 			// Copy registers from the current thread to the new one.
 			auto new_thread = child->threadDescriptor().getHandle();
@@ -215,6 +222,11 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 			}
 
 			auto cloneResult = co_await Process::clone(self, ip, sp, &args);
+			if(!cloneResult && cloneResult.error() == Error::interrupted) {
+				// The group is exiting; terminateGroup() waits for this thread.
+				co_await self->terminate();
+				break;
+			}
 			HelHandle newThread = kHelNullHandle;
 
 			gprs[kHelRegError] = kHelErrNone;

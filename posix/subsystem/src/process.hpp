@@ -570,7 +570,9 @@ struct Process : std::enable_shared_from_this<Process> {
 
 	static async::result<std::shared_ptr<ThreadGroup>> init(std::string path);
 
-	static async::result<std::shared_ptr<Process>> fork(std::shared_ptr<Process> parent);
+	// fork() and clone() fail with Error::interrupted if the group of parent is exiting.
+	static async::result<std::expected<std::shared_ptr<Process>, Error>>
+	fork(std::shared_ptr<Process> parent);
 
 	static async::result<std::expected<std::shared_ptr<Process>, Error>>
 	clone(std::shared_ptr<Process> parent, void *ip, void *sp, posix::superCloneArgs *args);
@@ -767,6 +769,11 @@ public:
 	std::optional<SignalContext::SignalHandling> delayedSignalHandling = std::nullopt;
 
 private:
+	// Links a new thread (and, for a new group, the group) into the process graph.
+	// Returns false if the group of original is exiting.
+	static bool publishChild_(Process *original, std::shared_ptr<Process> process,
+			std::shared_ptr<ThreadGroup> newGroup, bool cloneParent);
+
 	std::shared_ptr<PidHull> hull_;
 	std::mutex taskMutex_;
 	// Protected by taskMutex_.
@@ -833,7 +840,8 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	~ThreadGroup();
 
 	static std::shared_ptr<ThreadGroup> init(std::shared_ptr<PidHull> hull);
-	static ThreadGroup *create(std::shared_ptr<PidHull> hull, ThreadGroup *parent);
+	// The group is linked into the process graph by Process::fork() or clone().
+	static std::shared_ptr<ThreadGroup> create(std::shared_ptr<PidHull> hull);
 
 	PidHull *getHull() const {
 		return hull_.get();
