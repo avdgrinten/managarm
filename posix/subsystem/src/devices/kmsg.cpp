@@ -5,6 +5,7 @@
 #include <kerncfg.bragi.hpp>
 #include <protocols/mbus/client.hpp>
 #include <string.h>
+#include <helix/dispatcher-pool.hpp>
 
 #include "../common.hpp"
 #include "kmsg.hpp"
@@ -153,7 +154,7 @@ public:
 	static void serve(smarter::shared_ptr<KmsgFile> file) {
 		helix::UniqueLane lane;
 		std::tie(lane, file->passthrough_) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				file, &fileOperations, file->cancelServe_));
 	}
 
