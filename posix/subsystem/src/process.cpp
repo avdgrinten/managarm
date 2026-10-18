@@ -2536,22 +2536,31 @@ std::shared_ptr<ProcessGroup> ProcessGroup::findProcessGroup(ProcessId pid) {
 ProcessGroup::ProcessGroup(std::shared_ptr<PidHull> hull)
 : hull_{std::move(hull)} { }
 
+// Groups are unlinked from their session once their last member leaves, such that the last
+// reference can be dropped on any thread.
 ProcessGroup::~ProcessGroup() {
-	sessionPointer_->dropGroup(this);
+	assert(!sessionHook_.in_list);
 }
 
 void ProcessGroup::reassociateProcess(ThreadGroup *process) {
-	if(process->pgPointer()) {
-		auto oldGroup = process->pgPointer().get();
+	assert(sessionHook_.in_list);
+	if(process->pgPointer_.get() == this)
+		return;
+	if(process->pgPointer_) {
+		auto oldGroup = process->pgPointer_.get();
 		oldGroup->members_.erase(oldGroup->members_.iterator_to(process));
+		if(oldGroup->members_.empty())
+			oldGroup->sessionPointer_->dropGroup(oldGroup);
 	}
 	process->pgPointer_ = shared_from_this();
 	members_.push_back(process);
 }
 
 void ProcessGroup::dropProcess(ThreadGroup *process) {
-	assert(process->pgPointer().get() == this);
+	assert(process->pgPointer_.get() == this);
 	members_.erase(members_.iterator_to(process));
+	if(members_.empty())
+		sessionPointer_->dropGroup(this);
 	// Note: this assignment can destruct 'this'.
 	process->pgPointer_ = nullptr;
 }
@@ -2581,9 +2590,10 @@ bool ProcessGroup::isOrphaned() {
 TerminalSession::TerminalSession(std::shared_ptr<PidHull> hull)
 : hull_{std::move(hull)} { }
 
+// Sessions drop their controlling terminal once their last group is unlinked, such that the
+// last reference can be dropped on any thread.
 TerminalSession::~TerminalSession() {
-	if(ctsPointer_)
-		ctsPointer_->dropSession(this);
+	assert(!ctsPointer_);
 }
 
 pid_t TerminalSession::getSessionId() {
@@ -2600,9 +2610,9 @@ std::shared_ptr<TerminalSession> TerminalSession::initializeNewSession(ThreadGro
 
 std::shared_ptr<ProcessGroup> TerminalSession::spawnProcessGroup(ThreadGroup *groupLeader) {
 	auto group = std::make_shared<ProcessGroup>(groupLeader->getHull()->shared_from_this());
-	group->reassociateProcess(groupLeader);
 	group->sessionPointer_ = shared_from_this();
 	groups_.push_back(group.get());
+	group->reassociateProcess(groupLeader);
 	group->hull_->initializeProcessGroup(group.get());
 	return group;
 }
@@ -2610,7 +2620,7 @@ std::shared_ptr<ProcessGroup> TerminalSession::spawnProcessGroup(ThreadGroup *gr
 std::shared_ptr<ProcessGroup> TerminalSession::getProcessGroupById(pid_t id) {
 	for(auto i : groups_) {
 		if(i->getHull()->getPid() == id)
-			return i->getHull()->getProcessGroup()->shared_from_this();
+			return i->shared_from_this();
 	}
 	return nullptr;
 }
@@ -2620,8 +2630,8 @@ void TerminalSession::dropGroup(ProcessGroup *group) {
 	if(foregroundGroup_ == group)
 		foregroundGroup_ = nullptr;
 	groups_.erase(groups_.iterator_to(group));
-	// Note: this assignment can destruct 'this'.
-	group->sessionPointer_ = nullptr;
+	if(groups_.empty() && ctsPointer_)
+		ctsPointer_->dropSession(this);
 }
 
 Error TerminalSession::setForegroundGroup(ProcessGroup *group) {
