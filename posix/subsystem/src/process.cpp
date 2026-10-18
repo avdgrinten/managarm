@@ -22,6 +22,7 @@
 
 #include <core/process-data.hpp>
 #include <protocols/posix/data.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include <helix/ipc.hpp>
 
 #include "debug-options.hpp"
@@ -1416,7 +1417,7 @@ HelError Process::getAffinity(uint8_t *mask, size_t size, size_t *actualSize) {
 }
 
 void Process::startServe() {
-	async::detach(serve(shared_from_this(), _currentGeneration));
+	helix::DispatcherPool::global().detach(serve(shared_from_this(), _currentGeneration));
 }
 
 void Process::cancelPosixRequest(uint64_t cancelId) {
@@ -1645,7 +1646,7 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 	auto generation = std::make_shared<Generation>();
 	process->_currentGeneration = generation;
 	helResume(process->_threadDescriptor.getHandle());
-	async::detach(serve(process, std::move(generation)));
+	helix::DispatcherPool::global().detach(serve(process, std::move(generation)));
 
 	co_return threadGroup;
 }
@@ -2017,7 +2018,9 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 	auto generation = std::make_shared<Generation>();
 	process->_currentGeneration = generation;
 	helResume(process->_threadDescriptor.getHandle());
-	async::detach(serve(process, std::move(generation)));
+	// The new generation may run on another pool member while the old one unwinds; the old one
+	// only erases the credentials of the old thread after this point and touches no other state.
+	helix::DispatcherPool::global().detach(serve(process, std::move(generation)));
 
 	co_return Error::success;
 }
