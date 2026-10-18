@@ -768,6 +768,9 @@ private:
 	// Protected by taskMutex_.
 	std::shared_ptr<FileContext> _fileContext;
 
+	// Unlinks /proc/[pid]/task/[tid].
+	void unlinkProcfsTask_();
+
 	smarter::shared_ptr<procfs::Link, LinkRc> procfsTaskLink_;
 
 	std::shared_ptr<ThreadGroup> tgPointer_;

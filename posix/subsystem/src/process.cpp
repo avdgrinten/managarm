@@ -1352,10 +1352,14 @@ Process::Process(ThreadGroup *threadGroup, std::shared_ptr<PidHull> tidHull)
 
 }
 
+// Processes are unlinked from procfs and the process graph by terminate() and
+// ThreadGroup::retire(), such that the last reference can be dropped on any thread.
 Process::~Process() {
 	std::cout << std::format("\e[33mposix: Process {} is destructed\e[39m", tid()) << std::endl;
+	assert(!procfsTaskLink_);
+}
 
-	// Unlink /proc/[pid]/task/[tid] here, as we want to keep it around even if we're a zombie.
+void Process::unlinkProcfsTask_() {
 	if(procfsTaskLink_) {
 		procfsTaskLink_->unlinkSelf();
 		procfsTaskLink_ = nullptr;
@@ -2008,6 +2012,9 @@ async::result<void> Process::terminate(bool *lastInGroup) {
 	std::erase_if(tgPointer_->threads_, [&](auto e) {
 		return e.get() == this;
 	});
+	// The leader's /proc/[pid]/task/[tid] stays until the group is reaped, like a zombie.
+	if (tgPointer_->leader_.get() != this)
+		unlinkProcfsTask_();
 	if (lastInGroup)
 		*lastInGroup = tgPointer_->threads_.empty();
 	tgPointer_->processTerminationSeq_.fetch_add(1, std::memory_order_release);
@@ -2129,8 +2136,10 @@ ThreadGroup::ThreadGroup(std::shared_ptr<PidHull> hull, ThreadGroup *parent)
 
 }
 
+// ThreadGroups are unlinked from the process graph by retire(), such that the last
+// reference can be dropped on any thread.
 ThreadGroup::~ThreadGroup() {
-	pgPointer()->dropProcess(this);
+	assert(!pgPointer_);
 }
 
 std::shared_ptr<ThreadGroup> ThreadGroup::init(std::shared_ptr<PidHull> hull) {
@@ -2451,7 +2460,12 @@ void ThreadGroup::retire(ThreadGroup *tg) {
 	auto self = tg->shared_from_this();
 	auto parent = tg->parent_;
 
+	if (tg->leader_)
+		tg->leader_->unlinkProcfsTask_();
 	tg->leader_ = nullptr;
+
+	if (tg->pgPointer_)
+		tg->pgPointer_->dropProcess(tg);
 
 	if (tg->procfsLink_) {
 		tg->procfsLink_->unlinkSelf();
