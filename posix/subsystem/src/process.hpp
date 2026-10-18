@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <sys/signalfd.h>
 #include <unordered_map>
 #include <vector>
@@ -33,6 +34,12 @@ struct TerminalSession;
 struct ControllingTerminalState;
 
 typedef int ProcessId;
+
+// Never held across a co_await; signals are issued, bells are raised and procfs entries are
+// unlinked after releasing it.
+// Lock order: processGraphMutex -> Process::taskMutex_ -> {SignalContext, ThreadGroup::signalMutex_,
+// the credentials, usage and timer mutexes of a ThreadGroup, FileContext, FsContext} -> pidMapMutex.
+extern std::shared_mutex processGraphMutex;
 
 // Returns the global memory object that reads as zeros.
 helix::BorrowedDescriptor getZeroMemory();
@@ -576,7 +583,7 @@ public:
 
 	~Process();
 
-	ThreadGroup *getParent();
+	std::shared_ptr<ThreadGroup> getParent();
 	PidHull *getPidHull();
 	PidHull *getTidHull();
 	int pid();
@@ -693,7 +700,8 @@ public:
 	async::result<frg::expected<Error, WaitResult>>
 	wait(int pid, WaitFlags flags, async::cancellation_token ct);
 
-	bool hasChild(int pid);
+	// Callers must hold processGraphMutex.
+	bool hasChildLocked(int pid);
 
 	bool isOnAltStack(uint64_t sp) {
 		return sp >= _altStackSp && sp <= (_altStackSp + _altStackSize);
@@ -819,6 +827,7 @@ std::optional<std::shared_ptr<Process>> findProcessWithCredentials(helix_ng::Cre
 struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	friend struct Process;
 	friend struct ProcessGroup;
+	friend struct ControllingTerminalState;
 
 	ThreadGroup(std::shared_ptr<PidHull> hull, ThreadGroup *parent);
 	~ThreadGroup();
@@ -838,20 +847,27 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 		return didExecute_;
 	}
 
-	ThreadGroup *getParent() {
-		return parent_;
-	}
+	// Returns null for init and once the group was reaped.
+	std::shared_ptr<ThreadGroup> getParent();
 
-	std::shared_ptr<ProcessGroup> pgPointer() { return pgPointer_; }
+	// Returns null once the group was reaped.
+	std::shared_ptr<ProcessGroup> pgPointer();
 
-	void associateProcess(std::shared_ptr<Process> process);
+	// Callers must hold processGraphMutex exclusively.
+	void associateProcessLocked(std::shared_ptr<Process> process);
 
 	async::result<void> terminateGroup(TerminationState state);
 	static void retire(ThreadGroup *group);
 
+	// Implements setpgid() for a thread of this group.
+	Error setProcessGroupOf(pid_t pid, pid_t pgid);
+
+	// Implements setsid() for a thread of this group. Returns the new session ID.
+	std::expected<pid_t, Error> createSession();
+
 	SignalContext *signalContext() { return _signalContext.get(); }
 	SignalQueue &signalQueue() { return signalQueue_; }
-	const std::vector<std::shared_ptr<Process>> &threads() { return threads_; }
+	std::vector<std::shared_ptr<Process>> threads();
 
 	static std::shared_ptr<ThreadGroup> findThreadGroup(ProcessId pid);
 	std::shared_ptr<Process> findThread(pid_t tid);
@@ -977,6 +993,8 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 		return _childrenUsage;
 	}
 
+	// procfsLink_ is set before the first thread of the group runs, i.e., before any other thread
+	// can call these functions, and it is only cleared when the group is reaped.
 	void setProcfsLink(smarter::shared_ptr<procfs::Link, LinkRc> link) {
 		procfsLink_ = link;
 	}
@@ -998,6 +1016,7 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	}
 
 	TerminationState terminationState() const {
+		std::shared_lock lock{processGraphMutex};
 		return _state;
 	}
 
@@ -1087,9 +1106,11 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	}
 
 private:
+	// Protected by processGraphMutex.
 	ThreadGroup *parent_;
 	// The leading thread is kept alive until the thread group is terminated, as we need to expose
 	// it via /proc/[pid]/task/[tid].
+	// Protected by processGraphMutex.
 	std::shared_ptr<Process> leader_;
 
 	std::shared_ptr<PidHull> hull_;
@@ -1098,7 +1119,9 @@ private:
 
 	std::atomic<bool> didExecute_ = false;
 
+	// Protected by processGraphMutex.
 	std::shared_ptr<ProcessGroup> pgPointer_;
+	// Protected by processGraphMutex.
 	frg::default_list_hook<ThreadGroup> pgHook_;
 
 	bool isRootLocked_() {
@@ -1138,11 +1161,15 @@ private:
 	// The following intrusive queue stores notifications for wait().
 	std::atomic<NotifyType> notifyType_ = NotifyType::null;
 	async::recurring_event notifyTypeChange_;
+	// Protected by processGraphMutex.
 	TerminationState _state;
 
+	// Protected by processGraphMutex.
 	std::vector<std::shared_ptr<ThreadGroup>> _children;
 
+	// Protected by processGraphMutex.
 	frg::default_list_hook<ThreadGroup> notifyHook_;
+	// Protected by processGraphMutex.
 	frg::intrusive_list<
 		ThreadGroup,
 		frg::locate_member<ThreadGroup, frg::default_list_hook<ThreadGroup>, &ThreadGroup::notifyHook_>
@@ -1165,6 +1192,7 @@ private:
 	// equivalent to PR_[SG]ET_DUMPABLE
 	std::atomic<bool> dumpable_ = true;
 
+	// Protected by processGraphMutex.
 	std::vector<std::shared_ptr<Process>> threads_;
 };
 
@@ -1182,23 +1210,31 @@ struct ProcessGroup : std::enable_shared_from_this<ProcessGroup> {
 
 	~ProcessGroup();
 
-	void reassociateProcess(ThreadGroup *process);
+	// Callers must hold processGraphMutex exclusively.
+	void reassociateProcessLocked(ThreadGroup *process);
 
-	void dropProcess(ThreadGroup *process);
+	// Callers must hold processGraphMutex exclusively.
+	void dropProcessLocked(ThreadGroup *process);
 
 	void issueSignalToGroup(int sn, SignalInfo info);
 
-	bool isOrphaned();
+	// Callers must hold processGraphMutex.
+	bool isOrphanedLocked();
 
 	PidHull *getHull() {
 		return hull_.get();
 	}
 
+	// The session never changes; the group is unlinked from it once the group becomes empty.
 	TerminalSession *getSession() { return sessionPointer_.get(); }
 
 private:
+	// Callers must hold processGraphMutex.
+	void collectMembersLocked_(std::vector<std::shared_ptr<ThreadGroup>> &members);
+
 	std::shared_ptr<PidHull> hull_;
 
+	// Protected by processGraphMutex.
 	frg::intrusive_list<
 		ThreadGroup,
 		frg::locate_member<
@@ -1209,6 +1245,7 @@ private:
 	> members_;
 
 	std::shared_ptr<TerminalSession> sessionPointer_;
+	// Protected by processGraphMutex.
 	frg::default_list_hook<ProcessGroup> sessionHook_;
 };
 
@@ -1221,23 +1258,27 @@ struct TerminalSession : std::enable_shared_from_this<TerminalSession> {
 
 	pid_t getSessionId();
 
-	static std::shared_ptr<TerminalSession> initializeNewSession(ThreadGroup *sessionLeader);
+	// Callers must hold processGraphMutex exclusively.
+	static std::shared_ptr<TerminalSession> initializeNewSessionLocked(ThreadGroup *sessionLeader);
 
-	std::shared_ptr<ProcessGroup> spawnProcessGroup(ThreadGroup *groupLeader);
+	// Callers must hold processGraphMutex exclusively.
+	std::shared_ptr<ProcessGroup> spawnProcessGroupLocked(ThreadGroup *groupLeader);
 
-	std::shared_ptr<ProcessGroup> getProcessGroupById(pid_t id);
+	// Callers must hold processGraphMutex.
+	std::shared_ptr<ProcessGroup> getProcessGroupByIdLocked(pid_t id);
 
-	ProcessGroup *getForegroundGroup() { return foregroundGroup_; }
+	// Callers must hold processGraphMutex exclusively.
+	void dropGroupLocked(ProcessGroup *group);
 
-	ControllingTerminalState *getControllingTerminal() { return ctsPointer_; }
+	// Callers must hold processGraphMutex exclusively.
+	Error setForegroundGroupLocked(ProcessGroup *group);
 
-	void dropGroup(ProcessGroup *group);
-
-	Error setForegroundGroup(ProcessGroup *group);
+	bool hasControllingTerminal();
 
 private:
 	std::shared_ptr<PidHull> hull_;
 
+	// Protected by processGraphMutex.
 	frg::intrusive_list<
 		ProcessGroup,
 		frg::locate_member<
@@ -1247,21 +1288,43 @@ private:
 		>
 	> groups_;
 
+	// Protected by processGraphMutex.
 	ProcessGroup *foregroundGroup_ = nullptr;
 
+	// Protected by processGraphMutex.
 	ControllingTerminalState *ctsPointer_ = nullptr;
 };
 
 struct ControllingTerminalState {
-	Error assignSessionOf(Process *process);
+	// Makes this the controlling terminal of the session that process leads (TIOCSCTTY and open()).
+	Error assignSessionOf(Process *process, bool makeForeground);
 
-	void dropSession(TerminalSession *session);
+	// Implements TIOCNOTTY.
+	Error releaseSessionOf(Process *process);
+
+	// Implement TIOCGPGRP, TIOCSPGRP and TIOCGSID.
+	// Fail with notTerminal unless this is the controlling terminal of the process.
+	std::expected<pid_t, Error> getForegroundGroupOf(Process *process);
+	Error setForegroundGroupOf(Process *process, pid_t pgid);
+	std::expected<pid_t, Error> getSessionIdOf(Process *process);
 
 	void issueSignalToForegroundGroup(int sn, SignalInfo info);
 
-	TerminalSession *getSession() { return associatedSession_; }
+	void setDevice(std::weak_ptr<UnixDevice> device);
 
-	std::weak_ptr<UnixDevice> controllingTerminal_;
+	// Returns the device of the controlling terminal of the process' session, if any.
+	static std::shared_ptr<UnixDevice> getDeviceOf(Process *process);
+
+	// Callers must hold processGraphMutex exclusively.
+	void dropSessionLocked(TerminalSession *session);
+
 private:
+	// Returns the session if this is the controlling terminal of process.
+	// Callers must hold processGraphMutex.
+	TerminalSession *sessionOfLocked_(Process *process);
+
+	// Protected by processGraphMutex.
+	std::weak_ptr<UnixDevice> device_;
+	// Protected by processGraphMutex.
 	TerminalSession *associatedSession_ = nullptr;
 };

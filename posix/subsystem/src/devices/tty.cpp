@@ -18,11 +18,7 @@ struct TtyDevice final : UnixDevice {
 			SemanticFlags flags) override {
 		if (!process)
 			co_return Error::noBackingDevice;
-		auto cts = process->pgPointer()->getSession()->getControllingTerminal();
-		if (!cts)
-			co_return Error::noBackingDevice;
-
-		auto controllingTerminal = cts->controllingTerminal_.lock();
+		auto controllingTerminal = ControllingTerminalState::getDeviceOf(process);
 		if (!controllingTerminal)
 			co_return Error::noBackingDevice;
 
