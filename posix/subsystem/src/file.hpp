@@ -541,6 +541,10 @@ public:
 	virtual async::result<frg::expected<Error, off_t>>
 	seek(off_t offset, VfsSeek whence);
 
+	// Returns the file offset without side effects. Defaults to a relative seek by zero,
+	// files whose seek() has side effects override this.
+	virtual async::result<frg::expected<Error, off_t>> getPosition();
+
 	virtual async::result<std::expected<size_t, Error>>
 	readSome(Process *process, void *data, size_t max_length,
 			async::cancellation_token ce);
