@@ -1415,6 +1415,10 @@ HelError Process::getAffinity(uint8_t *mask, size_t size, size_t *actualSize) {
 	return helGetAffinity(_threadDescriptor.getHandle(), mask, size, actualSize);
 }
 
+void Process::startServe() {
+	async::detach(serve(shared_from_this(), _currentGeneration));
+}
+
 void Process::cancelPosixRequest(uint64_t cancelId) {
 	if (cancelId != 0)
 		cancelEventRegistry_.cancel(helix_ng::CredentialsView{credentials_}, cancelId);
@@ -1734,16 +1738,14 @@ Process::fork(std::shared_ptr<Process> original) {
 	process->_posixLane = std::move(server_lane);
 	HEL_CHECK(helGetCredentials(process->_threadDescriptor.getHandle(), 0, process->credentials_.data()));
 
+	process->_currentGeneration = std::make_shared<Generation>();
+
 	// The thread exists before it is published, such that terminateGroup() can interrupt it.
 	if(!publishChild_(original.get(), process, threadGroup, false))
 		co_return std::unexpected{Error::interrupted};
 
 	auto procfs_root = smarter::static_pointer_cast<procfs::DirectoryNode>(getProcfs()->getTarget());
 	process->procfsTaskLink_ = procfs_root->createProcTaskDirectory(getProcfs().get(), process.get());
-
-	auto generation = std::make_shared<Generation>();
-	process->_currentGeneration = generation;
-	async::detach(serve(process, std::move(generation)));
 
 	co_return process;
 }
@@ -1897,6 +1899,8 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 	process->_posixLane = std::move(server_lane);
 	HEL_CHECK(helGetCredentials(process->_threadDescriptor.getHandle(), 0, process->credentials_.data()));
 
+	process->_currentGeneration = std::make_shared<Generation>();
+
 	// The thread exists before it is published, such that terminateGroup() can interrupt it.
 	if(!publishChild_(original.get(), process, newGroup, args->flags & CLONE_PARENT))
 		co_return std::unexpected{Error::interrupted};
@@ -1904,10 +1908,6 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 
 	auto procfs_root = smarter::static_pointer_cast<procfs::DirectoryNode>(getProcfs()->getTarget());
 	process->procfsTaskLink_ = procfs_root->createProcTaskDirectory(getProcfs().get(), process.get());
-
-	auto generation = std::make_shared<Generation>();
-	process->_currentGeneration = generation;
-	async::detach(serve(process, std::move(generation)));
 
 	co_return process;
 }

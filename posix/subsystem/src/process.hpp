@@ -572,6 +572,7 @@ struct Process : std::enable_shared_from_this<Process> {
 	static async::result<std::shared_ptr<ThreadGroup>> init(std::string path);
 
 	// fork() and clone() fail with Error::interrupted if the group of parent is exiting.
+	// On success, the caller resumes the new thread and then calls startServe().
 	static async::result<std::expected<std::shared_ptr<Process>, Error>>
 	fork(std::shared_ptr<Process> parent);
 
@@ -612,8 +613,8 @@ public:
 	}
 
 	// Only for the thread's own serve tree, which is the only writer of the descriptor, and for the
-	// caller of fork() and clone() until it resumes the new thread (the new thread's serve() runs
-	// on the caller's thread, which does not suspend until then).
+	// caller of fork() and clone() until it calls startServe() (the new thread has no serve tree
+	// before that).
 	// Other callers use interruptThread(), setAffinity() and getAffinity().
 	helix::BorrowedDescriptor threadDescriptor() {
 		return _threadDescriptor;
@@ -673,6 +674,11 @@ public:
 	posix::ThreadPage *accessThreadPage() {
 		return reinterpret_cast<posix::ThreadPage *>(_threadPageMapping.get());
 	}
+
+	// Starts serving a thread created by fork() or clone(). Must only be called after the thread
+	// was resumed: observing a thread that never ran reports an interrupt, upon which the serve()
+	// tree would resume the thread itself.
+	void startServe();
 
 	void cancelPosixRequest(uint64_t cancelId);
 
