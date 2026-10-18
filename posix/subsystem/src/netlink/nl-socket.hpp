@@ -3,6 +3,7 @@
 #include <async/recurring-event.hpp>
 #include <linux/netlink.h>
 #include <map>
+#include <mutex>
 
 #include "core/netlink.hpp"
 #include "../file.hpp"
@@ -21,8 +22,12 @@ struct ops {
 };
 
 extern std::map<int, const ops *> globalProtocolOpsMap;
-extern std::map<std::pair<int, uint8_t>, std::unique_ptr<core::netlink::Group>> globalGroupMap;
-extern std::map<uint32_t, OpenFile *> globalPortMap;
+
+// Delivers a copy of the packet to every socket that joined the group.
+void deliverToGroup(int protocol, uint32_t group, const core::netlink::Packet &packet);
+
+// Returns the socket that is bound to the given port, or null.
+smarter::shared_ptr<File> findPort(uint32_t port);
 
 struct OpenFile : FileWithDefaults, core::netlink::NetlinkFile {
 public:
@@ -82,12 +87,9 @@ public:
 	async::result<void> setFileFlags(int flags) override;
 	async::result<int> getFileFlags() override;
 
-	uint32_t socketPort() {
-		if(!_socketPort)
-			_associatePort();
-
-		return _socketPort;
-	}
+	// Binds the socket to a free port if it is not bound yet.
+	// Returns 0 if the socket is closed and unbound.
+	uint32_t socketPort();
 
 private:
 	void _associatePort();
@@ -97,27 +99,39 @@ private:
 	helix::UniqueLane _passthrough;
 	async::cancellation_event _cancelServe;
 
+	// Leaf lock.
+	std::mutex _mutex;
+
 	// Status management for poll().
 	async::recurring_event _statusBell;
+	// Protected by _mutex.
 	bool _isClosed = false;
+	// Protected by _mutex.
 	uint64_t _currentSeq;
+	// Protected by _mutex.
 	uint64_t _inSeq;
 
+	// Protected by globalMutex in nl-socket.cpp.
 	uint32_t _socketPort;
 
 	// The actual receive queue of the socket.
+	// Protected by _mutex.
 	std::deque<core::netlink::Packet> _recvQueue;
 
 	// Socket options.
+	// Protected by _mutex.
 	bool _passCreds;
 	std::atomic<bool> nonBlock_;
+	// Protected by _mutex.
 	bool pktinfo_;
 
 	// BPF filter
+	// Protected by _mutex.
 	std::optional<std::vector<char>> filter_ = std::nullopt;
 
 	// Group subscriptions
 	// TODO(no92): handle group IDs >= MAX_BITMAP_GROUP_ID
+	// Protected by globalMutex in nl-socket.cpp.
 	uint32_t joinedGroups_ = 0;
 
 	int type_ = 0;
