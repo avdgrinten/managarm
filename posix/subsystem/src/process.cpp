@@ -2447,6 +2447,10 @@ async::result<void> ThreadGroup::terminateGroup(TerminationState state) {
 }
 
 void ThreadGroup::retire(ThreadGroup *tg) {
+	// The parent's _children holds the last reference; keep the group alive until we are done.
+	auto self = tg->shared_from_this();
+	auto parent = tg->parent_;
+
 	tg->leader_ = nullptr;
 
 	if (tg->procfsLink_) {
@@ -2454,15 +2458,13 @@ void ThreadGroup::retire(ThreadGroup *tg) {
 		tg->procfsLink_ = nullptr;
 	}
 
-	tg->parent_->_children.erase(
-	    std::ranges::find_if(tg->parent_->_children, [pid = tg->pid()](auto e) {
-		    return e->pid() == pid;
-	    })
-	);
+	auto it = std::ranges::find(parent->_children, self);
+	assert(it != parent->_children.end());
+	parent->_children.erase(it);
 
 	// We need to ring _notifyBell once the process is retired
 	// since waitpid() returns an error once no children are left.
-	tg->parent_->raiseNotifyBell();
+	parent->raiseNotifyBell();
 }
 
 void ThreadGroup::associateProcess(std::shared_ptr<Process> process) {
