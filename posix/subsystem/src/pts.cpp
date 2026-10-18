@@ -2,7 +2,9 @@
 #include <async/cancellation.hpp>
 #include <linux/magic.h>
 #include <limits.h>
+#include <mutex>
 #include <numeric>
+#include <optional>
 #include <termios.h>
 #include <sys/epoll.h>
 #include <signal.h>
@@ -77,30 +79,53 @@ struct Channel {
 	int ptsIndex;
 	ControllingTerminalState cts;
 
+	// Leaf lock; statusBell is raised and signals are issued after releasing it.
+	std::mutex mutex;
+
+	// Protected by mutex.
 	struct termios activeSettings;
 
+	// Protected by mutex.
 	int width = 80;
+	// Protected by mutex.
 	int height = 25;
+	// Protected by mutex.
 	int pixelWidth = 8 * 80;
+	// Protected by mutex.
 	int pixelHeight = 16 * 25;
 
 	// Status management for poll().
 	async::recurring_event statusBell;
+	// Protected by mutex.
 	uint64_t currentSeq;
+	// Protected by mutex.
 	uint64_t masterInSeq;
+	// Protected by mutex.
 	uint64_t slaveInSeq;
 
 	// The actual queue of this pipe.
+	// Protected by mutex.
 	std::deque<Packet> masterQueue;
+	// Protected by mutex.
 	std::deque<Packet> slaveQueue;
 
+	// Protected by mutex.
 	size_t masterCount = 0;
+	// Protected by mutex.
 	size_t slaveCount = 0;
 };
 
 namespace {
 
-void processOut(const char c, Packet &packet, std::shared_ptr<Channel> channel) {
+// Events that processIn() produces; delivered after releasing the channel's mutex.
+struct DeferredEvents {
+	bool raise = false;
+	// In input order; a single write can contain several signal characters.
+	std::vector<int> signals;
+};
+
+// Must be called with the channel's mutex held.
+void processOut(const char c, Packet &packet, Channel *channel) {
 	if(!(channel->activeSettings.c_oflag & OPOST)) {
 		packet.buffer.push_back(c);
 		return;
@@ -117,14 +142,15 @@ void processOut(const char c, Packet &packet, std::shared_ptr<Channel> channel) 
 	return;
 }
 
-void processIn(const char character, Packet &packet, std::shared_ptr<Channel> channel) {
-	auto enqueuePacket = [&channel](Packet packet) {
+// Must be called with the channel's mutex held.
+void processIn(const char character, Packet &packet, Channel *channel, DeferredEvents &deferred) {
+	auto enqueuePacket = [&](Packet packet) {
 		channel->slaveQueue.push_back(std::move(packet));
 		channel->slaveInSeq = ++channel->currentSeq;
-		channel->statusBell.raise();
+		deferred.raise = true;
 	};
 
-	auto enqueueOut = [&channel](Packet packet) {
+	auto enqueueOut = [&](Packet packet) {
 		Packet parsed{};
 
 		for(auto c : packet.buffer) {
@@ -133,7 +159,7 @@ void processIn(const char character, Packet &packet, std::shared_ptr<Channel> ch
 
 		channel->masterQueue.push_back(std::move(parsed));
 		channel->masterInSeq = ++channel->currentSeq;
-		channel->statusBell.raise();
+		deferred.raise = true;
 	};
 
 	auto is_control_char = [](char c) -> bool {
@@ -192,8 +218,7 @@ void processIn(const char character, Packet &packet, std::shared_ptr<Channel> ch
 		}
 
 		if(signal.has_value()) {
-			UserSignal info;
-			channel->cts.issueSignalToForegroundGroup(signal.value(), info);
+			deferred.signals.push_back(*signal);
 			return;
 		}
 	}
@@ -365,7 +390,10 @@ public:
 	static void serve(smarter::shared_ptr<MasterFile> file) {
 		assert(!file->_passthrough);
 
-		file->_channel->masterCount++;
+		{
+			std::lock_guard lock{file->_channel->mutex};
+			file->_channel->masterCount++;
+		}
 
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
@@ -424,6 +452,7 @@ private:
 	async::cancellation_event cancelServe_;
 
 	std::shared_ptr<Channel> _channel;
+	// Protected by the channel's mutex.
 	Packet _packet{};
 
 	std::atomic<bool> _nonBlocking;
@@ -436,7 +465,10 @@ public:
 	static void serve(smarter::shared_ptr<SlaveFile> file) {
 		assert(!file->_passthrough);
 
-		file->_channel->slaveCount++;
+		{
+			std::lock_guard lock{file->_channel->mutex};
+			file->_channel->slaveCount++;
+		}
 
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
@@ -496,6 +528,7 @@ private:
 	async::cancellation_event cancelServe_;
 
 	std::shared_ptr<Channel> _channel;
+	// Protected by the channel's mutex.
 	Packet _packet{};
 
 	std::atomic<bool> nonBlock_;
@@ -573,8 +606,11 @@ public:
 	async::result<frg::expected<Error, FileStats>> getStats() override {
 		std::cout << "\e[31mposix: Fix pts DeviceNode::getStats()\e[39m" << std::endl;
 		FileStats stats{};
-		stats.uid = uid_;
-		stats.gid = gid_;
+		{
+			std::lock_guard lock{ownerMutex_};
+			stats.uid = uid_;
+			stats.gid = gid_;
+		}
 
 		co_return stats;
 	}
@@ -591,6 +627,7 @@ public:
 
 	async::result<std::expected<void, Error>>
 	chown(std::optional<uid_t> uid, std::optional<gid_t> gid) override {
+		std::lock_guard lock{ownerMutex_};
 		if(uid)
 			uid_ = *uid;
 		if(gid)
@@ -602,7 +639,10 @@ private:
 	VfsType _type;
 	DeviceId _id;
 
+	std::mutex ownerMutex_;
+	// Protected by ownerMutex_.
 	uid_t uid_ = 0;
+	// Protected by ownerMutex_.
 	gid_t gid_ = 0;
 };
 
@@ -620,6 +660,7 @@ public:
 	void linkDevice(FsLink *parent, std::string name,
 			smarter::shared_ptr<DeviceNode> node) {
 		auto link = makeFsShared<Link>(parent->sharedFromThis(), name, std::move(node));
+		std::lock_guard lock{_mutex};
 		_entries.insert(std::move(link));
 	}
 
@@ -630,13 +671,21 @@ public:
 
 	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	getLink(FsLink *, std::string name) override {
-		auto it = _entries.find(name);
-		if(it != _entries.end())
-			co_return *it;
-		co_return Error::noSuchFile;
+		smarter::shared_ptr<Link, LinkRc> link;
+		{
+			std::lock_guard lock{_mutex};
+			auto it = _entries.find(name);
+			if(it == _entries.end())
+				co_return Error::noSuchFile;
+			link = *it;
+		}
+		co_return link;
 	}
 
 private:
+	// Leaf lock.
+	std::mutex _mutex;
+	// Protected by _mutex.
 	std::set<smarter::shared_ptr<Link, LinkRc>, LinkCompare> _entries;
 };
 
@@ -927,29 +976,36 @@ MasterFile::readSome(Process *, void *data, size_t maxLength, async::cancellatio
 	if(!maxLength)
 		co_return std::unexpected{Error::eof};
 
-	// Linux emits EIO if there are no slaves.
-	// This takes precedence over EAGAIN.
-	if (_channel->masterQueue.empty() && !_channel->slaveCount)
-		co_return std::unexpected{Error::ioError};
+	while(true) {
+		{
+			std::lock_guard lock{_channel->mutex};
+			if(!_channel->masterQueue.empty()) {
+				auto packet = &_channel->masterQueue.front();
+				size_t chunk = std::min(packet->buffer.size() - packet->offset, maxLength);
+				assert(chunk); // Otherwise, we return above due to !maxLength.
+				memcpy(data, packet->buffer.data() + packet->offset, chunk);
+				packet->offset += chunk;
+				if(packet->offset == packet->buffer.size())
+					_channel->masterQueue.pop_front();
+				co_return chunk;
+			}
 
-	if (_channel->masterQueue.empty() && _nonBlocking)
-		co_return std::unexpected{Error::wouldBlock};
+			// Linux emits EIO if there are no slaves.
+			// This takes precedence over EAGAIN.
+			if (!_channel->slaveCount)
+				co_return std::unexpected{Error::ioError};
 
-	while (_channel->masterQueue.empty()) {
-		if (!_channel->slaveCount)
-			co_return std::unexpected{Error::ioError};
-		if (!co_await _channel->statusBell.async_wait(ce))
+			if (_nonBlocking)
+				co_return std::unexpected{Error::wouldBlock};
+		}
+
+		auto waitResult = co_await _channel->statusBell.async_wait_if([&] {
+			std::lock_guard lock{_channel->mutex};
+			return _channel->masterQueue.empty() && _channel->slaveCount;
+		}, ce);
+		if (!waitResult)
 			co_return std::unexpected{Error::interrupted};
 	}
-
-	auto packet = &_channel->masterQueue.front();
-	size_t chunk = std::min(packet->buffer.size() - packet->offset, maxLength);
-	assert(chunk); // Otherwise, we return above due to !maxLength.
-	memcpy(data, packet->buffer.data() + packet->offset, chunk);
-	packet->offset += chunk;
-	if(packet->offset == packet->buffer.size())
-		_channel->masterQueue.pop_front();
-	co_return chunk;
 }
 
 async::result<frg::expected<Error, size_t>>
@@ -957,23 +1013,31 @@ MasterFile::writeAll(Process *, const void *data, size_t length) {
 	if(logReadWrite)
 		std::cout << std::format("posix: Write to tty {} of size {}\n", structName(), length);
 
-	auto enqueuePacket = [this](Packet packet) {
-		_channel->slaveQueue.push_back(std::move(packet));
-		_channel->slaveInSeq = ++_channel->currentSeq;
+	DeferredEvents deferred;
+	{
+		std::lock_guard lock{_channel->mutex};
+
+		auto s = reinterpret_cast<const char *>(data);
+		for(size_t i = 0; i < length; i++) {
+			processIn(s[i], _packet, _channel.get(), deferred);
+		}
+
+		// Check whether all data was discarded above. An empty packet would read as EOF.
+		if(!(_channel->activeSettings.c_lflag & ICANON) && !_packet.buffer.empty()) {
+			_channel->slaveQueue.push_back(std::move(_packet));
+			_channel->slaveInSeq = ++_channel->currentSeq;
+			deferred.raise = true;
+			_packet = Packet{};
+		}
+	}
+
+	// Queue the signals before waking up readers, such that they are pending when readers return.
+	for(int signal : deferred.signals) {
+		UserSignal info;
+		_channel->cts.issueSignalToForegroundGroup(signal, info);
+	}
+	if(deferred.raise)
 		_channel->statusBell.raise();
-	};
-
-	auto s = reinterpret_cast<const char *>(data);
-	for(size_t i = 0; i < length; i++) {
-		processIn(s[i], _packet, _channel);
-	}
-
-	// Check whether all data was discarded above.
-	if(!(_channel->activeSettings.c_lflag & ICANON)) {
-		enqueuePacket(std::move(_packet));
-		_packet = Packet{};
-	}
-
 	co_return length;
 }
 
@@ -985,31 +1049,42 @@ MasterFile::getControllingTerminal() {
 async::result<frg::expected<Error, PollWaitResult>>
 MasterFile::pollWait(Process *, uint64_t past_seq, int mask,
 		async::cancellation_token cancellation) {
-	assert(past_seq <= _channel->currentSeq);
 	int edges = 0;
+	uint64_t sequence;
 
 	while(true) {
-		edges = 0;
-		if(_channel->slaveCount == 0)
-			edges |= EPOLLHUP;
-		else
-			edges |= EPOLLOUT;
+		{
+			std::lock_guard lock{_channel->mutex};
+			assert(past_seq <= _channel->currentSeq);
+			sequence = _channel->currentSeq;
 
-		if(_channel->masterInSeq > past_seq)
-			edges |= EPOLLIN;
+			edges = 0;
+			if(_channel->slaveCount == 0)
+				edges |= EPOLLHUP;
+			else
+				edges |= EPOLLOUT;
+
+			if(_channel->masterInSeq > past_seq)
+				edges |= EPOLLIN;
+		}
 
 		if (edges & mask)
 			break;
 
-		if (!co_await _channel->statusBell.async_wait(cancellation))
+		auto waitResult = co_await _channel->statusBell.async_wait_if([&] {
+			std::lock_guard lock{_channel->mutex};
+			return _channel->currentSeq == sequence;
+		}, cancellation);
+		if (!waitResult)
 			break;
 	}
 
-	co_return PollWaitResult{_channel->currentSeq, edges & mask};
+	co_return PollWaitResult{sequence, edges & mask};
 }
 
 async::result<frg::expected<Error, PollStatusResult>>
 MasterFile::pollStatus(Process *) {
+	std::lock_guard lock{_channel->mutex};
 	// For now making pts files always writable is sufficient.
 	int events = 0;
 	if(_channel->slaveCount == 0)
@@ -1049,10 +1124,13 @@ struct MasterFile::HandleIoctl {
 						<< req.pts_pixel_width() << "x" << req.pts_pixel_height()
 						<< " pixels (set by master)" << std::endl;
 
-			self->_channel->width = req.pts_width();
-			self->_channel->height = req.pts_height();
-			self->_channel->pixelWidth = req.pts_pixel_width();
-			self->_channel->pixelHeight = req.pts_pixel_height();
+			{
+				std::lock_guard lock{self->_channel->mutex};
+				self->_channel->width = req.pts_width();
+				self->_channel->height = req.pts_height();
+				self->_channel->pixelWidth = req.pts_pixel_width();
+				self->_channel->pixelHeight = req.pts_pixel_height();
+			}
 
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 
@@ -1069,9 +1147,13 @@ struct MasterFile::HandleIoctl {
 		}else if(req.command() == FIONREAD) {
 			managarm::fs::GenericIoctlReply resp;
 
-			size_t count = std::transform_reduce(self->_channel->masterQueue.begin(), self->_channel->masterQueue.end(), size_t{0}, std::plus<>(), [] (const Packet &p) {
-				return p.buffer.size() - p.offset;
-			});
+			size_t count;
+			{
+				std::lock_guard lock{self->_channel->mutex};
+				count = std::transform_reduce(self->_channel->masterQueue.begin(), self->_channel->masterQueue.end(), size_t{0}, std::plus<>(), [] (const Packet &p) {
+					return p.buffer.size() - p.offset;
+				});
+			}
 
 			resp.set_fionread_count(count);
 			resp.set_error(managarm::fs::Errors::SUCCESS);
@@ -1091,7 +1173,10 @@ struct MasterFile::HandleIoctl {
 			struct termios attrs;
 
 			memset(&attrs, 0, sizeof(struct termios));
-			ttyCopyTermios(self->_channel->activeSettings, attrs);
+			{
+				std::lock_guard lock{self->_channel->mutex};
+				ttyCopyTermios(self->_channel->activeSettings, attrs);
+			}
 
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 
@@ -1112,7 +1197,10 @@ struct MasterFile::HandleIoctl {
 				helix_ng::recvBuffer(&attrs, sizeof(struct termios))
 			);
 			HEL_CHECK(recv_attrs.error());
-			ttyCopyTermios(attrs, self->_channel->activeSettings);
+			{
+				std::lock_guard lock{self->_channel->mutex};
+				ttyCopyTermios(attrs, self->_channel->activeSettings);
+			}
 
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 
@@ -1150,8 +1238,15 @@ void MasterFile::handleClose() {
 	cancelServe_.cancel();
 	_passthrough = {};
 
-	if (--_channel->masterCount == 0) {
-		_channel->currentSeq++;
+	bool hangup = false;
+	{
+		std::lock_guard lock{_channel->mutex};
+		if (--_channel->masterCount == 0) {
+			_channel->currentSeq++;
+			hangup = true;
+		}
+	}
+	if (hangup) {
 		_channel->statusBell.raise();
 		_channel->cts.issueSignalToForegroundGroup(SIGHUP, {});
 	}
@@ -1196,31 +1291,46 @@ async::result<std::expected<size_t, Error>>
 SlaveFile::readSome(Process *, void *data, size_t maxLength, async::cancellation_token ce) {
 	if(logReadWrite)
 		std::cout << "posix: Read from tty " << structName() << std::endl;
-	if(!maxLength || _channel->masterCount == 0)
+	if(!maxLength)
 		co_return std::unexpected{Error::eof};
 
-	while(_channel->slaveQueue.empty()){
-		if(nonBlock_){
-			if(logReadWrite)
-				std::cout << "posix: tty would block" << std::endl;
-			co_return std::unexpected{Error::wouldBlock};
+	{
+		std::lock_guard lock{_channel->mutex};
+		if(_channel->masterCount == 0)
+			co_return std::unexpected{Error::eof};
+	}
+
+	while(true) {
+		{
+			std::lock_guard lock{_channel->mutex};
+			if(!_channel->slaveQueue.empty()) {
+				auto packet = &_channel->slaveQueue.front();
+				auto chunk = std::min(packet->buffer.size() - packet->offset, maxLength);
+				if(chunk)
+					memcpy(data, packet->buffer.data() + packet->offset, chunk);
+				packet->offset += chunk;
+				if(packet->offset == packet->buffer.size())
+					_channel->slaveQueue.pop_front();
+				co_return chunk;
+			}
+
+			if(nonBlock_){
+				if(logReadWrite)
+					std::cout << "posix: tty would block" << std::endl;
+				co_return std::unexpected{Error::wouldBlock};
+			}
 		}
 
-		if (!co_await _channel->statusBell.async_wait(ce)) {
+		auto waitResult = co_await _channel->statusBell.async_wait_if([&] {
+			std::lock_guard lock{_channel->mutex};
+			return _channel->slaveQueue.empty();
+		}, ce);
+		if (!waitResult) {
 			if (logReadWrite)
 				std::cout << "posix: tty read interrupted" << std::endl;
 			co_return std::unexpected{Error::interrupted};
 		}
 	}
-
-	auto packet = &_channel->slaveQueue.front();
-	auto chunk = std::min(packet->buffer.size() - packet->offset, maxLength);
-	if(chunk)
-		memcpy(data, packet->buffer.data() + packet->offset, chunk);
-	packet->offset += chunk;
-	if(packet->offset == packet->buffer.size())
-		_channel->slaveQueue.pop_front();
-	co_return chunk;
 }
 
 async::result<frg::expected<Error, size_t>>
@@ -1228,22 +1338,25 @@ SlaveFile::writeAll(Process *, const void *data, size_t length) {
 	if(logReadWrite)
 		std::cout << std::format("posix: Write to tty {}\n", structName());
 
-	if(_channel->masterCount == 0)
-		co_return Error::ioError;
-	if(!length)
-		co_return {};
+	{
+		std::lock_guard lock{_channel->mutex};
+		if(_channel->masterCount == 0)
+			co_return Error::ioError;
+		if(!length)
+			co_return {};
 
-	// Perform output processing.
-	for(size_t i = 0; i < length; i++) {
-		char c;
-		memcpy(&c, reinterpret_cast<const char *>(data) + i, 1);
-		processOut(c, _packet, _channel);
+		// Perform output processing.
+		for(size_t i = 0; i < length; i++) {
+			char c;
+			memcpy(&c, reinterpret_cast<const char *>(data) + i, 1);
+			processOut(c, _packet, _channel.get());
+		}
+
+		_channel->masterQueue.push_back(std::move(_packet));
+		_channel->masterInSeq = ++_channel->currentSeq;
+		_packet = Packet{};
 	}
-
-	_channel->masterQueue.push_back(std::move(_packet));
-	_channel->masterInSeq = ++_channel->currentSeq;
 	_channel->statusBell.raise();
-	_packet = Packet{};
 	co_return length;
 }
 
@@ -1255,31 +1368,42 @@ SlaveFile::getControllingTerminal() {
 async::result<frg::expected<Error, PollWaitResult>>
 SlaveFile::pollWait(Process *, uint64_t past_seq, int mask,
 		async::cancellation_token cancellation) {
-	assert(past_seq <= _channel->currentSeq);
 	int edges = 0;
+	uint64_t sequence;
 
 	while(true) {
-		edges = 0;
-		if(_channel->masterCount == 0)
-			edges |= EPOLLHUP | EPOLLERR | EPOLLIN;
-		else
-			edges |= EPOLLOUT;
+		{
+			std::lock_guard lock{_channel->mutex};
+			assert(past_seq <= _channel->currentSeq);
+			sequence = _channel->currentSeq;
 
-		if(_channel->slaveInSeq > past_seq)
-			edges |= EPOLLIN;
+			edges = 0;
+			if(_channel->masterCount == 0)
+				edges |= EPOLLHUP | EPOLLERR | EPOLLIN;
+			else
+				edges |= EPOLLOUT;
+
+			if(_channel->slaveInSeq > past_seq)
+				edges |= EPOLLIN;
+		}
 
 		if (edges & mask)
 			break;
 
-		if (!co_await _channel->statusBell.async_wait(cancellation))
+		auto waitResult = co_await _channel->statusBell.async_wait_if([&] {
+			std::lock_guard lock{_channel->mutex};
+			return _channel->currentSeq == sequence;
+		}, cancellation);
+		if (!waitResult)
 			break;
 	}
 
-	co_return PollWaitResult{_channel->currentSeq, edges & mask};
+	co_return PollWaitResult{sequence, edges & mask};
 }
 
 async::result<frg::expected<Error, PollStatusResult>>
 SlaveFile::pollStatus(Process *) {
+	std::lock_guard lock{_channel->mutex};
 	int events = 0;
 	if(_channel->masterCount == 0)
 		events |= EPOLLHUP | EPOLLERR | EPOLLIN;
@@ -1301,7 +1425,10 @@ struct SlaveFile::HandleIoctl {
 			struct termios attrs;
 
 			memset(&attrs, 0, sizeof(struct termios));
-			ttyCopyTermios(self->_channel->activeSettings, attrs);
+			{
+				std::lock_guard lock{self->_channel->mutex};
+				ttyCopyTermios(self->_channel->activeSettings, attrs);
+			}
 
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 
@@ -1388,7 +1515,10 @@ struct SlaveFile::HandleIoctl {
 				std::cout << std::dec << std::endl;
 			}
 
-			ttyCopyTermios(attrs, self->_channel->activeSettings);
+			{
+				std::lock_guard lock{self->_channel->mutex};
+				ttyCopyTermios(attrs, self->_channel->activeSettings);
+			}
 
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 
@@ -1402,10 +1532,13 @@ struct SlaveFile::HandleIoctl {
 			managarm::fs::GenericIoctlReply resp;
 
 			resp.set_error(managarm::fs::Errors::SUCCESS);
-			resp.set_pts_width(self->_channel->width);
-			resp.set_pts_height(self->_channel->height);
-			resp.set_pts_pixel_width(self->_channel->pixelWidth);
-			resp.set_pts_pixel_height(self->_channel->pixelHeight);
+			{
+				std::lock_guard lock{self->_channel->mutex};
+				resp.set_pts_width(self->_channel->width);
+				resp.set_pts_height(self->_channel->height);
+				resp.set_pts_pixel_width(self->_channel->pixelWidth);
+				resp.set_pts_pixel_height(self->_channel->pixelHeight);
+			}
 
 			auto ser = resp.SerializeAsString();
 			auto [send_resp] = co_await helix_ng::exchangeMsgs(
@@ -1423,10 +1556,13 @@ struct SlaveFile::HandleIoctl {
 						<< req.pts_pixel_width() << "x" << req.pts_pixel_height()
 						<< " pixels (set by slave)" << std::endl;
 
-			self->_channel->width = req.pts_width();
-			self->_channel->height = req.pts_height();
-			self->_channel->pixelWidth = req.pts_pixel_width();
-			self->_channel->pixelHeight = req.pts_pixel_height();
+			{
+				std::lock_guard lock{self->_channel->mutex};
+				self->_channel->width = req.pts_width();
+				self->_channel->height = req.pts_height();
+				self->_channel->pixelWidth = req.pts_pixel_width();
+				self->_channel->pixelHeight = req.pts_pixel_height();
+			}
 
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 
@@ -1449,11 +1585,14 @@ struct SlaveFile::HandleIoctl {
 
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 
-			if(self->_channel->slaveQueue.empty()) {
-				resp.set_fionread_count(0);
-			}else{
-				auto packet = &self->_channel->slaveQueue.front();
-				resp.set_fionread_count(packet->buffer.size() - packet->offset);
+			{
+				std::lock_guard lock{self->_channel->mutex};
+				if(self->_channel->slaveQueue.empty()) {
+					resp.set_fionread_count(0);
+				}else{
+					auto packet = &self->_channel->slaveQueue.front();
+					resp.set_fionread_count(packet->buffer.size() - packet->offset);
+				}
 			}
 
 			auto ser = resp.SerializeAsString();
@@ -1515,10 +1654,16 @@ void SlaveFile::handleClose() {
 	cancelServe_.cancel();
 	_passthrough = {};
 
-	if (--_channel->slaveCount == 0) {
-		_channel->currentSeq++;
-		_channel->statusBell.raise();
+	bool hangup = false;
+	{
+		std::lock_guard lock{_channel->mutex};
+		if (--_channel->slaveCount == 0) {
+			_channel->currentSeq++;
+			hangup = true;
+		}
 	}
+	if (hangup)
+		_channel->statusBell.raise();
 }
 
 //-----------------------------------------------------------------------------
