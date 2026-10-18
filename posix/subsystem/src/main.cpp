@@ -231,8 +231,6 @@ async::detached runInit() {
 int main() {
 	std::cout << "Starting posix-subsystem" << std::endl;
 
-	// posix-subsystem is not thread-safe yet; run the pool single threaded.
-	helix::DispatcherPool::global().setThreadCount(1);
 	helix::DispatcherPool::global().blockOn(clk::enumerateTracker());
 
 //	HEL_CHECK(helSetPriority(kHelThisThread, 1));
