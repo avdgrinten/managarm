@@ -1356,7 +1356,7 @@ Process::Process(ThreadGroup *threadGroup, std::shared_ptr<PidHull> tidHull)
 }
 
 // Processes are unlinked from procfs and the process graph by terminate() and
-// ThreadGroup::retire(), such that the last reference can be dropped on any thread.
+// ThreadGroup::retireLocked_(), such that the last reference can be dropped on any thread.
 Process::~Process() {
 	std::cout << std::format("\e[33mposix: Process {} is destructed\e[39m", tid()) << std::endl;
 	assert(!procfsTaskLink_);
@@ -2065,14 +2065,21 @@ async::result<void> Process::terminate(bool *lastInGroup) {
 		parent->_childrenUsage.userTime += groupUserTime;
 	}
 
-	std::erase_if(tgPointer_->threads_, [&](auto e) {
-		return e.get() == this;
-	});
+	bool isLeader;
+	bool isLast;
+	{
+		std::unique_lock lock{processGraphMutex};
+		std::erase_if(tgPointer_->threads_, [&](auto e) {
+			return e.get() == this;
+		});
+		isLeader = tgPointer_->leader_.get() == this;
+		isLast = tgPointer_->threads_.empty();
+	}
 	// The leader's /proc/[pid]/task/[tid] stays until the group is reaped, like a zombie.
-	if (tgPointer_->leader_.get() != this)
+	if (!isLeader)
 		unlinkProcfsTask_();
 	if (lastInGroup)
-		*lastInGroup = tgPointer_->threads_.empty();
+		*lastInGroup = isLast;
 	tgPointer_->processTerminationSeq_.fetch_add(1, std::memory_order_release);
 	tgPointer_->processTerminationEvent_.raise();
 }
@@ -2089,38 +2096,40 @@ Process::wait(int pid, WaitFlags flags, async::cancellation_token ct) {
 	}
 
 	// Check if a notification queue entry for `tg` matches the requested set.
+	// Called with processGraphMutex held.
 	auto notificationMatch = [&](ThreadGroup *tg) -> bool {
 		if (pid > 0) {
 			// match a PID
 			return pid == tg->pid();
 		} else if (pid == 0) {
 			// match any child process in the same process group
-			return pgPointer() == tg->pgPointer();
+			return threadGroup()->pgPointer_ == tg->pgPointer_;
 		} else if (pid == -1) {
 			// match any child process
 			return true;
 		} else {
 			// match any child process with the PGID of abs(pid)
-			return abs(pid) == tg->pgPointer()->getHull()->getPid();
+			return abs(pid) == tg->pgPointer_->getHull()->getPid();
 		}
 	};
 
 	// Check if there are still children or notifications left that match the requested set.
+	// Called with processGraphMutex held.
 	auto hasMatchingChildren = [&]() -> bool {
 		if (pid < -1 || pid == 0) {
-			int pgid = (pid == 0) ? pgPointer()->getHull()->getPid() : abs(pid);
+			int pgid = (pid == 0) ? threadGroup()->pgPointer_->getHull()->getPid() : abs(pid);
 
 			// check if there are this Process' children left in the process group `pgid`
 			auto matchChildren =
 			    std::ranges::any_of(threadGroup()->_children, [pgid](const auto &c) {
-				    return c->pgPointer() && c->pgPointer()->getHull()->getPid() == pgid;
+				    return c->pgPointer_ && c->pgPointer_->getHull()->getPid() == pgid;
 			    });
 
 			// check if there are notifications queued for children that are members of
 			// the process group `pgid`
 			auto matchNotifications =
 			    std::ranges::any_of(threadGroup()->_notifyQueue, [pgid](const auto &c) {
-				    return c->pgPointer() && c->pgPointer()->getHull()->getPid() == pgid;
+				    return c->pgPointer_ && c->pgPointer_->getHull()->getPid() == pgid;
 			    });
 
 			return matchChildren || matchNotifications;
@@ -2129,42 +2138,49 @@ Process::wait(int pid, WaitFlags flags, async::cancellation_token ct) {
 		}
 	};
 
-	std::optional<WaitResult> result{};
 	while(true) {
 		auto seq = threadGroup()->notifySeq_.load(std::memory_order_acquire);
 		// Checked after reading the sequence number, such that a concurrent reap wakes us up.
 		bool noChildren;
 		{
 			std::shared_lock lock{processGraphMutex};
-			noChildren = pid > 0 && !hasChildLocked(pid);
+			noChildren = !hasMatchingChildren() || (pid > 0 && !hasChildLocked(pid));
 		}
-		if(!hasMatchingChildren() || noChildren)
+		if(noChildren)
 			co_return Error::noChildProcesses;
 
-		for(auto it = threadGroup()->_notifyQueue.begin(); it != threadGroup()->_notifyQueue.end(); ++it) {
-			if(!notificationMatch(*it))
-				continue;
-			if(std::holds_alternative<TerminationByExit>((*it)->_state) && !(flags & (waitExited)))
-				continue;
-			if(std::holds_alternative<TerminationBySignal>((*it)->_state) && !(flags & (waitExited)))
-				continue;
+		std::optional<WaitResult> result{};
+		std::optional<ThreadGroup::Retired> retired;
+		{
+			std::unique_lock lock{processGraphMutex};
+			auto &queue = threadGroup()->_notifyQueue;
+			for(auto it = queue.begin(); it != queue.end(); ++it) {
+				if(!notificationMatch(*it))
+					continue;
+				if(std::holds_alternative<TerminationByExit>((*it)->_state) && !(flags & (waitExited)))
+					continue;
+				if(std::holds_alternative<TerminationBySignal>((*it)->_state) && !(flags & (waitExited)))
+					continue;
 
-			result = WaitResult{
-				.pid = (*it)->pid(),
-				.uid = (*it)->uid(),
-				.state = (*it)->terminationState(),
-				.stats = (*it)->selfUsage(),
-			};
+				result = WaitResult{
+					.pid = (*it)->pid(),
+					.uid = (*it)->uid(),
+					.state = (*it)->_state,
+					.stats = (*it)->selfUsage(),
+				};
 
-			if(!(flags & waitLeaveZombie)) {
-				// erasing from the queue invalidates the iterator, so we take a pointer before
-				auto tg = *it;
-				threadGroup()->_notifyQueue.erase(it);
-				ThreadGroup::retire(tg);
+				if(!(flags & waitLeaveZombie)) {
+					// erasing from the queue invalidates the iterator, so we take a pointer before
+					auto tg = *it;
+					queue.erase(it);
+					retired = ThreadGroup::retireLocked_(tg);
+				}
+
+				break;
 			}
-
-			break;
 		}
+		if(retired)
+			ThreadGroup::finishRetire_(std::move(*retired));
 
 		if(result)
 			co_return result.value();
@@ -2197,7 +2213,7 @@ ThreadGroup::ThreadGroup(std::shared_ptr<PidHull> hull, ThreadGroup *parent)
 
 }
 
-// ThreadGroups are unlinked from the process graph by retire(), such that the last
+// ThreadGroups are unlinked from the process graph by retireLocked_(), such that the last
 // reference can be dropped on any thread.
 ThreadGroup::~ThreadGroup() {
 	assert(!pgPointer_);
@@ -2414,25 +2430,31 @@ Error ThreadGroup::setRegid(uint64_t rgid, uint64_t egid) {
 }
 
 async::result<void> ThreadGroup::terminateGroup(TerminationState state) {
-	// Only the first terminate() call goes through.
-	if (!std::holds_alternative<std::monostate>(_state))
+	bool firstCall;
+	{
+		std::unique_lock lock{processGraphMutex};
+		// Only the first terminate() call goes through.
+		firstCall = std::holds_alternative<std::monostate>(_state);
+		if (firstCall)
+			_state = std::move(state);
+	}
+	if (!firstCall)
 		co_return;
-
-	_state = std::move(state);
 
 	// Cause all remaining processes to terminate and wait for them.
 	// Note that the process that caused the thread group termination has already called terminate() by now,
 	// so we do not need to worry about that process deadlocking if it waits for terminateGroup().
+	// No threads are added from now on since fork() and clone() check _state.
 	while (true) {
 		auto seq = processTerminationSeq_.load(std::memory_order_acquire);
-		for (auto &process : threads_) {
-			if (process->forceTermination)
+		auto remaining = threads();
+		for (auto &process : remaining) {
+			if (process->forceTermination.exchange(true))
 				continue;
-			process->forceTermination = true;
 			process->interruptThread();
 		}
 
-		if (threads_.empty())
+		if (remaining.empty())
 			break;
 		co_await processTerminationEvent_.async_wait_if([&] {
 			return processTerminationSeq_.load(std::memory_order_acquire) == seq;
@@ -2447,100 +2469,137 @@ async::result<void> ThreadGroup::terminateGroup(TerminationState state) {
 	if(timer)
 		timer->cancel();
 
-	// Walk up the chain until we hit a process that has no parent.
-	if (!parent_) {
+	// Signals and wake-ups are recorded under processGraphMutex and delivered after releasing it.
+	std::vector<std::pair<std::shared_ptr<ThreadGroup>, int>> deathSignals;
+	std::shared_ptr<ThreadGroup> reparentTo;
+	bool ringReparent = false;
+	std::shared_ptr<ThreadGroup> parent;
+	std::optional<Retired> retired;
+	{
+		std::unique_lock lock{processGraphMutex};
+
+		if (parent_) {
+			// Walk up the chain until we hit a process that has no parent.
+			auto reparentTarget = parent_;
+			while(reparentTarget->parent_)
+				reparentTarget = reparentTarget->parent_;
+			reparentTo = reparentTarget->shared_from_this();
+
+			for(auto it = _children.begin(); it != _children.end();) {
+				(*it)->parent_ = reparentTarget;
+				reparentTarget->_children.push_back((*it));
+
+				// send the signal if it requested one on parent death
+				if(int sig = (*it)->parentDeathSignal_; sig)
+					deathSignals.push_back({*it, sig});
+
+				it = _children.erase(it);
+			}
+
+			auto reparentSigchldHandling = reparentTarget->signalContext()->getHandler(SIGCHLD);
+			while (!_notifyQueue.empty()) {
+				auto child = _notifyQueue.pop_front();
+				ringReparent = true;
+				if (reparentSigchldHandling.disposition != SignalDisposition::ignore && !(reparentSigchldHandling.flags & signalNoChildWait))
+					reparentTarget->_notifyQueue.push_back(child);
+			}
+
+			// Notify the parent of our status change.
+			// We need to do that even when not sending SIGCHLD since it wakes up pidfd.
+			assert(notifyType_ == NotifyType::null);
+			notifyType_ = NotifyType::terminated;
+
+			parent = parent_->shared_from_this();
+			auto sigchldHandling = parent_->signalContext()->getHandler(SIGCHLD);
+			if (sigchldHandling.disposition != SignalDisposition::ignore && !(sigchldHandling.flags & signalNoChildWait)) {
+				parent_->_notifyQueue.push_back(this);
+
+				// Queue SIGCHLD before the parent can reap us; the bell is raised after unlocking.
+				ChildSignal info;
+				info.pid = hull_->getPid();
+				info.utime = selfUsage().userTime;
+
+				if(std::get_if<TerminationByExit>(&_state)) {
+					info.status = std::get<TerminationByExit>(_state).code;
+					info.code = CLD_EXITED;
+				} else if(std::get_if<TerminationBySignal>(&_state)) {
+					info.status = std::get<TerminationBySignal>(_state).signo;
+					info.code = dumpable_ ? CLD_DUMPED : CLD_KILLED;
+				} else {
+					std::println("posix: unhandled SIGCHLD reason");
+				}
+
+				std::lock_guard signalLock{parent_->signalMutex_};
+				parent_->signalQueue_.issueSignal(SIGCHLD, info, ++parent_->currentSignalSeq_);
+			} else {
+				retired = retireLocked_(this);
+			}
+		}
+	}
+
+	if (!parent) {
 		std::println("posix: terminateGroup() called on init process");
 		co_return;
 	}
-	auto reparentTo = parent_;
-	while(reparentTo->parent_)
-		reparentTo = reparentTo->parent_;
 
-	for(auto it = _children.begin(); it != _children.end();) {
-		(*it)->parent_ = reparentTo;
-		reparentTo->_children.push_back((*it));
-
-		// send the signal if it requested one on parent death
-		if(int sig = (*it)->parentDeathSignal_; sig) {
-			UserSignal info;
-			info.pid = hull_->getPid();
-			(*it)->issueThreadGroupSignal(sig, info);
-		}
-
-		it = _children.erase(it);
-	}
-
-	auto reparentSigchldHandling = reparentTo->signalContext()->getHandler(SIGCHLD);
-	bool ringReparent = false;
-	while (!_notifyQueue.empty()) {
-		auto child = _notifyQueue.pop_front();
-		ringReparent = true;
-		if (reparentSigchldHandling.disposition != SignalDisposition::ignore && !(reparentSigchldHandling.flags & signalNoChildWait))
-			reparentTo->_notifyQueue.push_back(child);
+	for (auto &[child, sig] : deathSignals) {
+		UserSignal info;
+		info.pid = hull_->getPid();
+		child->issueThreadGroupSignal(sig, info);
 	}
 
 	if(ringReparent)
 		reparentTo->raiseNotifyBell();
 
-	// Notify the parent of our status change.
-	// We need to do that even when not sending SIGCHLD since it wakes up pidfd.
-	assert(notifyType_ == NotifyType::null);
-	notifyType_ = NotifyType::terminated;
 	notifyTypeChange_.raise();
 
-	auto sigchldHandling = parent_->signalContext()->getHandler(SIGCHLD);
-	if (sigchldHandling.disposition != SignalDisposition::ignore && !(sigchldHandling.flags & signalNoChildWait)) {
-		parent_->_notifyQueue.push_back(this);
-		parent_->raiseNotifyBell();
-
-		// Send SIGCHLD to the parent.
-		ChildSignal info;
-		info.pid = hull_->getPid();
-		info.utime = selfUsage().userTime;
-
-		if(std::get_if<TerminationByExit>(&_state)) {
-			info.status = std::get<TerminationByExit>(_state).code;
-			info.code = CLD_EXITED;
-		} else if(std::get_if<TerminationBySignal>(&_state)) {
-			info.status = std::get<TerminationBySignal>(_state).signo;
-			info.code = dumpable_ ? CLD_DUMPED : CLD_KILLED;
-		} else {
-			std::println("posix: unhandled SIGCHLD reason");
-		}
-
-		parent_->issueThreadGroupSignal(SIGCHLD, info);
+	if (!retired) {
+		parent->raiseNotifyBell();
+		parent->signalQueue_.signalBell_.raise();
 	} else {
-		ThreadGroup::retire(this);
+		finishRetire_(std::move(*retired));
 	}
 }
 
-void ThreadGroup::retire(ThreadGroup *tg) {
-	// The parent's _children holds the last reference; keep the group alive until we are done.
-	auto self = tg->shared_from_this();
+ThreadGroup::Retired ThreadGroup::retireLocked_(ThreadGroup *tg) {
+	Retired retired;
 	auto parent = tg->parent_;
 
-	if (tg->leader_)
-		tg->leader_->unlinkProcfsTask_();
-	tg->leader_ = nullptr;
-
-	{
-		std::unique_lock lock{processGraphMutex};
-		if (tg->pgPointer_)
-			tg->pgPointer_->dropProcessLocked(tg);
-	}
-
-	if (tg->procfsLink_) {
-		tg->procfsLink_->unlinkSelf();
-		tg->procfsLink_ = nullptr;
-	}
-
-	auto it = std::ranges::find(parent->_children, self);
+	// The parent's _children holds the last graph reference; it is dropped by the caller.
+	auto it = std::ranges::find(parent->_children, tg, &std::shared_ptr<ThreadGroup>::get);
 	assert(it != parent->_children.end());
+	retired.group = std::move(*it);
 	parent->_children.erase(it);
+	retired.parent = parent->shared_from_this();
+	tg->parent_ = nullptr;
+
+	retired.leader = std::move(tg->leader_);
+
+	if (tg->pgPointer_)
+		tg->pgPointer_->dropProcessLocked(tg);
+
+	retired.procfsLink = std::move(tg->procfsLink_);
+	return retired;
+}
+
+void ThreadGroup::finishRetire_(Retired retired) {
+	if (retired.leader)
+		retired.leader->unlinkProcfsTask_();
+	if (retired.procfsLink)
+		retired.procfsLink->unlinkSelf();
 
 	// We need to ring _notifyBell once the process is retired
 	// since waitpid() returns an error once no children are left.
-	parent->raiseNotifyBell();
+	retired.parent->raiseNotifyBell();
+}
+
+void ThreadGroup::associateProcessLocked(std::shared_ptr<Process> process) {
+	assert(process->tgPointer_.get() == this);
+
+	threads_.push_back(process);
+
+	if (!leader_)
+		leader_ = process;
 }
 
 std::shared_ptr<ThreadGroup> ThreadGroup::getParent() {
@@ -2651,14 +2710,6 @@ std::expected<pid_t, Error> ThreadGroup::createSession() {
 	return sid;
 }
 
-void ThreadGroup::associateProcessLocked(std::shared_ptr<Process> process) {
-	assert(process->tgPointer_.get() == this);
-
-	threads_.push_back(process);
-
-	if (!leader_)
-		leader_ = process;
-}
 
 std::shared_ptr<Process> ThreadGroup::findThread(pid_t tid) {
 	std::shared_lock lock{processGraphMutex};

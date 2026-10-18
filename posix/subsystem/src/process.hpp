@@ -36,7 +36,8 @@ struct ControllingTerminalState;
 typedef int ProcessId;
 
 // Never held across a co_await; signals are issued, bells are raised and procfs entries are
-// unlinked after releasing it.
+// unlinked after releasing it. The exception is SIGCHLD, which is queued (without raising the
+// bell) under it, such that a parent cannot reap a child before the child's SIGCHLD is pending.
 // Lock order: processGraphMutex -> Process::taskMutex_ -> {SignalContext, ThreadGroup::signalMutex_,
 // the credentials, usage and timer mutexes of a ThreadGroup, FileContext, FsContext} -> pidMapMutex.
 extern std::shared_mutex processGraphMutex;
@@ -865,7 +866,6 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	void associateProcessLocked(std::shared_ptr<Process> process);
 
 	async::result<void> terminateGroup(TerminationState state);
-	static void retire(ThreadGroup *group);
 
 	// Implements setpgid() for a thread of this group.
 	Error setProcessGroupOf(pid_t pid, pid_t pgid);
@@ -1114,6 +1114,19 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	}
 
 private:
+	// What retireLocked_() unlinks from a reaped group; finishRetire_() releases it after
+	// processGraphMutex is dropped.
+	struct Retired {
+		std::shared_ptr<ThreadGroup> group;
+		std::shared_ptr<ThreadGroup> parent;
+		std::shared_ptr<Process> leader;
+		smarter::shared_ptr<procfs::Link, LinkRc> procfsLink;
+	};
+
+	// Callers must hold processGraphMutex exclusively.
+	static Retired retireLocked_(ThreadGroup *group);
+	static void finishRetire_(Retired retired);
+
 	// Protected by processGraphMutex.
 	ThreadGroup *parent_;
 	// The leading thread is kept alive until the thread group is terminated, as we need to expose
