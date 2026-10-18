@@ -7,6 +7,7 @@
 #include <async/recurring-event.hpp>
 #include <frg/intrusive.hpp>
 #include <frg/manual_box.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include <helix/ipc.hpp>
 #include "common.hpp"
 #include "epoll.hpp"
@@ -541,7 +542,7 @@ public:
 
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				file, &File::fileOperations, file->_cancelServe));
 	}
 
