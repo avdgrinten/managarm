@@ -518,7 +518,7 @@ HandleRequest::operator()(managarm::posix::SignalfdCreateRequest &&req,
 		auto file = self->fileContext()->getFile(req.fd());
 		if(file) {
 			auto signal_file = static_cast<signal_fd::OpenFile *>(file.get());
-			signal_file->mask() = req.sigset();
+			signal_file->setMask(req.sigset());
 			resp.set_fd(req.fd());
 		} else {
 			resp.set_error(managarm::posix::Errors::FILE_NOT_FOUND);

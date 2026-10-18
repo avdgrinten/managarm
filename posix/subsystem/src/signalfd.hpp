@@ -29,8 +29,8 @@ public:
 		return _passthrough;
 	}
 
-	uint64_t &mask() {
-		return _mask;
+	void setMask(uint64_t mask) {
+		_mask = mask;
 	}
 
 private:
@@ -40,7 +40,8 @@ private:
 
 	helix::UniqueLane _passthrough;
 	async::cancellation_event cancelServe_;
-	uint64_t _mask;
+	// Written by signalfd() requests of any thread.
+	std::atomic<uint64_t> _mask;
 	std::atomic<bool> _nonBlock;
 };
 
