@@ -9,6 +9,7 @@
 #include "common.hpp"
 #include "epoll.hpp"
 #include "fs.hpp"
+#include "process.hpp"
 
 namespace {
 
@@ -51,14 +52,16 @@ private:
 	struct Item {
 		Item(smarter::shared_ptr<OpenFile> epoll, Process *process,
 				smarter::shared_ptr<File> file, int mask, uint64_t cookie)
-		: epoll{epoll}, state{stateAlive}, process{process},
+		: epoll{epoll}, state{stateAlive}, process{process->weak_from_this()},
 				file{std::move(file)}, eventMask{mask}, cookie{cookie} { }
 
 		smarter::shared_ptr<OpenFile> epoll;
 		State state;
 
 		// Basic data of this item.
-		Process *process;
+		// The thread that registered the item. Like on Linux, the item outlives it;
+		// files are then polled with a null process.
+		std::weak_ptr<Process> process;
 		smarter::shared_ptr<File> file;
 		int eventMask;
 		uint64_t cookie;
@@ -135,9 +138,10 @@ private:
 					item->epoll->structName(), item->file->structName(), item->eventMask, std::get<1>(result));
 
 			item->cancelPoll.reset();
+			auto process = item->process.lock();
 			item->pollOperation.construct_with([&] {
 				return async::execution::connect(
-					item->file->pollWait(item->process, std::get<0>(result),
+					item->file->pollWait(process.get(), std::get<0>(result),
 							(item->eventMask & epollEvents) | EPOLLERR | EPOLLHUP, item->cancelPoll),
 					Receiver{item->self.lock()}
 				);
@@ -263,7 +267,8 @@ public:
 				if(logEpoll)
 					std::println("posix.epoll \e[1;34m{}\e[0m: Checking item \e[1;34m{}\e[0m",
 						structName(), item->file->structName());
-				auto result_or_error = co_await item->file->pollStatus(item->process);
+				auto process = item->process.lock();
+				auto result_or_error = co_await item->file->pollStatus(process.get());
 
 				// Discard items that were deleted while we polled them.
 				if(!(item->state & stateAlive)) {
@@ -320,7 +325,7 @@ public:
 						item->cancelPoll.reset();
 						item->pollOperation.construct_with([&] {
 							return async::execution::connect(
-								item->file->pollWait(item->process, std::get<0>(result),
+								item->file->pollWait(process.get(), std::get<0>(result),
 										itemEvents | EPOLLERR | EPOLLHUP, item->cancelPoll),
 								Receiver{item}
 							);

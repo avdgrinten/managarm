@@ -34,6 +34,10 @@ public:
 	}
 
 private:
+	async::result<frg::expected<Error, PollWaitResult>>
+	pollSignal_(std::shared_ptr<Process> process, uint64_t inSeq,
+			async::cancellation_token cancellation);
+
 	helix::UniqueLane _passthrough;
 	async::cancellation_event cancelServe_;
 	uint64_t _mask;
