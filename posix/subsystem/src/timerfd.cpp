@@ -12,6 +12,7 @@
 #include <bragi/helpers-std.hpp>
 #include <core/clock.hpp>
 #include <core/dispatch.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include <helix/ipc.hpp>
 #include <helix/timer.hpp>
 #include <protocols/fs/common.hpp>
@@ -72,7 +73,7 @@ public:
 	static void serve(smarter::shared_ptr<OpenFile> file) {
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				file, &File::fileOperations, file->_cancelServe));
 	}
 
