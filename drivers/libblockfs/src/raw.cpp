@@ -189,6 +189,56 @@ rawPread(void *object, int64_t offset, helix_ng::CredentialsView, void *buffer, 
 	co_return chunkSize;
 }
 
+async::result<frg::expected<protocols::fs::Error, size_t>>
+writeAt(raw::OpenFile *self, uint64_t offset, const void *buffer, size_t length) {
+	if(!length)
+		co_return size_t{0};
+
+	auto start = helix::getClock();
+
+	auto file_size = co_await self->rawFs->device->getSize();
+	if(offset >= file_size)
+		co_return protocols::fs::Error::noSpaceLeft;
+
+	auto chunkSize = std::min(length, file_size - offset);
+	auto writeMemory = co_await helix_ng::writeMemory(
+			helix::BorrowedDescriptor(self->rawFs->frontalMemory),
+			offset, chunkSize, buffer);
+	HEL_CHECK(writeMemory.error());
+
+	auto end = helix::getClock();
+
+	ostContext.emit(
+		ostEvtRawWrite,
+		ostAttrNumBytes(length),
+		ostAttrTime(end - start)
+	);
+
+	co_return chunkSize;
+}
+
+async::result<frg::expected<protocols::fs::Error, size_t>> rawWrite(void *object, helix_ng::CredentialsView,
+		const void *buffer, size_t length) {
+	auto self = static_cast<raw::OpenFile *>(object);
+
+	co_await self->offsetMutex.async_lock();
+	frg::unique_lock offsetLock{frg::adopt_lock, self->offsetMutex};
+
+	auto res = co_await writeAt(self, self->offset, buffer, length);
+	if(res)
+		self->offset += res.value();
+	co_return res;
+}
+
+async::result<frg::expected<protocols::fs::Error, size_t>> rawPwrite(void *object, int64_t offset,
+		helix_ng::CredentialsView, const void *buffer, size_t length) {
+	if(offset < 0)
+		co_return protocols::fs::Error::illegalArguments;
+
+	auto self = static_cast<raw::OpenFile *>(object);
+	co_return co_await writeAt(self, offset, buffer, length);
+}
+
 async::result<protocols::fs::Error> rawFlock(void *object, int flags) {
 	auto self = static_cast<raw::OpenFile*>(object);
 
@@ -259,6 +309,8 @@ constinit protocols::fs::FileOperations rawOperations {
 	.seekEof = rawSeekEof,
 	.read = rawRead,
 	.pread = rawPread,
+	.write = rawWrite,
+	.pwrite = rawPwrite,
 	.synchronize = rawSynchronize,
 	.ioctl = rawIoctl,
 	.flock = rawFlock,

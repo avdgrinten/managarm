@@ -10,6 +10,7 @@ inline constinit protocols::ostrace::Event ostEvtRead{"libblockfs.read"};
 inline constinit protocols::ostrace::Event ostEvtReadDir{"libblockfs.readDir"};
 inline constinit protocols::ostrace::Event ostEvtWrite{"libblockfs.write"};
 inline constinit protocols::ostrace::Event ostEvtRawRead{"libblockfs.rawRead"};
+inline constinit protocols::ostrace::Event ostEvtRawWrite{"libblockfs.rawWrite"};
 inline constinit protocols::ostrace::Event ostEvtOpen{"libblockfs.open"};
 inline constinit protocols::ostrace::Event ostEvtTruncate{"libblockfs.truncate"};
 inline constinit protocols::ostrace::Event ostEvtRename{"libblockfs.rename"};
@@ -148,6 +149,7 @@ inline protocols::ostrace::Vocabulary ostVocabulary{
 	ostEvtReadDir,
 	ostEvtWrite,
 	ostEvtRawRead,
+	ostEvtRawWrite,
 	ostEvtOpen,
 	ostEvtTruncate,
 	ostEvtRename,
