@@ -903,6 +903,41 @@ async::result<void> publishPartitions(BlockDevice *device, raw::RawFs *diskRawFs
 	}
 }
 
+struct DiskState {
+	BlockDevice *device;
+	raw::RawFs *rawFs = nullptr;
+	int64_t diskId = 0;
+
+	async::mutex mutex;
+	// Protected by mutex.
+	bool hasPartitions = false;
+};
+
+// mbus cannot remove entities, so the table can only be re-read while the disk has no partitions.
+async::result<protocols::fs::Error> rereadPartitions(DiskState *disk) {
+	co_await disk->mutex.async_lock();
+	frg::unique_lock lock{frg::adopt_lock, disk->mutex};
+
+	if(disk->hasPartitions)
+		co_return protocols::fs::Error::busy;
+
+	// The new table may still be in the disk's page cache but parse() reads from the device.
+	auto syncRes = co_await disk->rawFs->synchronize();
+	if(!syncRes)
+		co_return syncRes.error() | protocols::fs::toFsProtoError;
+
+	auto table = std::make_unique<gpt::Table>(disk->device);
+	auto parseRes = co_await table->parse();
+	if(!parseRes)
+		co_return parseRes.error() | protocols::fs::toFsProtoError;
+	if(!table->numPartitions())
+		co_return protocols::fs::Error::none;
+
+	disk->hasPartitions = true;
+	co_await publishPartitions(disk->device, disk->rawFs, table.release(), disk->diskId);
+	co_return protocols::fs::Error::none;
+}
+
 async::detached runDevice(BlockDevice *device) {
 	co_await ostContext.create();
 
@@ -927,6 +962,11 @@ async::detached runDevice(BlockDevice *device) {
 	if(!parseRes)
 		std::cout << "libblockfs: Failed to read the partition table, exposing the raw disk only" << std::endl;
 
+	// Leaked for the same reason as the table.
+	auto disk = new DiskState{.device = device};
+	co_await disk->mutex.async_lock();
+	frg::unique_lock diskLock{frg::adopt_lock, disk->mutex};
+
 	int64_t diskId = 0;
 	raw::RawFs *diskRawFs = nullptr;
 	{
@@ -945,6 +985,9 @@ async::detached runDevice(BlockDevice *device) {
 		auto rawFs = std::make_unique<raw::RawFs>(device, nullptr);
 		co_await rawFs->init();
 		diskRawFs = rawFs.get();
+		rawFs->diskState = disk;
+		disk->rawFs = rawFs.get();
+		disk->diskId = diskId;
 
 		// See comment in mbus_ng::~EntityManager as to why this is necessary.
 		[] (mbus_ng::EntityManager entity, std::unique_ptr<raw::RawFs> rawFs) -> async::detached {
@@ -962,6 +1005,7 @@ async::detached runDevice(BlockDevice *device) {
 	if(!parseRes)
 		co_return;
 
+	disk->hasPartitions = table->numPartitions() > 0;
 	co_await publishPartitions(device, diskRawFs, table, diskId);
 }
 
