@@ -73,6 +73,16 @@ async::result<void> RawFs::manageMapping() {
 	}
 }
 
+async::result<std::expected<void, Error>> RawFs::synchronize() {
+	auto device_size = co_await device->getSize();
+	auto cache_size = (device_size + 0xFFF) & ~size_t(0xFFF);
+	auto writeback = co_await helix_ng::writebackFence(
+			helix::BorrowedDescriptor{backingMemory}, 0, cache_size);
+	HEL_CHECK(writeback.error());
+
+	co_return co_await device->flush();
+}
+
 OpenFile::OpenFile(RawFs *rawFs)
 : rawFs(rawFs) { }
 

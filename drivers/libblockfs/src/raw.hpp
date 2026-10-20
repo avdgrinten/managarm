@@ -20,6 +20,9 @@ struct RawFs {
 
 	async::result<void> manageMapping();
 
+	// Writes back the page cache and flushes the device's write cache.
+	async::result<std::expected<void, Error>> synchronize();
+
 	BlockDevice *device;
 	HelHandle backingMemory;
 	HelHandle frontalMemory;
