@@ -1,6 +1,9 @@
 #include "raw.hpp"
 
+#include <fcntl.h>
+#include <iostream>
 #include <linux/cdrom.h>
+#include <print>
 
 #include <bragi/helpers-std.hpp>
 #include <core/dispatch.hpp>
@@ -85,8 +88,8 @@ async::result<std::expected<void, Error>> RawFs::synchronize() {
 	co_return co_await device->flush();
 }
 
-OpenFile::OpenFile(RawFs *rawFs)
-: rawFs(rawFs) { }
+OpenFile::OpenFile(RawFs *rawFs, bool nonBlock)
+: rawFs(rawFs), nonBlock(nonBlock) { }
 
 struct OpenFile::HandleIoctl {
 	async::result<std::expected<void, DispatchError>> operator() (managarm::fs::GenericIoctlRequest &&req, helix::BorrowedDescriptor conversation, bragi::preamble, raw::OpenFile *self) {
@@ -301,6 +304,28 @@ async::result<void> rawIoctl(void *object, uint32_t, helix_ng::RecvInlineResult 
 	}
 }
 
+async::result<int> rawGetFileFlags(void *object) {
+	auto self = static_cast<raw::OpenFile *>(object);
+
+	// TODO: Report the real access mode once DEV_OPEN forwards it.
+	int flags = O_RDWR;
+	if(self->nonBlock.load(std::memory_order_relaxed))
+		flags |= O_NONBLOCK;
+	co_return flags;
+}
+
+async::result<void> rawSetFileFlags(void *object, int flags) {
+	auto self = static_cast<raw::OpenFile *>(object);
+
+	// Callers pass back the result of F_GETFL, which includes the access mode.
+	if(auto unknown = flags & ~(O_ACCMODE | O_NONBLOCK); unknown)
+		std::println(std::cout, "libblockfs: setFileFlags on raw device called with unknown flags {:#x}",
+				unknown);
+
+	self->nonBlock.store(flags & O_NONBLOCK, std::memory_order_relaxed);
+	co_return;
+}
+
 } // namespace anonymous
 
 constinit protocols::fs::FileOperations rawOperations {
@@ -314,6 +339,8 @@ constinit protocols::fs::FileOperations rawOperations {
 	.synchronize = rawSynchronize,
 	.ioctl = rawIoctl,
 	.flock = rawFlock,
+	.getFileFlags = rawGetFileFlags,
+	.setFileFlags = rawSetFileFlags,
 };
 
 } // namespace raw

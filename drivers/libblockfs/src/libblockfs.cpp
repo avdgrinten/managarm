@@ -137,7 +137,8 @@ struct HandlePartition {
 		}else if(req.req_type() == managarm::fs::CntReqType::DEV_OPEN) {
 			helix::UniqueLane local_lane, remote_lane;
 			std::tie(local_lane, remote_lane) = helix::createStream();
-			auto file = smarter::make_shared<raw::OpenFile>(rawFs);
+			auto file = smarter::make_shared<raw::OpenFile>(rawFs,
+					req.flags() & managarm::fs::OpenFlags::OF_NONBLOCK);
 			helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(local_lane),
 							file,
 							&raw::rawOperations));
@@ -760,7 +761,8 @@ struct HandleDevice {
 		if(req.req_type() == managarm::fs::CntReqType::DEV_OPEN) {
 			helix::UniqueLane local_lane, remote_lane;
 			std::tie(local_lane, remote_lane) = helix::createStream();
-			auto file = smarter::make_shared<raw::OpenFile>(rawFs);
+			auto file = smarter::make_shared<raw::OpenFile>(rawFs,
+					req.flags() & managarm::fs::OpenFlags::OF_NONBLOCK);
 			helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(local_lane),
 							file,
 							&raw::rawOperations));

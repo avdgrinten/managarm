@@ -1,4 +1,5 @@
 
+#include <atomic>
 #include <hel.h>
 #include <async/mutex.hpp>
 #include <frg/mutex.hpp>
@@ -31,7 +32,7 @@ struct RawFs {
 };
 
 struct OpenFile {
-	OpenFile(RawFs *rawFs);
+	OpenFile(RawFs *rawFs, bool nonBlock);
 
 	struct HandleIoctl;
 
@@ -40,6 +41,8 @@ struct OpenFile {
 	// Protected by offsetMutex.
 	uint64_t offset = 0;
 	Flock flock;
+	// Block devices never block, but the flag must survive F_GETFL/F_SETFL.
+	std::atomic<bool> nonBlock;
 };
 
 extern protocols::fs::FileOperations rawOperations;
