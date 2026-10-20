@@ -65,6 +65,11 @@ struct Controller {
 		return preferredDataTransfer_;
 	}
 
+	// Maximum size of a single I/O command in bytes. Absent if there is no limit.
+	std::optional<size_t> maxTransferSize() const {
+		return maxTransferSize_;
+	}
+
 	arch::contiguous_pool &memoryPool() {
 		return pool_;
 	}
@@ -93,6 +98,7 @@ protected:
 	// Fabrics only: I/O queue command capsule size (in 16 byte units) and in-capsule data offset.
 	uint32_t ioccsz_ = 0;
 	uint16_t icdoff_ = 0;
+	std::optional<size_t> maxTransferSize_;
 
 	std::vector<std::unique_ptr<Queue>> activeQueues_;
 	std::vector<std::unique_ptr<Namespace>> activeNamespaces_;

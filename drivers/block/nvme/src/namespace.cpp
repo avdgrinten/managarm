@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <arch/bit.hpp>
 #include <asm/ioctl.h>
 #include <format>
@@ -27,6 +28,15 @@ async::detached Namespace::run() {
 		"nvme-namespace", descriptor)).unwrap());
 	parentId = mbusEntity_->id();
 
+	// The number of blocks per command is a 16-bit field.
+	size_t maxSectors = 0x10000;
+	if (auto maxBytes = controller_->maxTransferSize())
+		maxSectors = std::min(maxSectors, *maxBytes >> sectorShift);
+	if (!maxSectors) {
+		std::println(std::cout, "block/nvme: Blocks of namespace {} exceed the maximum transfer size", nsid_);
+		co_return;
+	}
+	limits.maxSectorsPerRequest = maxSectors;
 	// All namespaces share the I/O queue, so this is an upper bound that Queue enforces.
 	limits.queueCapacity = controller_->ioQueueDepth();
 	blockfs::runDevice(this);
