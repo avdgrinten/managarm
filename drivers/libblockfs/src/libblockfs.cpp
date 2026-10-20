@@ -847,6 +847,54 @@ async::detached serveDevice(helix::UniqueLane lane, raw::RawFs *rawFs) {
 	}
 }
 
+async::result<void> publishPartitions(BlockDevice *device, gpt::Table *table, int64_t diskId) {
+	int partId = 0;
+	for(size_t i = 0; i < table->numPartitions(); ++i) {
+		auto type = table->getPartition(i).type();
+		auto partuuid = table->getPartition(i).id().toString();
+		printf("Partition %lu, type: %.8X-%.4X-%.4X-%.2X%.2X-%.2X%.2X%.2X%.2X%.2X%.2X, partuuid: %s\n",
+				i, type.a, type.b, type.c, type.d[0], type.d[1],
+				type.e[0], type.e[1], type.e[2], type.e[3], type.e[4], type.e[5],
+				partuuid.c_str());
+
+		auto paritition = &table->getPartition(i);
+		if(type == gpt::type_guids::managarmRootPartition) {
+			printf("  It's a Managarm root partition!\n");
+		} else if(type == gpt::type_guids::managarmSwapPartition) {
+			printf("  It's a Managarm swap partition!\n");
+		}
+
+		auto rawFs = std::make_unique<raw::RawFs>(paritition);
+		co_await rawFs->init();
+
+		// Create an mbus object for the partition.
+		mbus_ng::Properties descriptor{
+			{"unix.devtype", mbus_ng::StringItem{"block"}},
+			{"unix.blocktype", mbus_ng::StringItem{"partition"}},
+			{"unix.partid", mbus_ng::StringItem{std::to_string(partId++)}},
+			{"unix.diskid", mbus_ng::StringItem{std::to_string(diskId)}},
+			{"unix.partname-suffix", mbus_ng::StringItem{device->partNameSuffix}},
+			{"unix.partuuid", mbus_ng::StringItem{partuuid}},
+			{"drvcore.mbus-parent", mbus_ng::StringItem{std::to_string(paritition->parentId)}},
+			{"unix.is-managarm-root", mbus_ng::StringItem{std::to_string(type == gpt::type_guids::managarmRootPartition)}}
+		};
+
+		auto entity = (co_await mbus_ng::Instance::global().createEntity(
+					"partition", descriptor)).unwrap();
+
+		[] (mbus_ng::EntityManager entity, gpt::Partition *partition, std::unique_ptr<raw::RawFs> rawFs) -> async::detached {
+			while (true) {
+				auto [localLane, remoteLane] = helix::createStream();
+
+				// If this fails, too bad!
+				(void)(co_await entity.serveRemoteLane(std::move(remoteLane)));
+
+				servePartition(std::move(localLane), partition, rawFs.get());
+			}
+		}(std::move(entity), paritition, std::move(rawFs));
+	}
+}
+
 async::detached runDevice(BlockDevice *device) {
 	co_await ostContext.create();
 
@@ -901,51 +949,7 @@ async::detached runDevice(BlockDevice *device) {
 		}(std::move(entity), std::move(rawFs));
 	}
 
-	int partId = 0;
-	for(size_t i = 0; i < table->numPartitions(); ++i) {
-		auto type = table->getPartition(i).type();
-		auto partuuid = table->getPartition(i).id().toString();
-		printf("Partition %lu, type: %.8X-%.4X-%.4X-%.2X%.2X-%.2X%.2X%.2X%.2X%.2X%.2X, partuuid: %s\n",
-				i, type.a, type.b, type.c, type.d[0], type.d[1],
-				type.e[0], type.e[1], type.e[2], type.e[3], type.e[4], type.e[5],
-				partuuid.c_str());
-
-		auto paritition = &table->getPartition(i);
-		if(type == gpt::type_guids::managarmRootPartition) {
-			printf("  It's a Managarm root partition!\n");
-		} else if(type == gpt::type_guids::managarmSwapPartition) {
-			printf("  It's a Managarm swap partition!\n");
-		}
-
-		auto rawFs = std::make_unique<raw::RawFs>(paritition);
-		co_await rawFs->init();
-
-		// Create an mbus object for the partition.
-		mbus_ng::Properties descriptor{
-			{"unix.devtype", mbus_ng::StringItem{"block"}},
-			{"unix.blocktype", mbus_ng::StringItem{"partition"}},
-			{"unix.partid", mbus_ng::StringItem{std::to_string(partId++)}},
-			{"unix.diskid", mbus_ng::StringItem{std::to_string(diskId)}},
-			{"unix.partname-suffix", mbus_ng::StringItem{device->partNameSuffix}},
-			{"unix.partuuid", mbus_ng::StringItem{partuuid}},
-			{"drvcore.mbus-parent", mbus_ng::StringItem{std::to_string(paritition->parentId)}},
-			{"unix.is-managarm-root", mbus_ng::StringItem{std::to_string(type == gpt::type_guids::managarmRootPartition)}}
-		};
-
-		auto entity = (co_await mbus_ng::Instance::global().createEntity(
-					"partition", descriptor)).unwrap();
-
-		[] (mbus_ng::EntityManager entity, gpt::Partition *partition, std::unique_ptr<raw::RawFs> rawFs) -> async::detached {
-			while (true) {
-				auto [localLane, remoteLane] = helix::createStream();
-
-				// If this fails, too bad!
-				(void)(co_await entity.serveRemoteLane(std::move(remoteLane)));
-
-				servePartition(std::move(localLane), partition, rawFs.get());
-			}
-		}(std::move(entity), paritition, std::move(rawFs));
-	}
+	co_await publishPartitions(device, table, diskId);
 }
 
 } // namespace blockfs
