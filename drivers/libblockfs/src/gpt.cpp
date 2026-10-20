@@ -68,8 +68,10 @@ async::result<std::expected<void, Error>> Table::parse() {
 			}
 		}
 
-		// TODO: handle this error
-		assert(header.first.size());
+		if(!header.first.size()) {
+			std::println(std::cout, "libblockfs: no GPT found, disk has no partitions");
+			co_return {};
+		}
 
 		std::println(std::cout, "libblockfs: using non-native gpt sector size {}",
 			gptSectorSize_);
