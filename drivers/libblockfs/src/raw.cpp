@@ -49,7 +49,8 @@ async::result<void> RawFs::manageMapping() {
 			size_t num_blocks = (backed_size + device->sectorSize - 1) / device->sectorSize;
 
 			assert(num_blocks * device->sectorSize <= manage.length());
-			auto readRes = co_await device->readSectors(manage.offset() / device->sectorSize, view);
+			auto readRes = co_await device->readSectors(manage.offset() / device->sectorSize,
+					view.view().subview(0, num_blocks * device->sectorSize));
 			if(!readRes)
 				logPanic("libblockfs: Failed to read raw device at offset {:#x}", manage.offset());
 
@@ -63,7 +64,8 @@ async::result<void> RawFs::manageMapping() {
 			size_t num_blocks = (backed_size + device->sectorSize - 1) / device->sectorSize;
 
 			assert(num_blocks * device->sectorSize <= manage.length());
-			auto writeRes = co_await device->writeSectors(manage.offset() / device->sectorSize, view);
+			auto writeRes = co_await device->writeSectors(manage.offset() / device->sectorSize,
+					view.view().subview(0, num_blocks * device->sectorSize));
 			if(!writeRes)
 				logPanic("libblockfs: Failed to write raw device at offset {:#x}", manage.offset());
 
