@@ -460,16 +460,17 @@ int main() {
 	};
 	frg::parse_arguments(cmdline.c_str(), args);
 
+	std::optional<DevicePathParser> uefiNetDp;
 	std::filesystem::path dpSysfsPath{};
 	bool uefiNetDevpathResolved = uefiNetDevpath.size() == 0;
 
 	if(!uefiNetDevpathResolved) {
 		auto dp_res = DevicePathParser::fromString(std::string{uefiNetDevpath.data(), uefiNetDevpath.size()});
 		if(dp_res) {
-			auto dp = dp_res.value();
-			dpSysfsPath = std::filesystem::canonical(std::filesystem::path(dp.sysfs()));
+			uefiNetDp = dp_res.value();
 		} else {
 			std::cout << std::format("init: failed to parse device path '{}'", std::string{uefiNetDevpath.data(), uefiNetDevpath.size()}) << std::endl;
+			uefiNetDevpathResolved = true;
 		}
 	}
 
@@ -599,7 +600,18 @@ int main() {
 				rootPath = findDevNode(device);
 		}
 
-		if(!uefiNetDevpathResolved) {
+		if(!uefiNetDevpathResolved && dpSysfsPath.empty()) {
+			auto sysfs = uefiNetDp->sysfs();
+			if(sysfs) {
+				dpSysfsPath = sysfs.value();
+			} else if(sysfs.error() == DevicePathParser::Error::broken) {
+				std::cout << std::format("init: device path '{}' cannot be resolved, not starting netserver",
+						std::string{uefiNetDevpath.data(), uefiNetDevpath.size()}) << std::endl;
+				uefiNetDevpathResolved = true;
+			}
+		}
+
+		if(!uefiNetDevpathResolved && !dpSysfsPath.empty()) {
 			if("/sys" + devpath == dpSysfsPath.string()) {
 				auto netserver = fork();
 				if(!netserver) {
