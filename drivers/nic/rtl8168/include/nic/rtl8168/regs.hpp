@@ -6,6 +6,10 @@ namespace regs {
 
 	constexpr arch::scalar_register<uint32_t> idr0{0x00};
 	constexpr arch::scalar_register<uint32_t> idr4{0x04};
+	constexpr arch::scalar_register<uint32_t> mar0{0x08};
+	constexpr arch::scalar_register<uint32_t> mar4{0x0C};
+	constexpr arch::scalar_register<uint32_t> counter_addr_low{0x10};
+	constexpr arch::scalar_register<uint32_t> counter_addr_high{0x14};
 	constexpr arch::scalar_register<uint8_t> eee_led{0x1B};
 	constexpr arch::scalar_register<uint32_t> tnpds_low{0x20};
 	constexpr arch::scalar_register<uint32_t> tnpds_high{0x24};
@@ -18,6 +22,7 @@ namespace regs {
 	constexpr arch::bit_register<uint8_t> config1{0x52};
 	constexpr arch::bit_register<uint8_t> config2{0x53};
 	constexpr arch::bit_register<uint8_t> config3{0x54};
+	constexpr arch::bit_register<uint8_t> config4{0x55};
 	constexpr arch::bit_register<uint8_t> config5{0x56};
 	constexpr arch::scalar_register<uint32_t> timer_count{0x48};
 	constexpr arch::scalar_register<uint32_t> timer_interrupt{0x58};
@@ -121,6 +126,22 @@ namespace phy_access {
 	constexpr arch::field<uint32_t, uint16_t> data{0, 16};
 	constexpr arch::field<uint32_t, uint8_t> addr{16, 5};
 	constexpr arch::field<uint32_t, bool> rw{31, 1};
+}
+
+namespace phy_status {
+	constexpr arch::field<uint8_t, bool> tbi_enable{7, 1};
+	constexpr arch::field<uint8_t, bool> tx_flow_control{6, 1};
+	constexpr arch::field<uint8_t, bool> rx_flow_control{5, 1};
+	constexpr arch::field<uint8_t, bool> speed_1000_full{4, 1};
+	constexpr arch::field<uint8_t, bool> speed_100{3, 1};
+	constexpr arch::field<uint8_t, bool> speed_10{2, 1};
+	constexpr arch::field<uint8_t, bool> link_status{1, 1};
+	constexpr arch::field<uint8_t, bool> full_duplex{0, 1};
+}
+
+namespace counter_addr_low {
+	constexpr uint32_t reset = 1 << 0;
+	constexpr uint32_t dump = 1 << 3;
 }
 
 namespace cr9346 {

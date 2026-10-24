@@ -5,6 +5,7 @@
 #include <nic/rtl8168/regs.hpp>
 #include <frg/logging.hpp>
 #include <helix/timer.hpp>
+#include <print>
 #include <unistd.h>
 
 // TODO: the linux kernel locks on these
@@ -155,12 +156,13 @@ void RealtekNic::ringDoorbell() {
 	}
 }
 
-void RealtekNic::printRegisters() {
-	std::cout << "drivers/rtl8168: dumping registers:" << std::endl;
+void RealtekNic::printRegisters(std::string_view when) {
+	std::println("drivers/rtl8168: dumping registers ({}):", when);
 	frg::to(std::cout) << frg::fmt("\t cmd: 0x{:02x}", uint8_t(_mmio.load(regs::cmd))) << frg::endlog;
 	frg::to(std::cout) << frg::fmt("\t config1: 0x{:02x}", uint8_t(_mmio.load(regs::config1))) << frg::endlog;
 	frg::to(std::cout) << frg::fmt("\t config2: 0x{:02x}", uint8_t(_mmio.load(regs::config2))) << frg::endlog;
 	frg::to(std::cout) << frg::fmt("\t config3: 0x{:02x}", uint8_t(_mmio.load(regs::config3))) << frg::endlog;
+	frg::to(std::cout) << frg::fmt("\t config4: 0x{:02x}", uint8_t(_mmio.load(regs::config4))) << frg::endlog;
 	frg::to(std::cout) << frg::fmt("\t config5: 0x{:02x}", uint8_t(_mmio.load(regs::config5))) << frg::endlog;
 	if(_model == PciModel::RTL8125) {
 		frg::to(std::cout) << frg::fmt("\t interrupt_mask: 0x{:08x}", uint32_t(_mmio.load(regs::rtl8125::interrupt_mask))) << frg::endlog;
@@ -179,4 +181,37 @@ void RealtekNic::printRegisters() {
 	frg::to(std::cout) << frg::fmt("\t misc: 0x{:08x}", uint32_t(_mmio.load(regs::misc))) << frg::endlog;
 	frg::to(std::cout) << frg::fmt("\t misc_1: 0x{:02x}", uint8_t(_mmio.load(regs::misc_1))) << frg::endlog;
 	frg::to(std::cout) << frg::fmt("\t phy_status: 0x{:02x}", uint8_t(_mmio.load(regs::phy_status))) << frg::endlog;
+	frg::to(std::cout) << frg::fmt("\t interrupt_mitigate: 0x{:04x}", uint16_t(_mmio.load(regs::interrupt_mitigate))) << frg::endlog;
+	frg::to(std::cout) << frg::fmt("\t timer_interrupt: 0x{:08x}", _mmio.load(regs::timer_interrupt)) << frg::endlog;
+	std::println("\t mar: 0x{:08x}{:08x}", _mmio.load(regs::mar4), _mmio.load(regs::mar0));
+
+	auto config2 = _mmio.load(regs::config2);
+	auto config3 = _mmio.load(regs::config3);
+	auto config5 = _mmio.load(regs::config5);
+	std::println("drivers/rtl8168:   chip ASPM {}, chip CLKREQ {}, jumbo {}, ready to L2/L3 {}, SPI {}",
+		(config5 & flags::config5::aspm_enable) ? "on" : "off",
+		(config2 & flags::config2::clk_rq_enable) ? "on" : "off",
+		(config3 & flags::config3::enable0_jumbo) ? "on" : "off",
+		(config3 & flags::config3::enable_l2l3) ? "on" : "off",
+		(config5 & flags::config5::spi_enable) ? "on" : "off");
+	logPhyStatus(when);
+}
+
+void RealtekNic::logPhyStatus(std::string_view when) {
+	auto status = _mmio.load(regs::phy_status);
+	const char *speed = "unknown speed";
+	if(status & flags::phy_status::speed_1000_full)
+		speed = "1000 Mbit/s";
+	else if(status & flags::phy_status::speed_100)
+		speed = "100 Mbit/s";
+	else if(status & flags::phy_status::speed_10)
+		speed = "10 Mbit/s";
+
+	std::println("drivers/rtl8168: PHYstatus ({}) 0x{:02x}: link {}, {}, {} duplex, flow control rx {} tx {}{}",
+		when, uint8_t(status),
+		(status & flags::phy_status::link_status) ? "up" : "down", speed,
+		(status & flags::phy_status::full_duplex) ? "full" : "half",
+		(status & flags::phy_status::rx_flow_control) ? "on" : "off",
+		(status & flags::phy_status::tx_flow_control) ? "on" : "off",
+		(status & flags::phy_status::tbi_enable) ? ", TBI" : "");
 }

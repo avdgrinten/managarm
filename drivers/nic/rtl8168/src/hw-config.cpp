@@ -4,9 +4,11 @@
 #include <nic/rtl8168/common.hpp>
 #include <nic/rtl8168/rtl8168.hpp>
 #include <nic/rtl8168/regs.hpp>
+#include <nic/rtl8168/debug_options.hpp>
 #include <frg/logging.hpp>
 #include <helix/timer.hpp>
 #include <memory>
+#include <print>
 #include <unistd.h>
 
 async::result<void> RealtekNic::writeToEPHY(int reg, int value) {
@@ -24,7 +26,14 @@ async::result<uint16_t> RealtekNic::readFromEPHY(int reg) {
 
 async::result<void> RealtekNic::initializeEPHY(ephy_info* info, int len) {
 	while(len--) {
-		co_await writeToEPHY(info->offset, (co_await readFromEPHY(info->offset) & ~info->mask) | info->bits);
+		auto old = co_await readFromEPHY(info->offset);
+		uint16_t val = (old & ~info->mask) | info->bits;
+		co_await writeToEPHY(info->offset, val);
+		if(logHardwareState) {
+			auto readback = co_await readFromEPHY(info->offset);
+			std::println("drivers/rtl8168: EPHY 0x{:02x}: 0x{:04x} -> 0x{:04x}, read back 0x{:04x}{}",
+				info->offset, old, val, readback, readback != val ? " (MISMATCH)" : "");
+		}
 		info++;
 	}
 }
@@ -116,9 +125,11 @@ async::result<void> RealtekNic::configureHardware() {
 			    {0x0a, 0x0000, 0x0040},
 			});
 
-			co_await writeCSIRegister(
-			    0x070C, (co_await readCSIRegister(0x070C) & 0x00FFFFFF) | (0x27 << 24)
-			);
+			auto aspmLatency = co_await readCSIRegister(0x070C);
+			co_await writeCSIRegister(0x070C, (aspmLatency & 0x00FFFFFF) | (0x27 << 24));
+			if(logHardwareState)
+				std::println("drivers/rtl8168: CSI 0x070c: 0x{:08x} -> read back 0x{:08x}",
+					aspmLatency, co_await readCSIRegister(0x070C));
 			co_await initializeEPHY(e_info_8168e_1.data(), e_info_8168e_1.size());
 
 			_mmio.store(regs::misc, _mmio.load(regs::misc) | flags::misc::txpla_rst(true));

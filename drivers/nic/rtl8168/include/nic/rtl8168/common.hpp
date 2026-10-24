@@ -8,6 +8,7 @@
 #include <nic/rtl8168/tx.hpp>
 #include <protocols/hw/client.hpp>
 #include <memory>
+#include <string_view>
 
 constexpr size_t NUM_RX_DESCRIPTORS = 256;
 constexpr size_t NUM_TX_DESCRIPTORS = 256;
@@ -15,6 +16,24 @@ constexpr size_t NUM_TX_DESCRIPTORS = 256;
 struct RxQueue;
 struct TxQueue;
 struct TxQueue8168;
+
+// Layout of the tally counter dump that all revisions share.
+struct TallyCounters {
+	uint64_t txPackets;
+	uint64_t rxPackets;
+	uint64_t txErrors;
+	uint32_t rxErrors;
+	uint16_t rxMissed;
+	uint16_t alignErrors;
+	uint32_t txOneCollision;
+	uint32_t txMultiCollision;
+	uint64_t rxUnicast;
+	uint64_t rxBroadcast;
+	uint32_t rxMulticast;
+	uint16_t txAborted;
+	uint16_t txUnderrun;
+};
+static_assert(sizeof(TallyCounters) == 64);
 
 enum class PciModel : uint16_t {
 	RTL8136 = 0x8136,
@@ -93,7 +112,8 @@ public:
 
 	void ringDoorbell();
 
-	void printRegisters();
+	void printRegisters(std::string_view when);
+	void logPhyStatus(std::string_view when);
 
 	arch::dma_space &dmaSpace() {
 		return dmaSpace_;
@@ -145,6 +165,11 @@ private:
 	async::result<bool> waitCSIReadReady();
 	async::result<bool> waitCSIWriteReady();
 
+	async::result<bool> waitPHYARReadReady();
+	async::result<bool> waitPHYARWriteReady();
+
+	async::result<bool> waitTallyCommandDone();
+
 
 	// Indirect register access functions
 	// TOOD: these functions should lock
@@ -185,6 +210,10 @@ private:
 
 
 	/// MDIO Code
+	// Pre-RTL8168g MDIO through PHYAR
+	async::result<void> writeR8169MDIO(int reg, int val);
+	async::result<int> readR8169MDIO(int reg);
+
 	// RTL8168g MDIO
 	async::result<void> writeRTL8168gMDIO(int reg, int val);
 	async::result<int> readRTL8168gMDIO(int reg);
@@ -221,6 +250,13 @@ private:
 
 	async::detached processIrqs();
 
+	// Diagnostics
+	async::result<void> dumpPhyState(std::string_view when);
+	async::result<void> dumpPciLinkState(std::string_view when);
+	async::result<void> setupTallyCounters();
+	async::result<bool> runTallyCommand(uint32_t command);
+	async::detached monitorHardware();
+
 	helix::Mapping _mmio_mapping;
 	arch::mem_space _mmio;
 
@@ -238,6 +274,9 @@ private:
 	PciModel _model;
 	bool _has_gmii = true; // Has GMII; basically, is this card gigabit?
 	bool _loggedRxOverflow = false;
+	uint64_t _irqCount = 0;
+	arch::dma_buffer _tallyCounters;
+	uintptr_t _tallyCountersIova = 0;
 	MacRevision _revision;
 	DashType _dash_type;
 	uint8_t _pci_function = 0;

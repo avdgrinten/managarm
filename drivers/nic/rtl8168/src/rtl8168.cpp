@@ -9,6 +9,8 @@
 #include <frg/logging.hpp>
 #include <helix/timer.hpp>
 #include <memory>
+#include <print>
+#include <string.h>
 #include <unistd.h>
 
 static const std::unordered_map<RealtekNic::MacRevision, std::string> rtl_chip_infos = {
@@ -292,6 +294,115 @@ async::result<void> RealtekNic::initializeHardware() {
 	}
 }
 
+async::result<void> RealtekNic::dumpPciLinkState(std::string_view when) {
+	if(!(co_await _device.loadPciSpace(0x06, 2) & (1 << 4))) {
+		std::println("drivers/rtl8168: PCIe link ({}): device has no capability list", when);
+		co_return;
+	}
+
+	size_t pcieCap = 0;
+	auto ptr = co_await _device.loadPciSpace(0x34, 1) & 0xFC;
+	for(int i = 0; ptr && i < 48; i++) {
+		if(co_await _device.loadPciSpace(ptr, 1) == 0x10) {
+			pcieCap = ptr;
+			break;
+		}
+		ptr = co_await _device.loadPciSpace(ptr + 1, 1) & 0xFC;
+	}
+	if(!pcieCap) {
+		std::println("drivers/rtl8168: PCIe link ({}): no PCIe capability found", when);
+		co_return;
+	}
+
+	auto devCtl = co_await _device.loadPciSpace(pcieCap + 0x08, 2);
+	auto linkCap = co_await _device.loadPciSpace(pcieCap + 0x0C, 4);
+	auto linkCtl = co_await _device.loadPciSpace(pcieCap + 0x10, 2);
+	auto linkSta = co_await _device.loadPciSpace(pcieCap + 0x12, 2);
+
+	static const char *aspmModes[] = {"none", "L0s", "L1", "L0s+L1"};
+	std::println("drivers/rtl8168: PCIe link ({}): DEVCTL 0x{:04x}, LNKCAP 0x{:08x}, LNKCTL 0x{:04x}, LNKSTA 0x{:04x}",
+		when, devCtl, linkCap, linkCtl, linkSta);
+	std::println("drivers/rtl8168:   ASPM supported {}, enabled {}, CLKREQ {}, Gen{} x{}, MPS {}, MRRS {}",
+		aspmModes[(linkCap >> 10) & 3], aspmModes[linkCtl & 3], (linkCtl & (1 << 8)) ? "on" : "off",
+		linkSta & 0xF, (linkSta >> 4) & 0x3F, 128 << ((devCtl >> 5) & 7), 128 << ((devCtl >> 12) & 7));
+
+	// Linux disables L1 on these revisions because it makes the NIC stop working on some systems.
+	if(_revision < MacRevision::MacVer46 && (linkCtl & 2)
+			&& (_mmio.load(regs::config5) & flags::config5::aspm_enable))
+		std::println("drivers/rtl8168:   WARNING: L1 is enabled on the link while the chip's ASPM is on");
+}
+
+async::result<void> RealtekNic::setupTallyCounters() {
+	_tallyCounters = arch::dma_buffer{&_dmaPool, 256, 64};
+	memset(_tallyCounters.data(), 0, _tallyCounters.size());
+	co_await dmaSpace().ensure_mapped(_tallyCounters);
+	_tallyCountersIova = dmaSpace().iova_of(_tallyCounters);
+
+	// Older revisions only reset their counters on a power cycle.
+	if(_revision >= MacRevision::MacVer19 && !co_await runTallyCommand(flags::counter_addr_low::reset))
+		std::println("drivers/rtl8168: failed to reset the tally counters");
+}
+
+async::result<bool> RealtekNic::runTallyCommand(uint32_t command) {
+	// Some chips are unable to dump the counters while the receiver is disabled.
+	if(!(_mmio.load(regs::cmd) & flags::cmd::receiver))
+		co_return false;
+
+	_mmio.store(regs::counter_addr_high, (_tallyCountersIova >> 32) & 0xFFFFFFFF);
+	forcePCICommit();
+	_mmio.store(regs::counter_addr_low, _tallyCountersIova & 0xFFFFFFFF);
+	_mmio.store(regs::counter_addr_low, (_tallyCountersIova & 0xFFFFFFFF) | command);
+
+	co_return co_await waitTallyCommandDone();
+}
+
+async::detached RealtekNic::monitorHardware() {
+	uint8_t lastPhyStatus = uint8_t(_mmio.load(regs::phy_status));
+	TallyCounters last{};
+	bool first = true;
+
+	while(true) {
+		co_await helix::sleepFor(monitorIntervalNs);
+
+		auto phyStatus = uint8_t(_mmio.load(regs::phy_status));
+		if(phyStatus != lastPhyStatus) {
+			logPhyStatus("monitor");
+			co_await dumpPhyState("monitor");
+			lastPhyStatus = phyStatus;
+		}
+
+		if(!co_await runTallyCommand(flags::counter_addr_low::dump)) {
+			std::println("drivers/rtl8168: failed to dump the tally counters");
+			continue;
+		}
+
+		TallyCounters c;
+		memcpy(&c, _tallyCounters.data(), sizeof(c));
+		if(!first && !memcmp(&c, &last, sizeof(c)))
+			continue;
+		first = false;
+		last = c;
+
+		uint32_t intrStatus, intrMask;
+		if(_model == PciModel::RTL8125) {
+			intrStatus = uint32_t(_mmio.load(regs::rtl8125::interrupt_status));
+			intrMask = uint32_t(_mmio.load(regs::rtl8125::interrupt_mask));
+		} else {
+			intrStatus = uint16_t(_mmio.load(regs::interrupt_status));
+			intrMask = uint16_t(_mmio.load(regs::interrupt_mask));
+		}
+
+		std::println("drivers/rtl8168: tally: tx {}, rx {}, tx errors {}, rx errors {}, rx missed {}, "
+			"align errors {}, tx 1-collision {}, tx multi-collision {}, rx unicast {}, rx broadcast {}, "
+			"rx multicast {}, tx aborted {}, tx underrun {}",
+			c.txPackets, c.rxPackets, c.txErrors, c.rxErrors, c.rxMissed, c.alignErrors,
+			c.txOneCollision, c.txMultiCollision, c.rxUnicast, c.rxBroadcast, c.rxMulticast,
+			c.txAborted, c.txUnderrun);
+		std::println("drivers/rtl8168:   IRQs handled {}, interrupt_status 0x{:04x}, interrupt_mask 0x{:04x}, cmd 0x{:02x}",
+			_irqCount, intrStatus, intrMask, uint8_t(_mmio.load(regs::cmd)));
+	}
+}
+
 async::result<bool> RealtekNic::up() {
 	co_await cleanup();
 	co_await startCard();
@@ -334,8 +445,14 @@ async::result<bool> RealtekNic::cleanup() {
 async::result<void> RealtekNic::issueHardwareReset() {
 	_mmio.store(regs::cmd, flags::cmd::reset(true));
 
-	while(_mmio.load(regs::cmd) & flags::cmd::reset)
+	size_t polls = 0;
+	while(_mmio.load(regs::cmd) & flags::cmd::reset) {
 		co_await helix::sleepFor(1'000); // 1000 ns = 1 µs
+		if(logHardwareState && ++polls == 10'000)
+			std::println("drivers/rtl8168: hardware reset has not completed after {} polls", polls);
+	}
+	if(logHardwareState && polls >= 10'000)
+		std::println("drivers/rtl8168: hardware reset completed after {} polls", polls);
 }
 
 // These two functions write the high uint32_t first; this is intentional:
@@ -501,6 +618,17 @@ async::result<void> RealtekNic::init() {
 
 	std::cout << "drivers/rtl8168: MAC " << mac_ << std::endl;
 
+	if(logHardwareState) {
+		std::println("drivers/rtl8168: PCI {:04x}:{:04x} revision 0x{:02x}, subsystem {:04x}:{:04x}",
+			co_await _device.loadPciSpace(pci::Vendor, 2), pci_id,
+			co_await _device.loadPciSpace(pci::Revision, 1),
+			co_await _device.loadPciSpace(pci::SubsystemVendor, 2),
+			co_await _device.loadPciSpace(pci::SubsystemDevice, 2));
+		printRegisters("firmware");
+		co_await dumpPciLinkState("firmware");
+		co_await dumpPhyState("firmware");
+	}
+
 	maskIRQsAndAck();
 	if(logDriverStart) {
 		std::cout << "drivers/rtl8168: masked IRQs" << std::endl;
@@ -532,9 +660,19 @@ async::result<void> RealtekNic::init() {
 		std::cout << "drivers/rtl8168: entering interrupt loop" << std::endl;
 	}
 
-	printRegisters();
+	printRegisters("after start");
+	if(logHardwareState) {
+		co_await dumpPciLinkState("after start");
+		co_await dumpPhyState("after start");
+	}
+
+	if(monitorIntervalNs)
+		co_await setupTallyCounters();
 
 	processIrqs();
+
+	if(monitorIntervalNs)
+		monitorHardware();
 }
 
 // TODO: We really should not do this like this
@@ -568,6 +706,7 @@ async::detached RealtekNic::processIrqs() {
 		auto await = co_await helix_ng::awaitEvent(_irq, sequence);
 		HEL_CHECK(await.error());
 		sequence = await.sequence();
+		_irqCount++;
 
 		arch::bit_value<uint32_t> status{0};
 		if(_model == PciModel::RTL8125) {
@@ -598,6 +737,8 @@ async::detached RealtekNic::processIrqs() {
 			if(logIRQs) {
 				puts("drivers/rtl8168: link change");
 			}
+			if(logHardwareState)
+				logPhyStatus("link change IRQ");
 		}
 
 		// Did we successfully transmit information?
