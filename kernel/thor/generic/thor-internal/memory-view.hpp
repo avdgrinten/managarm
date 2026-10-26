@@ -46,10 +46,8 @@ struct CacheBundle;
 struct CachePage {
 	// Page is registered with the reclaim mechanism.
 	static constexpr uint32_t reclaimRegistered = 0x01;
-	// Page is currently being evicted (not in LRU list, but in bundle list).
+	// Page is on the bundle's reclaim list and the bundle did not take it yet (not in an LRU list).
 	static constexpr uint32_t reclaimPosted = 0x02;
-	// Page has been evicted (neither in the LRU, nor in the bundle list).
-	static constexpr uint32_t reclaimInflight = 0x04;
 
 	// CacheBundle that owns this page.
 	CacheBundle *bundle = nullptr;

@@ -197,31 +197,7 @@ struct MemoryReclaimer {
 
 	void removePage(CachePage *page) {
 		auto *bundle = page->bundle;
-		auto irqLock = frg::guard(&irqMutex());
-		auto lock = frg::guard(&bundle->reclaimMutex_);
-
-		assert(page->flags & CachePage::reclaimRegistered);
-
-		if(page->flags & CachePage::reclaimPosted) {
-			if(!(page->flags & CachePage::reclaimInflight)) {
-				auto it = bundle->_reclaimList.iterator_to(page);
-				bundle->_reclaimList.erase(it);
-			}
-
-			page->flags &= ~(CachePage::reclaimPosted | CachePage::reclaimInflight);
-			numPosted_.fetch_sub(1, std::memory_order_relaxed);
-		}else{
-			auto g = generationOf_(bundle, page);
-			auto it = bundle->genLists_[g].iterator_to(page);
-			bundle->genLists_[g].erase(it);
-			bundle->genSizes_[g]--;
-			numInGenerations_.fetch_sub(1, std::memory_order_relaxed);
-		}
-		page->flags &= ~CachePage::reclaimRegistered;
-	}
-
-	void bumpPage(CachePage *page) {
-		auto *bundle = page->bundle;
+		bool averted = false;
 		{
 			auto irqLock = frg::guard(&irqMutex());
 			auto lock = frg::guard(&bundle->reclaimMutex_);
@@ -229,17 +205,44 @@ struct MemoryReclaimer {
 			assert(page->flags & CachePage::reclaimRegistered);
 
 			if(page->flags & CachePage::reclaimPosted) {
-				if(!(page->flags & CachePage::reclaimInflight)) {
-					auto it = bundle->_reclaimList.iterator_to(page);
-					bundle->_reclaimList.erase(it);
-				}
+				auto it = bundle->_reclaimList.iterator_to(page);
+				bundle->_reclaimList.erase(it);
+				page->flags &= ~CachePage::reclaimPosted;
+				averted = true;
+			}else{
+				auto g = generationOf_(bundle, page);
+				auto it = bundle->genLists_[g].iterator_to(page);
+				bundle->genLists_[g].erase(it);
+				bundle->genSizes_[g]--;
+				numInGenerations_.fetch_sub(1, std::memory_order_relaxed);
+			}
+			page->flags &= ~CachePage::reclaimRegistered;
+		}
 
-				page->flags &= ~(CachePage::reclaimPosted | CachePage::reclaimInflight);
+		// The bundle did not take the page via takePosted() yet.
+		if(averted)
+			resolveOutstanding_(1);
+	}
+
+	void bumpPage(CachePage *page) {
+		auto *bundle = page->bundle;
+		bool averted = false;
+		{
+			auto irqLock = frg::guard(&irqMutex());
+			auto lock = frg::guard(&bundle->reclaimMutex_);
+
+			assert(page->flags & CachePage::reclaimRegistered);
+
+			if(page->flags & CachePage::reclaimPosted) {
+				auto it = bundle->_reclaimList.iterator_to(page);
+				bundle->_reclaimList.erase(it);
+
+				page->flags &= ~CachePage::reclaimPosted;
 				page->generation = bundle->newestGen_;
 				bundle->genLists_[bundle->newestGen_].push_back(page);
 				bundle->genSizes_[bundle->newestGen_]++;
-				numPosted_.fetch_sub(1, std::memory_order_relaxed);
 				numInGenerations_.fetch_add(1, std::memory_order_relaxed);
+				averted = true;
 			}else if(page->generation != bundle->newestGen_) {
 				auto g = generationOf_(bundle, page);
 				auto it = bundle->genLists_[g].iterator_to(page);
@@ -250,6 +253,10 @@ struct MemoryReclaimer {
 				bundle->genSizes_[bundle->newestGen_]++;
 			}
 		}
+
+		// The bundle did not take the page via takePosted() yet.
+		if(averted)
+			resolveOutstanding_(1);
 
 		rotationTurnaround_.fetch_add(1, std::memory_order_relaxed);
 		if (shouldRotate_())
@@ -273,7 +280,10 @@ struct MemoryReclaimer {
 		);
 	}
 
-	void reclaimPages(CacheBundle *bundle, CachePagesList &out) {
+	// Takes the pages that were posted to the bundle.
+	// The pages are no longer registered but they stay outstanding until the bundle reports them to completeReclaim().
+	void takePosted(CacheBundle *bundle, CachePagesList &out) {
+		assert(out.empty());
 		auto irqLock = frg::guard(&irqMutex());
 		auto lock = frg::guard(&bundle->reclaimMutex_);
 
@@ -282,10 +292,16 @@ struct MemoryReclaimer {
 		for(auto page : out) {
 			assert(page->flags & CachePage::reclaimRegistered);
 			assert(page->flags & CachePage::reclaimPosted);
-			assert(!(page->flags & CachePage::reclaimInflight));
 
-			page->flags |= CachePage::reclaimInflight;
+			page->flags &= ~(CachePage::reclaimRegistered | CachePage::reclaimPosted);
 		}
+	}
+
+	// Reports the outcome for pages that the bundle took via takePosted().
+	// Averted pages are those that the bundle did not free (e.g., since they are in use or dirty).
+	void completeReclaim(size_t numEvicted, size_t numAverted) {
+		numEvicted_.fetch_add(numEvicted, std::memory_order_relaxed);
+		resolveOutstanding_(numEvicted + numAverted);
 	}
 
 	void runReclaimFiber() {
@@ -345,42 +361,43 @@ private:
 	// Bounds over-eviction, since the shortfall is re-measured between batches.
 	// Also ensure that evictPages_() does not do too much work without dropping locks.
 	static constexpr size_t maxEvictBatch = 2048;
-	// Time that the bundles get to evict posted pages before the next round.
-	static constexpr uint64_t evictionPollNs = 10'000'000;
-	// Rounds without new or evicted posted pages after which reclaimShortfall_() gives up.
-	static constexpr unsigned int maxPollsForEviction = 20;
+	// Rounds without evicted pages after which reclaimShortfall_() gives up.
+	static constexpr unsigned int maxRoundsWithoutProgress = 4;
 	// Time that the reclaimer waits after reclaimShortfall_() gave up.
 	static constexpr uint64_t stalledReclaimBackoffNs = 1'000'000'000;
 
-	// Posts pages until pressureShortfall() drops to zero, taking the pages that are already posted
-	// (but not evicted yet) into account.
+	// Posts pages until pressureShortfall() drops to zero.
+	// Each round waits until the bundles have evicted or averted all posted pages.
 	// Returns false if no progress could be made.
 	bool reclaimShortfall_() {
-		unsigned int numPolls = 0;
-		auto lastPosted = numPosted_.load(std::memory_order_relaxed);
+		unsigned int roundsWithoutProgress = 0;
 		while(true) {
 			auto shortfall = physicalAllocator->pressureShortfall();
 			if(!shortfall)
 				return true;
 
-			// Posted pages that the bundles took during the last sleep count as progress.
-			auto posted = numPosted_.load(std::memory_order_relaxed);
-			bool consumed = posted < lastPosted;
-			size_t newlyPosted = 0;
-			if(shortfall > posted)
-				newlyPosted = evictPages_(frg::min(shortfall - posted, maxEvictBatch));
-			if(logReclaim && newlyPosted)
-				infoLogger() << "thor: Reclamation posts " << newlyPosted << " pages" << frg::endlog;
+			auto evictedBefore = numEvicted_.load(std::memory_order_relaxed);
+			auto posted = evictPages_(frg::min(shortfall, maxEvictBatch));
+			if(!posted)
+				return false;
+			if(logReclaim)
+				infoLogger() << "thor: Reclamation posts " << posted << " pages" << frg::endlog;
 
-			if(newlyPosted || consumed) {
-				numPolls = 0;
-			}else if(++numPolls > maxPollsForEviction) {
+			while(numOutstanding_.load(std::memory_order_acquire)) {
+				KernelFiber::asyncBlockCurrent(async::transform(
+					feedbackEvent_.async_wait_if([this] -> bool {
+						return numOutstanding_.load(std::memory_order_acquire);
+					}),
+					[] (auto) {}
+				));
+			}
+
+			// Pages that the bundles averted (e.g., since they are in use) do not count as progress.
+			if(numEvicted_.load(std::memory_order_relaxed) != evictedBefore) {
+				roundsWithoutProgress = 0;
+			}else if(++roundsWithoutProgress >= maxRoundsWithoutProgress) {
 				return false;
 			}
-			lastPosted = numPosted_.load(std::memory_order_relaxed);
-
-			// The bundles evict the posted pages asynchronously.
-			KernelFiber::asyncBlockCurrent(generalTimerEngine()->sleepFor(evictionPollNs));
 		}
 	}
 
@@ -446,7 +463,7 @@ private:
 					}
 					bundle->genSizes_[oldest] -= share;
 					numInGenerations_.fetch_sub(share, std::memory_order_relaxed);
-					numPosted_.fetch_add(share, std::memory_order_relaxed);
+					numOutstanding_.fetch_add(share, std::memory_order_relaxed);
 				}
 
 				if(share) {
@@ -526,6 +543,13 @@ private:
 		return {};
 	}
 
+	void resolveOutstanding_(size_t n) {
+		if(!n)
+			return;
+		if(numOutstanding_.fetch_sub(n, std::memory_order_acq_rel) == n)
+			feedbackEvent_.raise();
+	}
+
 	// Generation index of a page. Callers must hold the bundle's reclaimMutex_.
 	unsigned int generationOf_(CacheBundle *bundle, CachePage *page) {
 		if(page->generation == oldestGeneration)
@@ -547,8 +571,12 @@ private:
 
 	// Number of pages in the generation lists of all bundles.
 	std::atomic<size_t> numInGenerations_{0};
-	// Number of pages that were posted to the bundles' reclaim lists but not removed yet.
-	std::atomic<size_t> numPosted_{0};
+	// Number of posted pages that were neither evicted nor averted yet.
+	std::atomic<size_t> numOutstanding_{0};
+	// Number of posted pages that the bundles evicted. Only grows.
+	std::atomic<size_t> numEvicted_{0};
+	// Raised when numOutstanding_ drops to zero.
+	async::recurring_event feedbackEvent_;
 
 	// Protected against modification by mutex_.
 	frg::intrusive_rcu_list<
@@ -1462,7 +1490,7 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 			if(_stopLoops)
 				break;
 
-			globalReclaimer->reclaimPages(this, batch);
+			globalReclaimer->takePosted(this, batch);
 
 			for(auto cachePage : batch) {
 				auto *page = frg::container_of(cachePage, &ManagedPage::cachePage);
@@ -1471,7 +1499,6 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 				assert(page->transactionState == TxState::inReclaimer);
 				assert(!page->lockCount);
 				page->transactionState = TxState::performReclaim;
-				globalReclaimer->removePage(cachePage);
 			}
 
 			discardBatch.splice(discardBatch.end(), _discardList);
@@ -1497,6 +1524,8 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 		bool anyExpedite = false;
 		bool anyDiscardQueued = false;
 		size_t sizeFreed = 0;
+		size_t numEvicted = 0;
+		size_t numAverted = 0;
 		MonitorPendingList pendingMonitors;
 		while(!batch.empty()) {
 			PhysicalAddr physical;
@@ -1523,6 +1552,7 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 						page->transactionState = TxState::none;
 						_disposeDiscarded(page, anyDiscardQueued);
 					}
+					numAverted++;
 					continue;
 				}
 
@@ -1538,6 +1568,7 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 						globalReclaimer->addPage(&page->cachePage);
 						page->transactionState = TxState::inReclaimer;
 					}
+					numAverted++;
 					continue;
 				}
 				assert(page->transactionState == TxState::performReclaim);
@@ -1554,7 +1585,9 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 			globalPfnDb().erase(physical);
 			deallocateAndUncharge(hierarchy.get(), physical, kPageSize, PhysicalKind::evictable);
 			sizeFreed += kPageSize;
+			numEvicted++;
 		}
+		globalReclaimer->completeReclaim(numEvicted, numAverted);
 
 		while(!discardBatch.empty()) {
 			PhysicalAddr physical;
