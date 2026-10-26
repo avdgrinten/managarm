@@ -402,18 +402,20 @@ private:
 	}
 
 	// Posts up to n pages to the bundles' reclaim lists, starting at the oldest generation.
-	// Each bundle contributes in proportion to its share of that generation.
+	// Each bundle contributes in proportion to its share of a generation.
 	// Returns the number of posted pages.
 	size_t evictPages_(size_t n) {
+		// Rotations only happen on this fiber, so the generations do not move while we post.
+		unsigned int newest;
+		{
+			auto irqLock = frg::guard(&irqMutex());
+			auto lock = frg::guard(&mutex_);
+			newest = newestGen_;
+		}
+
 		size_t posted = 0;
-		unsigned int emptyRotations = 0;
-		while(posted < n && numInGenerations_.load(std::memory_order_relaxed)) {
-			unsigned int oldest;
-			{
-				auto irqLock = frg::guard(&irqMutex());
-				auto lock = frg::guard(&mutex_);
-				oldest = (newestGen_ + 1) % CacheBundle::numGenerations;
-			}
+		for(unsigned int k = 1; k <= CacheBundle::numGenerations && posted < n; k++) {
+			auto g = (newest + k) % CacheBundle::numGenerations;
 
 			size_t total = 0;
 			auto bundle = pinNextBundle_(nullptr);
@@ -421,23 +423,16 @@ private:
 				{
 					auto irqLock = frg::guard(&irqMutex());
 					auto lock = frg::guard(&bundle->reclaimMutex_);
-					total += bundle->genSizes_[oldest];
+					total += bundle->genSizes_[g];
 				}
 				bundle = pinNextBundle_(bundle.get());
 			}
-
-			if(!total) {
-				// Start a new generation once the oldest one is empty.
-				// The counters are only approximate, so do not rotate forever.
-				if(++emptyRotations > CacheBundle::numGenerations)
-					break;
-				rotateGenerations_();
+			if(!total)
 				continue;
-			}
-			emptyRotations = 0;
 
 			auto wanted = frg::min(n - posted, total);
 			size_t seen = 0;
+			size_t postedInGen = 0;
 			bundle = pinNextBundle_(nullptr);
 			while(bundle) {
 				size_t share = 0;
@@ -445,37 +440,64 @@ private:
 					auto irqLock = frg::guard(&irqMutex());
 					auto lock = frg::guard(&bundle->reclaimMutex_);
 
-					auto size = bundle->genSizes_[oldest];
+					auto size = bundle->genSizes_[g];
 					// Splitting by cumulative size keeps the sum of the shares at or below wanted.
-					// Sizes only shrink after total was computed, so seen does not exceed total.
-					auto before = wanted * seen / total;
+					// The newest generation and the bundle list can grow after total was computed,
+					// so seen may exceed total.
+					auto before = wanted * frg::min(seen, total) / total;
 					seen += size;
-					share = wanted * seen / total - before;
-					assert(share <= size);
-
-					auto &genList = bundle->genLists_[oldest];
-					for(size_t i = 0; i < share; i++) {
-						auto page = genList.pop_front();
-						assert(page->flags & CachePage::reclaimRegistered);
-						assert(!(page->flags & CachePage::reclaimPosted));
-						page->flags |= CachePage::reclaimPosted;
-						bundle->_reclaimList.push_back(page);
-					}
-					bundle->genSizes_[oldest] -= share;
-					numInGenerations_.fetch_sub(share, std::memory_order_relaxed);
-					numOutstanding_.fetch_add(share, std::memory_order_relaxed);
+					share = wanted * frg::min(seen, total) / total - before;
+					share = postLocked_(bundle.get(), g, frg::min(share, wanted - postedInGen));
 				}
 
 				if(share) {
-					posted += share;
+					postedInGen += share;
 					bundle->_reclaimEvent.raise();
 				}
 
 				// Drops the previous pin outside of the RCU section.
 				bundle = pinNextBundle_(bundle.get());
 			}
+
+			// If the generation shrank after total was computed, the shares can round down to zero.
+			// Take the remainder from the bundles that still have pages in it.
+			bundle = postedInGen < wanted ? pinNextBundle_(nullptr) : nullptr;
+			while(bundle && postedInGen < wanted) {
+				size_t extra;
+				{
+					auto irqLock = frg::guard(&irqMutex());
+					auto lock = frg::guard(&bundle->reclaimMutex_);
+					extra = postLocked_(bundle.get(), g, wanted - postedInGen);
+				}
+
+				if(extra) {
+					postedInGen += extra;
+					bundle->_reclaimEvent.raise();
+				}
+
+				bundle = pinNextBundle_(bundle.get());
+			}
+			posted += postedInGen;
 		}
 		return posted;
+	}
+
+	// Moves up to n pages of generation g to the bundle's reclaim list.
+	// Returns the number of moved pages. Callers must hold the bundle's reclaimMutex_.
+	size_t postLocked_(CacheBundle *bundle, unsigned int g, size_t n) {
+		n = frg::min(n, bundle->genSizes_[g]);
+		auto &genList = bundle->genLists_[g];
+		for(size_t i = 0; i < n; i++) {
+			auto page = genList.pop_front();
+			assert(page->flags & CachePage::reclaimRegistered);
+			assert(!(page->flags & CachePage::reclaimPosted));
+			page->flags |= CachePage::reclaimPosted;
+			bundle->_reclaimList.push_back(page);
+		}
+		bundle->genSizes_[g] -= n;
+		numInGenerations_.fetch_sub(n, std::memory_order_relaxed);
+		numOutstanding_.fetch_add(n, std::memory_order_relaxed);
+		return n;
 	}
 
 	// Starts a new generation in all bundles. This does not evict pages:
