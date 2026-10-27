@@ -322,7 +322,7 @@ std::expected<PhysicalAddr, Error> PhysicalChunkAllocator::tryAllocate(Allocatio
 	}
 
 	if(kickReclaim)
-		pressureEvent_.raise();
+		handleReclaimPressure();
 	if(physical == static_cast<PhysicalAddr>(-1))
 		return std::unexpected{Error::noMemory};
 	return physical;
@@ -360,7 +360,7 @@ std::expected<PageChain, Error> PhysicalChunkAllocator::tryAllocateChain(Allocat
 	}
 
 	if(kickReclaim)
-		pressureEvent_.raise();
+		handleReclaimPressure();
 	return chain;
 }
 
@@ -404,7 +404,7 @@ void PhysicalChunkAllocator::startWait_(WaitNode *node) {
 	}
 
 	if(kickReclaim)
-		pressureEvent_.raise();
+		handleReclaimPressure();
 	if(completed)
 		node->event.raise();
 }

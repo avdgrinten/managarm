@@ -192,7 +192,7 @@ struct MemoryReclaimer {
 
 		rotationTurnaround_.fetch_add(1, std::memory_order_relaxed);
 		if (shouldRotate_())
-			rotationEvent_.raise();
+			wakeEvent_.raise();
 	}
 
 	void removePage(CachePage *page) {
@@ -253,7 +253,11 @@ struct MemoryReclaimer {
 
 		rotationTurnaround_.fetch_add(1, std::memory_order_relaxed);
 		if (shouldRotate_())
-			rotationEvent_.raise();
+			wakeEvent_.raise();
+	}
+
+	void handlePressure() {
+		wakeEvent_.raise();
 	}
 
 	auto awaitReclaim(CacheBundle *bundle, async::cancellation_token ct = {}) {
@@ -319,23 +323,14 @@ struct MemoryReclaimer {
 					continue;
 				}
 
-				// awaitPressure() is woken from allocation paths. We do not race a timer here
-				// since cancelling it would then take the timer engine's lock in those paths.
-				KernelFiber::asyncBlockCurrent(
-					async::race_and_cancel(
-						[&] (async::cancellation_token ct) {
-							return async::transform(
-								rotationEvent_.async_wait_if([&] -> bool {
-									return !shouldRotate_();
-								}, ct),
-								[] (auto) {}
-							);
-						},
-						[&] (async::cancellation_token ct) {
-							return physicalAllocator->awaitPressure(ct);
-						}
-					)
-				);
+				// handleReclaimPressure() raises wakeEvent_ from allocation paths.
+				// We only wait for this event since racing it against other senders would run their cancellation there.
+				KernelFiber::asyncBlockCurrent(async::transform(
+					wakeEvent_.async_wait_if([&] -> bool {
+						return !shouldRotate_() && !physicalAllocator->pressureShortfall();
+					}),
+					[] (auto) {}
+				));
 			}
 		});
 	}
@@ -568,10 +563,13 @@ private:
 	// Number of pages bumped since the last generation rotation.
 	std::atomic<size_t> rotationTurnaround_{0};
 
-	async::recurring_event rotationEvent_;
+	// Raised when shouldRotate_() becomes true and by handleReclaimPressure().
+	async::recurring_event wakeEvent_;
 };
 
 static frg::manual_box<MemoryReclaimer> globalReclaimer;
+// Allocations can apply pressure before globalReclaimer is initialized.
+static std::atomic<bool> globalReclaimerReady{false};
 
 static initgraph::Task initReclaim{&globalInitEngine, "generic.init-reclaim",
 	initgraph::Requires{getFibersAvailableStage()},
@@ -584,9 +582,16 @@ static initgraph::Task initReclaim{&globalInitEngine, "generic.init-reclaim",
 			infoLogger() << "thor: torture-uncaching is enabled" << frg::endlog;
 
 		globalReclaimer.initialize();
+		globalReclaimerReady.store(true, std::memory_order_release);
 		globalReclaimer->runReclaimFiber();
 	}
 };
+
+void handleReclaimPressure() {
+	if(!globalReclaimerReady.load(std::memory_order_acquire))
+		return;
+	globalReclaimer->handlePressure();
+}
 
 // --------------------------------------------------------
 // MemoryView.
@@ -1638,8 +1643,8 @@ coroutine<void> ManagedSpace::_runDrainLoop() {
 				deadline = _writebackDeadline;
 			}
 			// Skip the deadline under memory pressure such that dirty pages become reclaimable immediately.
-			// TODO: Pressure is only sampled before we sleep. Racing the sleep against awaitPressure()
-			//       would cancel the timer from allocation paths, which wake that wait.
+			// TODO: Pressure is only sampled before we sleep. The reclaimer could expedite the writeback
+			//       instead, since it is woken by handleReclaimPressure().
 			if(tortureUncaching || physicalAllocator->pressureShortfall())
 				break;
 			if(!deadline || getClockNanos() >= deadline)

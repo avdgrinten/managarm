@@ -7,7 +7,6 @@
 #include <async/algorithm.hpp>
 #include <async/cancellation.hpp>
 #include <async/oneshot-event.hpp>
-#include <async/recurring-event.hpp>
 #include <eir/interface.hpp>
 #include <frg/list.hpp>
 #include <frg/optional.hpp>
@@ -239,6 +238,10 @@ bool canBlockForMemory();
 // Zero if the context cannot block (see canBlockForMemory()).
 size_t currentContextFloor();
 
+// Wakes the reclaimer since PhysicalChunkAllocator::pressureShortfall() may have become non-zero.
+// Implemented by the reclaimer. Callers must not hold the physical allocator's lock.
+void handleReclaimPressure();
+
 class PhysicalChunkAllocator {
 	typedef frg::ticket_spinlock Mutex;
 
@@ -413,16 +416,6 @@ public:
 	// reclaimResumeHeadroom_ above its floor, and the resulting reclaim target is not met yet.
 	size_t pressureShortfall();
 
-	// Completes once pressureShortfall() is non-zero.
-	auto awaitPressure(async::cancellation_token ct = {}) {
-		return async::transform(
-			pressureEvent_.async_wait_if([this] -> bool {
-				return !pressureShortfall();
-			}, ct),
-			[] (auto) {}
-		);
-	}
-
 private:
 	void updateFloors_();
 
@@ -436,7 +429,7 @@ private:
 
 	// Called for allocations of all classes (successful or not).
 	// Raises reclaimTarget_ if the allocation left less than reclaimResumeHeadroom_ above its floor.
-	// Sets kickReclaim to true if pressureEvent_ needs to be raised after dropping _mutex (and doesn't modify it otherwise).
+	// Sets kickReclaim to true if handleReclaimPressure() needs to be called after dropping _mutex (and doesn't modify it otherwise).
 	// Callers must hold _mutex.
 	void noteAllocation_(AllocationPolicy policy, bool &kickReclaim);
 
@@ -558,7 +551,6 @@ private:
 	// Pinnable pages that the reclaimer works towards, or zero if there is no target.
 	// Protected by _mutex.
 	size_t reclaimTarget_ = 0;
-	async::recurring_event pressureEvent_;
 
 	// Waiting allocations, served in the order of WaitNodeLess. Protected by _mutex.
 	WaitTree waitTree_;
