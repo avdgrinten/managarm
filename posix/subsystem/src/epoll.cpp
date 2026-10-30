@@ -77,6 +77,11 @@ private:
 		// Protected by the epoll's _mutex; cancelled after releasing it.
 		std::shared_ptr<async::cancellation_event> cancelPoll;
 
+		// The sequence that the current poll operation started from, and whether modifyItem()
+		// cancelled it. Protected by the epoll's _mutex.
+		uint64_t pollSequence = 0;
+		bool pollCancelled = false;
+
 		// The following two fields are owned by whoever set statePolling.
 		frg::manual_box<
 			async::execution::operation_t<
@@ -173,7 +178,11 @@ private:
 
 					cancel = std::make_shared<async::cancellation_event>();
 					item->cancelPoll = cancel;
-					sequence = std::get<0>(result);
+					// A cancelled poll may have moved past edges that the old mask excluded,
+					// so the new mask has to start from where that poll started.
+					sequence = item->pollCancelled ? item->pollSequence : std::get<0>(result);
+					item->pollSequence = sequence;
+					item->pollCancelled = false;
 					mask = (item->eventMask & epollEvents) | EPOLLERR | EPOLLHUP;
 					process = item->process.lock();
 					rearm = true;
@@ -246,6 +255,7 @@ public:
 			item->eventMask = mask;
 			item->cookie = cookie;
 			cancel = item->cancelPoll;
+			item->pollCancelled = true;
 
 			// Mark the item as pending.
 			if(!(item->state & statePending)) {
@@ -397,6 +407,8 @@ public:
 							cancel = std::make_shared<async::cancellation_event>();
 							item->cancelPoll = cancel;
 							sequence = std::get<0>(result);
+							item->pollSequence = sequence;
+							item->pollCancelled = false;
 							arm = true;
 						}
 					} else {
