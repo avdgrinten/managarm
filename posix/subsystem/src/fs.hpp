@@ -73,12 +73,25 @@ protected:
 	~FsLink() = default;
 
 public:
+	// getParent() and getName() return copies since rename() can change both concurrently
+	// (under a lock of the file system). Two calls do not necessarily observe the same rename;
+	// use getParentAndName() if the results have to belong together.
+
 	// Returns the link of the directory that this link lives in.
 	// Null for the root of a mount and for anonymous links.
 	virtual smarter::shared_ptr<FsLink, LinkRc> getParent() = 0;
 
 	// Name of the link. Empty for the root link.
 	virtual std::string getName() = 0;
+
+	// Returns getParent() and getName() as of the same point in time.
+	// The name is empty if there is no parent. Links that rename() can change must override this.
+	virtual std::pair<smarter::shared_ptr<FsLink, LinkRc>, std::string> getParentAndName() {
+		auto parent = getParent();
+		if(!parent)
+			return {nullptr, {}};
+		return {std::move(parent), getName()};
+	}
 
 	// Target of the link:
 	// directory entry (getParent(), getName()) points to getTarget().
