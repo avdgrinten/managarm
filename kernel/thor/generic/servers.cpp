@@ -545,7 +545,11 @@ private:
 
 		auto preamble = bragi::read_preamble(reqBuffer);
 		if(preamble.id() == bragi::message_id<managarm::svrctl::FileUploadRequest>) {
-			auto req = bragi::parse_head_only<managarm::svrctl::FileUploadRequest>(reqBuffer, *kernelAlloc);
+			auto [tailError, tailBuffer] = co_await recvBuffer(lane);
+			if(tailError != Error::success)
+				co_return tailError;
+
+			auto req = bragi::parse_head_tail<managarm::svrctl::FileUploadRequest>(reqBuffer, tailBuffer, *kernelAlloc);
 			if(!req)
 				co_return Error::protocolViolation;
 
@@ -578,7 +582,11 @@ private:
 			if(respError != Error::success)
 				co_return respError;
 		}else if(preamble.id() == bragi::message_id<managarm::svrctl::RunServerRequest>) {
-			auto req = bragi::parse_head_only<managarm::svrctl::RunServerRequest>(reqBuffer, *kernelAlloc);
+			auto [tailError, tailBuffer] = co_await recvBuffer(lane);
+			if(tailError != Error::success)
+				co_return tailError;
+
+			auto req = bragi::parse_head_tail<managarm::svrctl::RunServerRequest>(reqBuffer, tailBuffer, *kernelAlloc);
 			if(!req)
 				co_return Error::protocolViolation;
 
