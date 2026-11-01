@@ -1,10 +1,7 @@
 #!/usr/bin/python3
 
 import os
-import shutil
-import subprocess
-import tempfile
-import sys
+import stat
 import argparse
 
 parser = argparse.ArgumentParser(description = 'Generate a managarm initrd')
@@ -108,28 +105,39 @@ for fname in os.listdir(os.path.join(args.sysroot, 'usr/lib/managarm/server')):
 		continue
 	add_file('usr/lib/managarm/server', 'usr/lib/managarm/server', fname)
 
-# Copy (= hard link) the files to a temporary directory, run GNU cpio.
+# Write the archive in the newc format. All consumers only look at the type bits, the name and the
+# data, so nothing else is taken from the sysroot to make the archive reproducible.
 
-tree_path = tempfile.mkdtemp(prefix='initrd-', dir='.')
+def write_entry(f, inode, name, mode, num_links, data=b''):
+	encoded_name = name.encode() + b'\0'
+	if len(data) > 0xFFFFFFFF:
+		raise RuntimeError(f'{name} is too large for the newc format')
 
-file_list = sorted(file_dict.keys())
-for rel_path in file_list:
-	entry = file_dict[rel_path]
-	dest_path = os.path.join(tree_path, rel_path)
+	fields = (inode, mode, 0, 0, num_links, 0, len(data), 0, 0, 0, 0, len(encoded_name), 0)
+	encoded_fields = [f'{field:08X}'.encode('ascii') for field in fields]
+	assert all(len(field) == 8 for field in encoded_fields)
+	header = b'070701' + b''.join(encoded_fields)
 
-	if entry.is_dir:
-		os.mkdir(dest_path)
-	else:
-		os.link(os.path.realpath(os.path.join(args.sysroot, entry.source)), dest_path)
+	f.write(header)
+	f.write(encoded_name)
+	f.write(bytes(-(len(header) + len(encoded_name)) % 4))
+	f.write(data)
+	f.write(bytes(-len(data) % 4))
 
-proc = subprocess.Popen(['cpio', '--create', '--format=newc',
-			'-D', tree_path,
-			'--file', args.out,
-			'--quiet'],
-		stdin=subprocess.PIPE,
-		encoding='ascii')
-proc.communicate(input='\n'.join(file_list))
-if proc.returncode != 0:
-	sys.exit(1)
+temp_out = args.out + '.tmp'
 
-shutil.rmtree(tree_path)
+with open(temp_out, 'wb') as f:
+	for inode, rel_path in enumerate(sorted(file_dict.keys()), start=1):
+		entry = file_dict[rel_path]
+
+		if entry.is_dir:
+			write_entry(f, inode, rel_path, stat.S_IFDIR | 0o755, 2)
+		else:
+			source_path = os.path.join(args.sysroot, entry.source)
+			with open(source_path, 'rb') as source:
+				write_entry(f, inode, rel_path, stat.S_IFREG | 0o755, 1, source.read())
+
+	write_entry(f, 0, 'TRAILER!!!', 0, 1)
+
+# A failed run must not leave a truncated archive in place of a working one.
+os.replace(temp_out, args.out)
