@@ -90,6 +90,19 @@ async::result<std::expected<void, Error>> RawFs::synchronize() {
 	co_return co_await device->flush();
 }
 
+async::result<void> RawFs::invalidate(uint64_t offset, uint64_t size) {
+	auto device_size = co_await device->getSize();
+	auto cache_size = (device_size + 0xFFF) & ~size_t(0xFFF);
+
+	// A corrupt partition table can place a partition beyond the end of the disk.
+	auto first = std::min(offset & ~uint64_t(0xFFF), uint64_t{cache_size});
+	auto limit = std::min((offset + size + 0xFFF) & ~uint64_t(0xFFF), uint64_t{cache_size});
+
+	auto invalidate = co_await helix_ng::invalidateMemory(
+			helix::BorrowedDescriptor{backingMemory}, first, limit - first);
+	HEL_CHECK(invalidate.error());
+}
+
 OpenFile::OpenFile(RawFs *rawFs, bool nonBlock)
 : rawFs(rawFs), nonBlock(nonBlock) { }
 

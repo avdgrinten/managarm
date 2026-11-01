@@ -165,7 +165,7 @@ struct HandlePartition {
 
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::fs::MountRequest &&req, helix::BorrowedDescriptor conversation, bragi::preamble preamble,
-			gpt::Partition *partition, raw::RawFs *, std::unique_ptr<BaseFileSystem> *fsPtr) {
+			gpt::Partition *partition, raw::RawFs *rawFs, std::unique_ptr<BaseFileSystem> *fsPtr) {
 		auto tailRes = co_await dispatchTail(req, conversation, preamble);
 		if(!tailRes) {
 			std::cout << "libblockfs: Rejecting request due to decoding failure" << std::endl;
@@ -173,6 +173,11 @@ struct HandlePartition {
 		}
 
 		auto &fs = *fsPtr;
+
+		// File systems bypass the raw caches, so unwritten raw data must reach the disk first.
+		auto partitionSize = co_await partition->getSize();
+		co_await rawFs->disk->invalidate(partition->startLba() * partition->sectorSize, partitionSize);
+		co_await rawFs->invalidate(0, partitionSize);
 
 		// Mount the actual file system
 		std::expected<void, protocols::fs::Error> initRes;

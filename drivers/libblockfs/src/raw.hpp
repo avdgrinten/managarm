@@ -24,6 +24,9 @@ struct RawFs {
 	// Writes back the page cache and flushes the device's write cache.
 	async::result<std::expected<void, Error>> synchronize();
 
+	// Writes back and drops all cached pages that overlap the given byte range.
+	async::result<void> invalidate(uint64_t offset, uint64_t size);
+
 	BlockDevice *device;
 	// The RawFs of the whole disk for partitions, nullptr for the whole disk itself.
 	RawFs *disk;
