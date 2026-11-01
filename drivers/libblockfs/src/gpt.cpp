@@ -158,6 +158,10 @@ Guid Partition::type() {
 	return _type;
 }
 
+uint64_t Partition::startLba() {
+	return _startLba;
+}
+
 async::result<std::expected<void, Error>> Partition::readSectors(uint64_t sector, arch::dma_buffer_view view) {
 	assert(sector + (view.size() / sectorSize) <= _numSectors);
 	return _table.getDevice()->readSectors(_startLba + sector, view);

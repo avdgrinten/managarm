@@ -16,8 +16,8 @@
 namespace blockfs {
 namespace raw {
 
-RawFs::RawFs(BlockDevice *device)
-: device{device} { }
+RawFs::RawFs(BlockDevice *device, RawFs *disk)
+: device{device}, disk{disk} { }
 
 async::result<void> RawFs::init() {
 	auto device_size = co_await device->getSize();

@@ -849,7 +849,8 @@ async::detached serveDevice(helix::UniqueLane lane, raw::RawFs *rawFs) {
 	}
 }
 
-async::result<void> publishPartitions(BlockDevice *device, gpt::Table *table, int64_t diskId) {
+async::result<void> publishPartitions(BlockDevice *device, raw::RawFs *diskRawFs, gpt::Table *table,
+		int64_t diskId) {
 	int partId = 0;
 	for(size_t i = 0; i < table->numPartitions(); ++i) {
 		auto type = table->getPartition(i).type();
@@ -866,7 +867,7 @@ async::result<void> publishPartitions(BlockDevice *device, gpt::Table *table, in
 			printf("  It's a Managarm swap partition!\n");
 		}
 
-		auto rawFs = std::make_unique<raw::RawFs>(paritition);
+		auto rawFs = std::make_unique<raw::RawFs>(paritition, diskRawFs);
 		co_await rawFs->init();
 
 		// Create an mbus object for the partition.
@@ -922,6 +923,7 @@ async::detached runDevice(BlockDevice *device) {
 		std::cout << "libblockfs: Failed to read the partition table, exposing the raw disk only" << std::endl;
 
 	int64_t diskId = 0;
+	raw::RawFs *diskRawFs = nullptr;
 	{
 		mbus_ng::Properties descriptor {
 			{"unix.devtype", mbus_ng::StringItem{"block"}},
@@ -935,8 +937,9 @@ async::detached runDevice(BlockDevice *device) {
 					"disk", descriptor)).unwrap();
 		diskId = entity.id();
 
-		auto rawFs = std::make_unique<raw::RawFs>(device);
+		auto rawFs = std::make_unique<raw::RawFs>(device, nullptr);
 		co_await rawFs->init();
+		diskRawFs = rawFs.get();
 
 		// See comment in mbus_ng::~EntityManager as to why this is necessary.
 		[] (mbus_ng::EntityManager entity, std::unique_ptr<raw::RawFs> rawFs) -> async::detached {
@@ -951,7 +954,7 @@ async::detached runDevice(BlockDevice *device) {
 		}(std::move(entity), std::move(rawFs));
 	}
 
-	co_await publishPartitions(device, table, diskId);
+	co_await publishPartitions(device, diskRawFs, table, diskId);
 }
 
 } // namespace blockfs

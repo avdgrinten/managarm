@@ -15,7 +15,7 @@ using FlockManager = protocols::fs::FlockManager;
 using Flock = protocols::fs::Flock;
 
 struct RawFs {
-	RawFs(BlockDevice *device);
+	RawFs(BlockDevice *device, RawFs *disk);
 
 	async::result<void> init();
 
@@ -25,6 +25,8 @@ struct RawFs {
 	async::result<std::expected<void, Error>> synchronize();
 
 	BlockDevice *device;
+	// The RawFs of the whole disk for partitions, nullptr for the whole disk itself.
+	RawFs *disk;
 	HelHandle backingMemory;
 	HelHandle frontalMemory;
 	helix::Mapping fileMapping;
