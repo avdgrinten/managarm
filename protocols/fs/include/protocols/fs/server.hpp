@@ -248,9 +248,6 @@ private:
 };
 
 struct NodeOperations {
-	async::result<Error> (*synchronize)(std::shared_ptr<void> object,
-			SynchronizeFlags flags) = nullptr;
-
 	async::result<FileStats> (*getStats)(std::shared_ptr<void> object);
 
 	async::result<frg::expected<protocols::fs::Error, GetLinkResult>>

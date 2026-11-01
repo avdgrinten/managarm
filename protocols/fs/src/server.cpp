@@ -1641,33 +1641,6 @@ struct HandleNodeRequest {
 	}
 
 	async::result<std::expected<void, DispatchError>>
-	operator()(managarm::fs::SynchronizeRequest &&req, helix::BorrowedDescriptor conversation,
-			bragi::preamble preamble, std::shared_ptr<void> node,
-			const NodeOperations *node_ops) {
-		id = preamble.id();
-		logBragiRequest(req);
-
-		managarm::fs::SynchronizeResponse resp;
-		if(req.flags() & ~managarm::fs::SynchronizeFlags::DATA_ONLY) {
-			resp.set_error(managarm::fs::Errors::ILLEGAL_ARGUMENT);
-		} else if(!node_ops->synchronize) {
-			resp.set_error(managarm::fs::Errors::NOT_SUPPORTED);
-		} else {
-			auto flags = req.flags() & managarm::fs::SynchronizeFlags::DATA_ONLY
-				? SynchronizeFlags::dataOnly : SynchronizeFlags::none;
-			resp.set_error((co_await node_ops->synchronize(std::move(node), flags)) | toFsError);
-		}
-
-		auto [sendResp] = co_await helix_ng::exchangeMsgs(
-			conversation,
-			helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
-		);
-		HEL_CHECK(sendResp.error());
-		logBragiReply(resp);
-		co_return {};
-	}
-
-	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::fs::CntRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<void> node,
 			const NodeOperations *node_ops) {
@@ -2422,7 +2395,6 @@ async::detached serveNode(helix::UniqueLane lane, std::shared_ptr<void> node,
 		const NodeOperations *node_ops) {
 	while(true) {
 		auto res = co_await dispatchRequest<
-			managarm::fs::SynchronizeRequest,
 			managarm::fs::CntRequest,
 			managarm::fs::UtimensatRequest,
 			managarm::fs::GetLinkRequest,
