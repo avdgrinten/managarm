@@ -183,6 +183,14 @@ private:
 		co_return std::move(memory);
 	}
 
+	async::result<Error> synchronize(protocols::fs::SynchronizeFlags flags) override {
+		auto e = co_await protocols::fs::synchronize(_file.getLane(), flags);
+		// Like Linux, report EINVAL for devices that cannot be synchronized.
+		if(e == protocols::fs::Error::notSupported)
+			co_return Error::illegalOperationTarget;
+		co_return e | toPosixError;
+	}
+
 	helix::BorrowedDescriptor getPassthroughLane() override {
 		return _file.getLane();
 	}

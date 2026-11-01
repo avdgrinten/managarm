@@ -544,6 +544,10 @@ async::result<protocols::fs::Error> File::flock(int) {
 	co_return protocols::fs::Error::illegalOperationTarget;
 }
 
+async::result<Error> File::synchronize(protocols::fs::SynchronizeFlags) {
+	co_return Error::illegalOperationTarget;
+}
+
 async::result<protocols::fs::Error> FileWithDefaults::flock(int flags) {
 	assert(_link);
 	auto node = _link->getTarget();

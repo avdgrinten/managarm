@@ -1141,18 +1141,18 @@ HandleRequest::operator()(managarm::posix::SynchronizeRequest &&req,
 			co_return {};
 		}
 
-		auto link = file->associatedLink();
-		if(!link || !link->getTarget()) {
-			co_await sendErrorResponse<managarm::posix::SynchronizeResponse>(
-				conversation, managarm::posix::Errors::ILLEGAL_OPERATION_TARGET);
-			co_return {};
-		}
+		if(req.scope() == managarm::posix::SynchronizeScope::FILE) {
+			result = co_await file->synchronize(flags);
+		} else {
+			auto link = file->associatedLink();
+			if(!link || !link->getTarget()) {
+				co_await sendErrorResponse<managarm::posix::SynchronizeResponse>(
+					conversation, managarm::posix::Errors::ILLEGAL_OPERATION_TARGET);
+				co_return {};
+			}
 
-		auto target = link->getTarget();
-		if(req.scope() == managarm::posix::SynchronizeScope::FILE)
-			result = co_await target->synchronize(flags);
-		else
-			result = co_await target->superblock()->synchronize(flags);
+			result = co_await link->getTarget()->superblock()->synchronize(flags);
+		}
 	} else if(req.scope() == managarm::posix::SynchronizeScope::ALL) {
 		std::set<FsSuperblock *> superblocks;
 		collectSuperblocks(rootPath().first, superblocks);

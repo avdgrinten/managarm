@@ -299,10 +299,6 @@ private:
 };
 
 struct Node : FsNode {
-	async::result<Error> synchronize(protocols::fs::SynchronizeFlags flags) override {
-		co_return (co_await protocols::fs::synchronize(getLane(), flags)) | toPosixError;
-	}
-
 	async::result<frg::expected<Error, FileStats>> getStats() override {
 		managarm::fs::CntRequest req;
 		req.set_req_type(managarm::fs::CntReqType::NODE_GET_STATS);
@@ -504,6 +500,10 @@ private:
 	FutureMaybe<helix::UniqueDescriptor> accessMemory() override {
 		auto memory = co_await _file.accessMemory();
 		co_return std::move(memory);
+	}
+
+	async::result<Error> synchronize(protocols::fs::SynchronizeFlags flags) override {
+		co_return (co_await protocols::fs::synchronize(_file.getLane(), flags)) | toPosixError;
 	}
 
 	helix::BorrowedDescriptor getPassthroughLane() override {

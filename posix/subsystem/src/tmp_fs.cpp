@@ -49,10 +49,6 @@ protected:
 	}
 
 public:
-	async::result<Error> synchronize(protocols::fs::SynchronizeFlags) override {
-		co_return Error::success;
-	}
-
 	async::result<frg::expected<Error, FileStats>> getStats() override {
 		FileStats stats{};
 		stats.inodeNumber = _inodeNumber;
@@ -298,6 +294,10 @@ public:
 
 	void handleClose() override;
 
+	async::result<Error> synchronize(protocols::fs::SynchronizeFlags) override {
+		co_return Error::success;
+	}
+
 	FutureMaybe<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>> readEntries() override;
 	helix::BorrowedDescriptor getPassthroughLane() override;
 
@@ -483,6 +483,10 @@ public:
 	void handleClose() override;
 
 	async::result<frg::expected<Error, off_t>> seek(off_t delta, VfsSeek whence) override;
+
+	async::result<Error> synchronize(protocols::fs::SynchronizeFlags) override {
+		co_return Error::success;
+	}
 
 	async::result<std::expected<size_t, Error>>
 	readSome(Process *, void *buffer, size_t max_length, async::cancellation_token ce) override;

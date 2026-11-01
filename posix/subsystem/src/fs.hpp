@@ -185,8 +185,6 @@ protected:
 	~FsNode() = default;
 
 public:
-	virtual async::result<Error> synchronize(protocols::fs::SynchronizeFlags flags);
-
 	virtual VfsType getType() = 0;
 
 	// TODO: This should be async.

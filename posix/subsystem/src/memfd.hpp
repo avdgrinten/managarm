@@ -31,6 +31,10 @@ public:
 
 	async::result<frg::expected<protocols::fs::Error>> truncate(size_t size) override;
 
+	async::result<Error> synchronize(protocols::fs::SynchronizeFlags) override {
+		co_return Error::success;
+	}
+
 	async::result<frg::expected<protocols::fs::Error, int>> getSeals() override;
 	async::result<frg::expected<protocols::fs::Error, int>> addSeals(int seals) override;
 
@@ -118,10 +122,6 @@ private:
 
 		void setFile(smarter::shared_ptr<MemoryFile> file) {
 			file_ = std::move(file);
-		}
-
-		async::result<Error> synchronize(protocols::fs::SynchronizeFlags) override {
-			co_return Error::success;
 		}
 
 		VfsType getType() override {
