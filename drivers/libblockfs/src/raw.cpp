@@ -41,8 +41,10 @@ async::result<void> RawFs::manageMapping() {
 		auto cache_size = (device_size + 0xFFF) & ~size_t(0xFFF);
 		assert(manage.offset() + manage.length() <= cache_size);
 
+		// The manager's own writes into the backing view must not schedule a writeback.
 		auto view = device->pagePool->realm()->importMemory(
-		    helix::BorrowedDescriptor{backingMemory}, manage.offset(), manage.length()
+		    helix::BorrowedDescriptor{backingMemory}, manage.offset(), manage.length(),
+		    kHelMapNoDirtyTracking
 		);
 
 		if(manage.type() == kHelManageInitialize) {
