@@ -9,6 +9,12 @@
 #include <blockfs.hpp>
 
 namespace blockfs {
+
+struct DiskState;
+
+// Handles BLKRRPART.
+async::result<protocols::fs::Error> rereadPartitions(DiskState *disk);
+
 namespace raw {
 
 using FlockManager = protocols::fs::FlockManager;
@@ -34,6 +40,9 @@ struct RawFs {
 	HelHandle frontalMemory;
 	helix::Mapping fileMapping;
 	FlockManager flockManager;
+
+	// Only set for whole disks.
+	DiskState *diskState = nullptr;
 };
 
 struct OpenFile {

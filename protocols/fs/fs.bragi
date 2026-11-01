@@ -1060,3 +1060,33 @@ message SwaponResponse 69 {
 head(128):
 	Errors error;
 }
+
+message BlkGetSectorSizeRequest 70 {
+head(128):
+}
+
+message BlkGetSectorSizeResponse 71 {
+head(128):
+	Errors error;
+	uint32 logical_size;
+	uint32 physical_size;
+}
+
+message BlkGetSizeRequest 72 {
+head(128):
+}
+
+message BlkGetSizeResponse 73 {
+head(128):
+	Errors error;
+	uint64 size;
+}
+
+message BlkRereadPartitionsRequest 74 {
+head(128):
+}
+
+message BlkRereadPartitionsResponse 75 {
+head(128):
+	Errors error;
+}

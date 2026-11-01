@@ -124,6 +124,51 @@ struct OpenFile::HandleIoctl {
 
 		co_return {};
 	}
+
+	async::result<std::expected<void, DispatchError>> operator() (managarm::fs::BlkGetSectorSizeRequest &&, helix::BorrowedDescriptor conversation, bragi::preamble, raw::OpenFile *self) {
+		managarm::fs::BlkGetSectorSizeResponse rsp;
+		rsp.set_error(managarm::fs::Errors::SUCCESS);
+		rsp.set_logical_size(self->rawFs->device->sectorSize);
+		rsp.set_physical_size(self->rawFs->device->sectorSize);
+
+		auto [send_resp] = co_await helix_ng::exchangeMsgs(
+				conversation,
+				helix_ng::sendBragiHeadOnly(rsp, frg::stl_allocator{})
+		);
+		HEL_CHECK(send_resp.error());
+
+		co_return {};
+	}
+
+	async::result<std::expected<void, DispatchError>> operator() (managarm::fs::BlkGetSizeRequest &&, helix::BorrowedDescriptor conversation, bragi::preamble, raw::OpenFile *self) {
+		managarm::fs::BlkGetSizeResponse rsp;
+		rsp.set_error(managarm::fs::Errors::SUCCESS);
+		rsp.set_size(co_await self->rawFs->device->getSize());
+
+		auto [send_resp] = co_await helix_ng::exchangeMsgs(
+				conversation,
+				helix_ng::sendBragiHeadOnly(rsp, frg::stl_allocator{})
+		);
+		HEL_CHECK(send_resp.error());
+
+		co_return {};
+	}
+
+	async::result<std::expected<void, DispatchError>> operator() (managarm::fs::BlkRereadPartitionsRequest &&, helix::BorrowedDescriptor conversation, bragi::preamble, raw::OpenFile *self) {
+		managarm::fs::BlkRereadPartitionsResponse rsp;
+		if(self->rawFs->diskState)
+			rsp.set_error((co_await rereadPartitions(self->rawFs->diskState)) | protocols::fs::toFsError);
+		else
+			rsp.set_error(managarm::fs::Errors::ILLEGAL_ARGUMENT);
+
+		auto [send_resp] = co_await helix_ng::exchangeMsgs(
+				conversation,
+				helix_ng::sendBragiHeadOnly(rsp, frg::stl_allocator{})
+		);
+		HEL_CHECK(send_resp.error());
+
+		co_return {};
+	}
 };
 
 namespace {
@@ -304,7 +349,10 @@ async::result<void> rawIoctl(void *object, uint32_t, helix_ng::RecvInlineResult 
 	auto self = static_cast<raw::OpenFile *>(object);
 
 	auto res = co_await dispatchRequest<
-		managarm::fs::GenericIoctlRequest
+		managarm::fs::GenericIoctlRequest,
+		managarm::fs::BlkGetSectorSizeRequest,
+		managarm::fs::BlkGetSizeRequest,
+		managarm::fs::BlkRereadPartitionsRequest
 	>(conversation, std::move(msg), OpenFile::HandleIoctl{}, self);
 
 	if (!res) {
