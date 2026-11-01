@@ -1,6 +1,7 @@
 #pragma once
 
 #include <shared_mutex>
+#include <vector>
 
 #include "vfs.hpp"
 
@@ -40,6 +41,9 @@ public:
 
 	virtual async::result<std::expected<void, Error>> swapon();
 
+	// Writes back the data cached for the device, including that of a file system mounted on it.
+	virtual async::result<Error> synchronize(protocols::fs::SynchronizeFlags flags);
+
 private:
 	VfsType _type;
 	DeviceId _id;
@@ -53,6 +57,9 @@ struct UnixDeviceRegistry {
 	void install(std::shared_ptr<UnixDevice> device);
 
 	std::shared_ptr<UnixDevice> get(DeviceId id);
+
+	// Returns a snapshot, as callers cannot hold the registry's lock across co_await.
+	std::vector<std::shared_ptr<UnixDevice>> devices();
 
 private:
 	struct Compare {

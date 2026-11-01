@@ -573,6 +573,8 @@ public:
 
 	virtual async::result<frg::expected<protocols::fs::Error>> allocate(int64_t offset, size_t size);
 
+	virtual async::result<Error> synchronize(protocols::fs::SynchronizeFlags flags);
+
 	// pollWait() / pollStatus() uses a sequence number mechansim for synchronization.
 	// Waits until the poll sequence changes *and* one of the events in the mask receives an edge.
 	// Returns (current-sequence, edges since in-sequence).

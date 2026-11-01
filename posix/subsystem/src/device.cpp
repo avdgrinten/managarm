@@ -32,6 +32,10 @@ async::result<std::expected<void, Error>> UnixDevice::swapon() {
 	co_return std::unexpected{Error::illegalOperationTarget};
 }
 
+async::result<Error> UnixDevice::synchronize(protocols::fs::SynchronizeFlags) {
+	co_return Error::success;
+}
+
 // --------------------------------------------------------
 // UnixDeviceRegistry
 // --------------------------------------------------------
@@ -63,6 +67,11 @@ std::shared_ptr<UnixDevice> UnixDeviceRegistry::get(DeviceId id) {
 	if(it == _devices.end())
 		return nullptr;
 	return *it;
+}
+
+std::vector<std::shared_ptr<UnixDevice>> UnixDeviceRegistry::devices() {
+	std::shared_lock lock{_mutex};
+	return {_devices.begin(), _devices.end()};
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
@@ -181,6 +190,14 @@ private:
 	FutureMaybe<helix::UniqueDescriptor> accessMemory() override {
 		auto memory = co_await _file.accessMemory();
 		co_return std::move(memory);
+	}
+
+	async::result<Error> synchronize(protocols::fs::SynchronizeFlags flags) override {
+		auto e = co_await protocols::fs::synchronize(_file.getLane(), flags);
+		// Like Linux, report EINVAL for devices that cannot be synchronized.
+		if(e == protocols::fs::Error::notSupported)
+			co_return Error::illegalOperationTarget;
+		co_return e | toPosixError;
 	}
 
 	helix::BorrowedDescriptor getPassthroughLane() override {

@@ -79,10 +79,6 @@ async::result<Error> FsSuperblock::synchronize(protocols::fs::SynchronizeFlags) 
 	co_return Error::success;
 }
 
-async::result<Error> FsNode::synchronize(protocols::fs::SynchronizeFlags) {
-	co_return Error::illegalOperationTarget;
-}
-
 async::result<frg::expected<Error, FileStats>> FsNode::getStats() {
 	std::cout << "posix: getStats() is not implemented for this FsNode" << std::endl;
 	co_return Error::illegalOperationTarget;

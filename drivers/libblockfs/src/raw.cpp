@@ -73,6 +73,16 @@ async::result<void> RawFs::manageMapping() {
 	}
 }
 
+async::result<std::expected<void, Error>> RawFs::synchronize() {
+	auto device_size = co_await device->getSize();
+	auto cache_size = (device_size + 0xFFF) & ~size_t(0xFFF);
+	auto writeback = co_await helix_ng::writebackFence(
+			helix::BorrowedDescriptor{backingMemory}, 0, cache_size);
+	HEL_CHECK(writeback.error());
+
+	co_return co_await device->flush();
+}
+
 OpenFile::OpenFile(RawFs *rawFs)
 : rawFs(rawFs) { }
 
@@ -184,6 +194,15 @@ async::result<protocols::fs::Error> rawFlock(void *object, int flags) {
 	co_return result;
 }
 
+async::result<protocols::fs::Error> rawSynchronize(void *object, protocols::fs::SynchronizeFlags) {
+	auto self = static_cast<raw::OpenFile*>(object);
+
+	auto result = co_await self->rawFs->synchronize();
+	if(!result)
+		co_return result.error() | protocols::fs::toFsProtoError;
+	co_return protocols::fs::Error::none;
+}
+
 async::result<protocols::fs::SeekResult> rawSeekAbs(void *object, int64_t offset) {
 	auto self = static_cast<raw::OpenFile*>(object);
 
@@ -238,6 +257,7 @@ constinit protocols::fs::FileOperations rawOperations {
 	.seekEof = rawSeekEof,
 	.read = rawRead,
 	.pread = rawPread,
+	.synchronize = rawSynchronize,
 	.ioctl = rawIoctl,
 	.flock = rawFlock,
 };
