@@ -959,6 +959,9 @@ async::detached runDevice(BlockDevice *device) {
 		}(std::move(entity), std::move(rawFs));
 	}
 
+	if(!parseRes)
+		co_return;
+
 	co_await publishPartitions(device, diskRawFs, table, diskId);
 }
 

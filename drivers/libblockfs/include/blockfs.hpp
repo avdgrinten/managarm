@@ -11,7 +11,7 @@
 namespace blockfs {
 
 enum class Error {
-	// The device failed to complete the request.
+	// The device failed to complete the request or returned unusable data.
 	ioError,
 	// The device does not implement the request.
 	notSupported,

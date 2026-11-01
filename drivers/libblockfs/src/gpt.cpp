@@ -18,6 +18,9 @@ namespace {
 	constexpr std::array<size_t, 4> commonSectorSizes{512, 2048, 4096, 8192};
 
 	constexpr size_t gptSectorNumber = 1;
+
+	// Standard tables take 16 KiB; this keeps a corrupt header from sizing a huge DMA buffer.
+	constexpr uint64_t maxTableSize = 1024 * 1024;
 }
 
 // --------------------------------------------------------
@@ -77,10 +80,23 @@ async::result<std::expected<void, Error>> Table::parse() {
 			gptSectorSize_);
 	}
 
+	uint64_t deviceSize = co_await getDevice()->getSize();
+	uint64_t numLbas = deviceSize / gptSectorSize_;
+
+	// Both factors are 32-bit, so the product cannot overflow.
+	uint64_t tableSize = uint64_t{header.second->entrySize} * header.second->numEntries;
+	if (header.second->entrySize < sizeof(DiskEntry)
+			|| header.second->entrySize % sizeof(DiskEntry)
+			|| !tableSize || tableSize > maxTableSize
+			|| header.second->entryTableLba >= numLbas
+			|| header.second->entryTableLba * gptSectorSize_ + tableSize > deviceSize) {
+		std::println(std::cout, "libblockfs: Rejecting GPT with an invalid entry table");
+		co_return std::unexpected{Error::ioError};
+	}
+
 	size_t deviceTableSector = (header.second->entryTableLba * gptSectorSize_) / getDevice()->sectorSize;
 	size_t deviceTableOffset = (header.second->entryTableLba * gptSectorSize_) % getDevice()->sectorSize;
 
-	size_t tableSize = header.second->entrySize * header.second->numEntries;
 	size_t tableSectors = (tableSize + deviceTableOffset + getDevice()->sectorSize - 1) / getDevice()->sectorSize;
 
 	arch::dma_buffer tableBuffer{getDevice()->pagePool, tableSectors * getDevice()->sectorSize};
@@ -97,14 +113,21 @@ async::result<std::expected<void, Error>> Table::parse() {
 		if (entry->typeGuid == type_guids::null)
 			continue;
 
+		if (entry->firstLba > entry->lastLba || entry->lastLba >= numLbas) {
+			std::println(std::cout, "libblockfs: Skipping GPT entry {}, it is out of bounds", i);
+			continue;
+		}
+
 		size_t offset = entry->firstLba * gptSectorSize_;
 		size_t size = (entry->lastLba - entry->firstLba + 1) * gptSectorSize_;
 
 		size_t deviceSector = offset / getDevice()->sectorSize;
 		size_t deviceSectorOffset = offset % getDevice()->sectorSize;
 
-		assert(deviceSectorOffset == 0);
-		assert(size % getDevice()->sectorSize == 0);
+		if (deviceSectorOffset || size % getDevice()->sectorSize) {
+			std::println(std::cout, "libblockfs: Skipping GPT entry {}, it is misaligned", i);
+			continue;
+		}
 
 		auto partition = std::make_unique<Partition>(
 		    *this,
