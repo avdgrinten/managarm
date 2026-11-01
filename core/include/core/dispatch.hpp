@@ -33,6 +33,15 @@ doDispatch(helix_ng::RecvInlineResult &recvHead, helix::BorrowedDescriptor conve
 	co_return DispatchError::none;
 }
 
+// Helper function for dispatchRequest(); clients detect unsupported requests by the dismissal.
+inline async::result<DispatchError>
+dismissUnknownRequest(helix::BorrowedDescriptor conversation) {
+	auto [dismiss] = co_await helix_ng::exchangeMsgs(conversation, helix_ng::dismiss());
+	if (dismiss.error() != kHelErrNone)
+		co_return DispatchError::ipcError;
+	co_return DispatchError::malformedMessage;
+}
+
 //! Tag type to select the handler-detaching overload of dispatchRequest().
 struct DetachHandlers {};
 
@@ -118,7 +127,7 @@ dispatchRequest(helix::BorrowedLane lane, Visitor &&visitor, Args &&...args) {
 		) || ...
 	);
 	if (!found)
-		co_return std::unexpected(DispatchError::malformedMessage);
+		co_return std::unexpected(co_await dismissUnknownRequest(conversation));
 	if (err != DispatchError::none)
 		co_return std::unexpected(err);
 	co_return {};
@@ -177,7 +186,7 @@ dispatchRequest(helix::BorrowedLane lane, DetachHandlers, Visitor visitor, Args 
 		) || ...
 	);
 	if (!found)
-		co_return std::unexpected(DispatchError::malformedMessage);
+		co_return std::unexpected(co_await dismissUnknownRequest(conversation));
 	if (err != DispatchError::none)
 		co_return std::unexpected(err);
 	co_return {};
