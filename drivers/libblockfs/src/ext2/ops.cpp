@@ -52,12 +52,6 @@ async::result<protocols::fs::Error> synchronize(void *object,
 	co_return co_await inode->fs.synchronize(std::move(inode), flags);
 }
 
-async::result<protocols::fs::Error> synchronize(std::shared_ptr<void> object,
-		protocols::fs::SynchronizeFlags flags) {
-	auto inode = std::static_pointer_cast<ext2fs::Inode>(std::move(object));
-	co_return co_await inode->fs.synchronize(std::move(inode), flags);
-}
-
 async::result<frg::expected<protocols::fs::Error, protocols::fs::GetLinkResult>>
 getLink(std::shared_ptr<void> object,
 		std::string name) {
@@ -485,7 +479,6 @@ constinit protocols::fs::FileOperations fileOperations {
 };
 
 constinit protocols::fs::NodeOperations nodeOperations{
-	.synchronize = &synchronize,
 	.getStats = &getStats,
 	.getLink = &getLink,
 	.link = &link,
