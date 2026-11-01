@@ -1545,6 +1545,33 @@ struct HandleFileRequest {
 		co_return {};
 	}
 
+	async::result<std::expected<void, DispatchError>>
+	operator()(managarm::fs::SynchronizeRequest &&req, helix::BorrowedDescriptor conversation,
+			bragi::preamble preamble, smarter::shared_ptr<void> file,
+			const FileOperations *file_ops) {
+		id = preamble.id();
+		logBragiRequest(req);
+
+		managarm::fs::SynchronizeResponse resp;
+		if(req.flags() & ~managarm::fs::SynchronizeFlags::DATA_ONLY) {
+			resp.set_error(managarm::fs::Errors::ILLEGAL_ARGUMENT);
+		} else if(!file_ops->synchronize) {
+			resp.set_error(managarm::fs::Errors::NOT_SUPPORTED);
+		} else {
+			auto flags = req.flags() & managarm::fs::SynchronizeFlags::DATA_ONLY
+				? SynchronizeFlags::dataOnly : SynchronizeFlags::none;
+			resp.set_error((co_await file_ops->synchronize(file.get(), flags)) | toFsError);
+		}
+
+		auto [sendResp] = co_await helix_ng::exchangeMsgs(
+			conversation,
+			helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
+		);
+		HEL_CHECK(sendResp.error());
+		logBragiReply(resp);
+		co_return {};
+	}
+
 };
 
 struct HandleNodeRequest {
@@ -2346,7 +2373,8 @@ async::result<void> servePassthrough(helix::UniqueLane lane,
 					managarm::fs::WriteRequest,
 					managarm::fs::PwriteRequest,
 					managarm::fs::TruncateRequest,
-					managarm::fs::FallocateRequest
+					managarm::fs::FallocateRequest,
+					managarm::fs::SynchronizeRequest
 				>(lane, DetachHandlers{}, HandleFileRequest{.cancellationEvents = cancellationEvents},
 						file, file_ops);
 				if(!res) {

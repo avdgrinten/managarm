@@ -197,6 +197,7 @@ struct FileOperations {
 	async::result<helix::BorrowedDescriptor>(*accessMemory)(void *object) = nullptr;
 	async::result<frg::expected<protocols::fs::Error>> (*truncate)(void *object, size_t size) = nullptr;
 	async::result<frg::expected<protocols::fs::Error>> (*fallocate)(void *object, int64_t offset, size_t size) = nullptr;
+	async::result<Error> (*synchronize)(void *object, SynchronizeFlags flags) = nullptr;
 	async::result<void> (*ioctl)(void *object, uint32_t id, helix_ng::RecvInlineResult req,
 			helix::UniqueLane conversation) = nullptr;
 	async::result<protocols::fs::Error> (*flock)(void *object, int flags) = nullptr;
