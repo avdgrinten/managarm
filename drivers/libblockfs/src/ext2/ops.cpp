@@ -45,6 +45,13 @@ async::result<void> setFileFlags(void *, int) {
 	co_return;
 }
 
+async::result<protocols::fs::Error> synchronize(void *object,
+		protocols::fs::SynchronizeFlags flags) {
+	auto self = static_cast<ext2fs::OpenFile *>(object);
+	auto inode = std::static_pointer_cast<ext2fs::Inode>(self->inode);
+	co_return co_await inode->fs.synchronize(std::move(inode), flags);
+}
+
 async::result<protocols::fs::Error> synchronize(std::shared_ptr<void> object,
 		protocols::fs::SynchronizeFlags flags) {
 	auto inode = std::static_pointer_cast<ext2fs::Inode>(std::move(object));
@@ -471,6 +478,7 @@ constinit protocols::fs::FileOperations fileOperations {
 	.readEntries  = &readEntries,
 	.accessMemory = &doAccessMemory<FileSystem>,
 	.truncate     = &doTruncate<FileSystem>,
+	.synchronize  = &synchronize,
 	.flock        = &doFlock<FileSystem>,
 	.getFileFlags = &getFileFlags,
 	.setFileFlags = &setFileFlags,

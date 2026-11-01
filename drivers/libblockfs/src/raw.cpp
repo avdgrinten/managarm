@@ -194,6 +194,15 @@ async::result<protocols::fs::Error> rawFlock(void *object, int flags) {
 	co_return result;
 }
 
+async::result<protocols::fs::Error> rawSynchronize(void *object, protocols::fs::SynchronizeFlags) {
+	auto self = static_cast<raw::OpenFile*>(object);
+
+	auto result = co_await self->rawFs->synchronize();
+	if(!result)
+		co_return result.error() | protocols::fs::toFsProtoError;
+	co_return protocols::fs::Error::none;
+}
+
 async::result<protocols::fs::SeekResult> rawSeekAbs(void *object, int64_t offset) {
 	auto self = static_cast<raw::OpenFile*>(object);
 
@@ -248,6 +257,7 @@ constinit protocols::fs::FileOperations rawOperations {
 	.seekEof = rawSeekEof,
 	.read = rawRead,
 	.pread = rawPread,
+	.synchronize = rawSynchronize,
 	.ioctl = rawIoctl,
 	.flock = rawFlock,
 };
