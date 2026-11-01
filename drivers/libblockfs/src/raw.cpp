@@ -121,32 +121,27 @@ async::result<protocols::fs::ReadResult> rawRead(void *object, helix_ng::Credent
 
 	auto self = static_cast<raw::OpenFile *>(object);
 
-	uint64_t chunk_offset;
-	size_t chunkSize;
-	{
-		co_await self->offsetMutex.async_lock();
-		frg::unique_lock offsetLock{frg::adopt_lock, self->offsetMutex};
+	co_await self->offsetMutex.async_lock();
+	frg::unique_lock offsetLock{frg::adopt_lock, self->offsetMutex};
 
-		// TODO(geert): pass cancellation token through here
-		auto file_size = co_await self->rawFs->device->getSize();
+	// TODO(geert): pass cancellation token through here
+	auto file_size = co_await self->rawFs->device->getSize();
 
-		if(self->offset >= file_size)
-			co_return std::unexpected{protocols::fs::Error::endOfFile};
+	if(self->offset >= file_size)
+		co_return std::unexpected{protocols::fs::Error::endOfFile};
 
-		auto remaining = file_size - self->offset;
-		chunkSize = std::min(length, remaining);
-		if(!chunkSize)
-			co_return std::unexpected{protocols::fs::Error::endOfFile};
-
-		chunk_offset = self->offset;
-		self->offset += chunkSize;
-	}
+	auto remaining = file_size - self->offset;
+	auto chunkSize = std::min(length, remaining);
+	if(!chunkSize)
+		co_return std::unexpected{protocols::fs::Error::endOfFile};
 
 	// TODO(geert): use cancellation token here
 	auto readMemory = co_await helix_ng::readMemory(
 			helix::BorrowedDescriptor(self->rawFs->frontalMemory),
-			chunk_offset, chunkSize, buffer);
+			self->offset, chunkSize, buffer);
 	HEL_CHECK(readMemory.error());
+
+	self->offset += chunkSize;
 
 	auto end = helix::getClock();
 
