@@ -30,6 +30,10 @@ async::result<Error> synchronize(helix::BorrowedDescriptor lane, SynchronizeFlag
 			helix_ng::recvInline()
 		)
 	);
+	// A server that exited may have lost data, unlike one that dismisses the request.
+	if(offer.error() == kHelErrEndOfLane || sendReq.error() == kHelErrEndOfLane
+			|| recvResp.error() == kHelErrEndOfLane)
+		co_return Error::ioError;
 	HEL_CHECK(offer.error());
 	HEL_CHECK(sendReq.error());
 	// Servers that do not implement synchronization dismiss the request.
