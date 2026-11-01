@@ -1,8 +1,10 @@
 #include "common.hpp"
 #include "../vfs.hpp"
+#include "../device.hpp"
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <linux/limits.h>
+#include <algorithm>
 #include <iostream>
 
 namespace requests {
@@ -1154,10 +1156,24 @@ HandleRequest::operator()(managarm::posix::SynchronizeRequest &&req,
 			result = co_await link->getTarget()->superblock()->synchronize(flags);
 		}
 	} else if(req.scope() == managarm::posix::SynchronizeScope::ALL) {
+		auto devices = blockRegistry.devices();
+
 		std::set<FsSuperblock *> superblocks;
 		collectSuperblocks(rootPath().first, superblocks);
 		for(auto superblock : superblocks) {
+			// Synchronizing a block device also covers the file system mounted on it.
+			auto devno = superblock->deviceNumber();
+			DeviceId id(major(devno), minor(devno));
+			if(std::ranges::any_of(devices, [&](auto &device) { return device->getId() == id; }))
+				continue;
+
 			auto e = co_await superblock->synchronize(flags);
+			if(result == Error::success && e != Error::success)
+				result = e;
+		}
+
+		for(auto &device : devices) {
+			auto e = co_await device->synchronize(flags);
 			if(result == Error::success && e != Error::success)
 				result = e;
 		}

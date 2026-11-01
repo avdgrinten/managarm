@@ -32,6 +32,10 @@ async::result<std::expected<void, Error>> UnixDevice::swapon() {
 	co_return std::unexpected{Error::illegalOperationTarget};
 }
 
+async::result<Error> UnixDevice::synchronize(protocols::fs::SynchronizeFlags) {
+	co_return Error::success;
+}
+
 // --------------------------------------------------------
 // UnixDeviceRegistry
 // --------------------------------------------------------
@@ -63,6 +67,11 @@ std::shared_ptr<UnixDevice> UnixDeviceRegistry::get(DeviceId id) {
 	if(it == _devices.end())
 		return nullptr;
 	return *it;
+}
+
+std::vector<std::shared_ptr<UnixDevice>> UnixDeviceRegistry::devices() {
+	std::shared_lock lock{_mutex};
+	return {_devices.begin(), _devices.end()};
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>

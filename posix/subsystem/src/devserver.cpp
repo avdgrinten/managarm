@@ -7,6 +7,7 @@
 #include <bragi/helpers-std.hpp>
 #include <core/dispatch.hpp>
 #include <frg/std_compat.hpp>
+#include <protocols/fs/client.hpp>
 #include <protocols/mbus/client.hpp>
 
 #include "device.hpp"
@@ -43,6 +44,14 @@ struct ExternDevice final : UnixDevice, std::enable_shared_from_this<ExternDevic
 
 	async::result<std::expected<void, Error>> swapon() override {
 		return swaponExternal(lane_);
+	}
+
+	async::result<Error> synchronize(protocols::fs::SynchronizeFlags flags) override {
+		auto e = co_await protocols::fs::synchronize(lane_, flags);
+		// Like UnixDevice::synchronize(), devices without a sync operation have nothing to flush.
+		if(e == protocols::fs::Error::notSupported)
+			co_return Error::success;
+		co_return e | toPosixError;
 	}
 
 private:
