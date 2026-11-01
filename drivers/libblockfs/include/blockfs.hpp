@@ -75,6 +75,7 @@ extern protocols::ostrace::Event ostEvtGetLink;
 extern protocols::ostrace::Event ostEvtTraverseLinks;
 extern protocols::ostrace::Event ostEvtRead;
 extern protocols::ostrace::Event ostEvtRawRead;
+extern protocols::ostrace::Event ostEvtRawWrite;
 extern protocols::ostrace::Event ostEvtExt2AssignDataBlocks;
 extern protocols::ostrace::Event ostEvtExt2AllocateBlocks;
 extern protocols::ostrace::Event ostEvtExt2AllocateInode;

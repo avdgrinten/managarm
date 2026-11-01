@@ -120,6 +120,8 @@ struct Partition : public BlockDevice {
 
 	Guid type();
 
+	uint64_t startLba();
+
 	std::atomic_bool isSwapTarget = false;
 
 private:

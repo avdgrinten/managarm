@@ -68,8 +68,10 @@ async::result<std::expected<void, Error>> Table::parse() {
 			}
 		}
 
-		// TODO: handle this error
-		assert(header.first.size());
+		if(!header.first.size()) {
+			std::println(std::cout, "libblockfs: no GPT found, disk has no partitions");
+			co_return {};
+		}
 
 		std::println(std::cout, "libblockfs: using non-native gpt sector size {}",
 			gptSectorSize_);
@@ -154,6 +156,10 @@ Guid Partition::id() {
 
 Guid Partition::type() {
 	return _type;
+}
+
+uint64_t Partition::startLba() {
+	return _startLba;
 }
 
 async::result<std::expected<void, Error>> Partition::readSectors(uint64_t sector, arch::dma_buffer_view view) {

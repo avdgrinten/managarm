@@ -137,7 +137,8 @@ struct HandlePartition {
 		}else if(req.req_type() == managarm::fs::CntReqType::DEV_OPEN) {
 			helix::UniqueLane local_lane, remote_lane;
 			std::tie(local_lane, remote_lane) = helix::createStream();
-			auto file = smarter::make_shared<raw::OpenFile>(rawFs);
+			auto file = smarter::make_shared<raw::OpenFile>(rawFs,
+					req.flags() & managarm::fs::OpenFlags::OF_NONBLOCK);
 			helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(local_lane),
 							file,
 							&raw::rawOperations));
@@ -164,7 +165,7 @@ struct HandlePartition {
 
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::fs::MountRequest &&req, helix::BorrowedDescriptor conversation, bragi::preamble preamble,
-			gpt::Partition *partition, raw::RawFs *, std::unique_ptr<BaseFileSystem> *fsPtr) {
+			gpt::Partition *partition, raw::RawFs *rawFs, std::unique_ptr<BaseFileSystem> *fsPtr) {
 		auto tailRes = co_await dispatchTail(req, conversation, preamble);
 		if(!tailRes) {
 			std::cout << "libblockfs: Rejecting request due to decoding failure" << std::endl;
@@ -172,6 +173,11 @@ struct HandlePartition {
 		}
 
 		auto &fs = *fsPtr;
+
+		// File systems bypass the raw caches, so unwritten raw data must reach the disk first.
+		auto partitionSize = co_await partition->getSize();
+		co_await rawFs->disk->invalidate(partition->startLba() * partition->sectorSize, partitionSize);
+		co_await rawFs->invalidate(0, partitionSize);
 
 		// Mount the actual file system
 		std::expected<void, protocols::fs::Error> initRes;
@@ -760,7 +766,8 @@ struct HandleDevice {
 		if(req.req_type() == managarm::fs::CntReqType::DEV_OPEN) {
 			helix::UniqueLane local_lane, remote_lane;
 			std::tie(local_lane, remote_lane) = helix::createStream();
-			auto file = smarter::make_shared<raw::OpenFile>(rawFs);
+			auto file = smarter::make_shared<raw::OpenFile>(rawFs,
+					req.flags() & managarm::fs::OpenFlags::OF_NONBLOCK);
 			helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(local_lane),
 							file,
 							&raw::rawOperations));
@@ -847,60 +854,8 @@ async::detached serveDevice(helix::UniqueLane lane, raw::RawFs *rawFs) {
 	}
 }
 
-async::detached runDevice(BlockDevice *device) {
-	co_await ostContext.create();
-
-	{
-		co_await globalInitializationMutex.async_lock();
-		frg::unique_lock lock{frg::adopt_lock, globalInitializationMutex};
-
-		if(!clkInitialized) {
-			co_await clk::enumerateTracker();
-			clkInitialized = true;
-		}
-
-		if(!totalMemory)
-			totalMemory = (co_await core::getMemoryInformation()).totalMemory;
-	}
-
-	// TODO(qookie): Don't leak the table.
-	// Currently it should be fine to leak it since neither it nor
-	// the device gets deleted anyway.
-	auto table = new gpt::Table(device);
-	auto parseRes = co_await table->parse();
-	if(!parseRes)
-		std::cout << "libblockfs: Failed to read the partition table, exposing the raw disk only" << std::endl;
-
-	int64_t diskId = 0;
-	{
-		mbus_ng::Properties descriptor {
-			{"unix.devtype", mbus_ng::StringItem{"block"}},
-			{"unix.blocktype", mbus_ng::StringItem{"disk"}},
-			{"unix.diskname-prefix", mbus_ng::StringItem{device->diskNamePrefix}},
-			{"unix.diskname-suffix", mbus_ng::StringItem{device->diskNameSuffix}},
-			{"drvcore.mbus-parent", mbus_ng::StringItem{std::to_string(device->parentId)}}
-		};
-
-		auto entity = (co_await mbus_ng::Instance::global().createEntity(
-					"disk", descriptor)).unwrap();
-		diskId = entity.id();
-
-		auto rawFs = std::make_unique<raw::RawFs>(device);
-		co_await rawFs->init();
-
-		// See comment in mbus_ng::~EntityManager as to why this is necessary.
-		[] (mbus_ng::EntityManager entity, std::unique_ptr<raw::RawFs> rawFs) -> async::detached {
-			while (true) {
-				auto [localLane, remoteLane] = helix::createStream();
-
-				// If this fails, too bad!
-				(void)(co_await entity.serveRemoteLane(std::move(remoteLane)));
-
-				serveDevice(std::move(localLane), rawFs.get());
-			}
-		}(std::move(entity), std::move(rawFs));
-	}
-
+async::result<void> publishPartitions(BlockDevice *device, raw::RawFs *diskRawFs, gpt::Table *table,
+		int64_t diskId) {
 	int partId = 0;
 	for(size_t i = 0; i < table->numPartitions(); ++i) {
 		auto type = table->getPartition(i).type();
@@ -917,7 +872,7 @@ async::detached runDevice(BlockDevice *device) {
 			printf("  It's a Managarm swap partition!\n");
 		}
 
-		auto rawFs = std::make_unique<raw::RawFs>(paritition);
+		auto rawFs = std::make_unique<raw::RawFs>(paritition, diskRawFs);
 		co_await rawFs->init();
 
 		// Create an mbus object for the partition.
@@ -946,6 +901,65 @@ async::detached runDevice(BlockDevice *device) {
 			}
 		}(std::move(entity), paritition, std::move(rawFs));
 	}
+}
+
+async::detached runDevice(BlockDevice *device) {
+	co_await ostContext.create();
+
+	{
+		co_await globalInitializationMutex.async_lock();
+		frg::unique_lock lock{frg::adopt_lock, globalInitializationMutex};
+
+		if(!clkInitialized) {
+			co_await clk::enumerateTracker();
+			clkInitialized = true;
+		}
+
+		if(!totalMemory)
+			totalMemory = (co_await core::getMemoryInformation()).totalMemory;
+	}
+
+	// TODO(qookie): Don't leak the table.
+	// Currently it should be fine to leak it since neither it nor
+	// the device gets deleted anyway.
+	auto table = new gpt::Table(device);
+	auto parseRes = co_await table->parse();
+	if(!parseRes)
+		std::cout << "libblockfs: Failed to read the partition table, exposing the raw disk only" << std::endl;
+
+	int64_t diskId = 0;
+	raw::RawFs *diskRawFs = nullptr;
+	{
+		mbus_ng::Properties descriptor {
+			{"unix.devtype", mbus_ng::StringItem{"block"}},
+			{"unix.blocktype", mbus_ng::StringItem{"disk"}},
+			{"unix.diskname-prefix", mbus_ng::StringItem{device->diskNamePrefix}},
+			{"unix.diskname-suffix", mbus_ng::StringItem{device->diskNameSuffix}},
+			{"drvcore.mbus-parent", mbus_ng::StringItem{std::to_string(device->parentId)}}
+		};
+
+		auto entity = (co_await mbus_ng::Instance::global().createEntity(
+					"disk", descriptor)).unwrap();
+		diskId = entity.id();
+
+		auto rawFs = std::make_unique<raw::RawFs>(device, nullptr);
+		co_await rawFs->init();
+		diskRawFs = rawFs.get();
+
+		// See comment in mbus_ng::~EntityManager as to why this is necessary.
+		[] (mbus_ng::EntityManager entity, std::unique_ptr<raw::RawFs> rawFs) -> async::detached {
+			while (true) {
+				auto [localLane, remoteLane] = helix::createStream();
+
+				// If this fails, too bad!
+				(void)(co_await entity.serveRemoteLane(std::move(remoteLane)));
+
+				serveDevice(std::move(localLane), rawFs.get());
+			}
+		}(std::move(entity), std::move(rawFs));
+	}
+
+	co_await publishPartitions(device, diskRawFs, table, diskId);
 }
 
 } // namespace blockfs
