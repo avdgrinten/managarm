@@ -118,6 +118,18 @@ Error statusToError(uint8_t status) {
 	}
 }
 
+std::optional<SenseData> decodeSense(const FixedSense &sense) {
+	// Bit 7 only says whether the information field is valid.
+	auto responseCode = sense.responseCode & 0x7f;
+	if (responseCode != 0x70 && responseCode != 0x71)
+		return std::nullopt;
+	return SenseData{
+		.key = static_cast<SenseKey>(sense.flags & 0xf),
+		.asc = sense.asc,
+		.ascq = sense.ascq
+	};
+}
+
 std::string Error::toString() {
 	std::string_view errorName;
 	switch (type) {
@@ -153,6 +165,9 @@ std::string Error::toString() {
 		break;
 	}
 
+	if (sense)
+		return std::format("{} (code {:#x}, sense {:#x}/{:#x}/{:#x})", errorName, code,
+				static_cast<uint8_t>(sense->key), sense->asc, sense->ascq);
 	return std::format("{} (code {:#x})", errorName, code);
 }
 
