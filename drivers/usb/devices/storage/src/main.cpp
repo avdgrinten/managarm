@@ -246,6 +246,15 @@ async::detached bindDevice(mbus_ng::Entity entity) {
 
 	auto storage_device = new StorageDevice(device, entity.id());
 	co_await storage_device->initialize(config_number.value(), intf_number.value());
+
+	auto probeResult = co_await storage_device->probe();
+	if(!probeResult) {
+		std::cout << "block-usb: mbus ID " << entity.id()
+				<< ": Failed to probe device" << std::endl;
+		delete storage_device;
+		co_return;
+	}
+
 	blockfs::runDevice(storage_device);
 }
 
