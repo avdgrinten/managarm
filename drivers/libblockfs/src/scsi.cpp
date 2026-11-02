@@ -1,7 +1,9 @@
 #include "scsi.hpp"
 
 #include <arch/bit.hpp>
+#include <helix/timer.hpp>
 
+#include <array>
 #include <format>
 #include <print>
 
@@ -13,6 +15,14 @@ namespace {
 	void storeBigEndian(uint8_t (&bytes)[N], uint64_t value) {
 		for (size_t i = 0; i < N; i++)
 			bytes[i] = value >> (8 * (N - i - 1));
+	}
+
+	template<size_t N>
+	uint64_t loadBigEndian(const uint8_t (&bytes)[N]) {
+		uint64_t value = 0;
+		for (size_t i = 0; i < N; i++)
+			value = (value << 8) | bytes[i];
+		return value;
 	}
 }
 
@@ -109,6 +119,52 @@ struct ReportLuns {
 	uint8_t reserved2;
 	uint8_t control;
 };
+
+struct Inquiry {
+	uint8_t opCode;
+	uint8_t options;
+	uint8_t pageCode;
+	uint8_t allocationLength[2];
+	uint8_t control;
+};
+static_assert(sizeof(Inquiry) == 6);
+
+struct TestUnitReady {
+	uint8_t opCode;
+	uint8_t reserved[4];
+	uint8_t control;
+};
+static_assert(sizeof(TestUnitReady) == 6);
+
+struct ReadCapacity10 {
+	uint8_t opCode;
+	uint8_t reserved[8];
+	uint8_t control;
+};
+static_assert(sizeof(ReadCapacity10) == 10);
+
+struct ReadCapacity10Data {
+	uint8_t lastLba[4];
+	uint8_t blockLength[4];
+};
+static_assert(sizeof(ReadCapacity10Data) == 8);
+
+struct ReadCapacity16 {
+	uint8_t opCode;
+	uint8_t serviceAction;
+	uint8_t lba[8];
+	uint8_t allocationLength[4];
+	uint8_t reserved;
+	uint8_t control;
+};
+static_assert(sizeof(ReadCapacity16) == 16);
+
+struct ReadCapacity16Data {
+	uint8_t lastLba[8];
+	uint8_t blockLength[4];
+	uint8_t reserved[20];
+};
+static_assert(sizeof(ReadCapacity16Data) == 32);
 
 Error statusToError(uint8_t status) {
 	switch (status) {
@@ -344,6 +400,153 @@ async::result<std::expected<void, blockfs::Error>> StorageDevice::flush() {
 		if (result.error().type != ErrorType::checkCondition)
 			co_return std::unexpected{blockfs::Error::ioError};
 	}
+	co_return {};
+}
+
+async::result<frg::expected<Error, size_t>> StorageDevice::sendWithRetries(const CommandInfo &info) {
+	// According to Linux, resets can be reported repeatedly; same limit as its sd has for
+	// READ CAPACITY.
+	constexpr int maxAttempts = 10;
+
+	for (int i = 1; ; i++) {
+		auto result = co_await sendScsiCommand(info);
+		// UNIT ATTENTION reports an earlier event; the command itself did not run.
+		if (result || i == maxAttempts || !result.error().sense
+				|| result.error().sense->key != SenseKey::unitAttention)
+			co_return result;
+	}
+}
+
+async::result<std::expected<void, blockfs::Error>> StorageDevice::checkDeviceType() {
+	// Same length as Linux uses for USB storage; according to it, many devices choke on any other.
+	constexpr uint8_t dataSize = 36;
+	std::array<uint8_t, dataSize> data{};
+	Inquiry command{.opCode = 0x12, .allocationLength = {0, dataSize}};
+	CommandInfo info{
+		.command{nullptr, &command, sizeof(command)},
+		.data{nullptr, data.data(), data.size()},
+		.isWrite = false
+	};
+	// INQUIRY should not report UNIT ATTENTION, but according to Linux many devices do anyway.
+	auto result = co_await sendWithRetries(info);
+	if (!result) {
+		std::println(std::cout, "block-scsi: INQUIRY failed with error {}",
+				result.error().toString());
+		co_return std::unexpected{blockfs::Error::ioError};
+	}
+	// The zeroed buffer would read as a direct-access device.
+	if (!result.value()) {
+		std::println(std::cout, "block-scsi: INQUIRY returned no data");
+		co_return std::unexpected{blockfs::Error::ioError};
+	}
+
+	// Other device types do not implement the commands that follow, and a non-zero
+	// qualifier means that there is no device on this LUN.
+	// Same types as Linux' sd, other than zoned devices, which need sequential writes.
+	uint8_t qualifier = data[0] >> 5;
+	uint8_t type = data[0] & 0x1f;
+	if (qualifier || (type != 0x00 && type != 0x07 && type != 0x0e)) {
+		std::println(std::cout, "block-scsi: Ignoring device with peripheral type {:#x}", data[0]);
+		co_return std::unexpected{blockfs::Error::notSupported};
+	}
+	co_return {};
+}
+
+async::result<std::expected<void, blockfs::Error>> StorageDevice::waitUntilReady() {
+	// Same limit as Linux gives a disk to spin up.
+	constexpr int maxPolls = 1000;
+	constexpr uint64_t pollInterval = 100'000'000;
+
+	TestUnitReady command{};
+	CommandInfo info{
+		.command{nullptr, &command, sizeof(command)},
+		.data = {},
+		.isWrite = false
+	};
+
+	for (int i = 0; i < maxPolls; i++) {
+		auto result = co_await sendScsiCommand(info);
+		if (result)
+			co_return {};
+
+		auto sense = result.error().sense;
+		// According to Linux, devices with slow firmware can keep reporting this until they are ready.
+		bool unitAttention = sense && sense->key == SenseKey::unitAttention && sense->asc != 0x3a;
+		bool becomingReady = sense && sense->key == SenseKey::notReady && sense->asc == 0x04
+				&& sense->ascq <= 0x01;
+		if (unitAttention || becomingReady) {
+			co_await helix::sleepFor(pollInterval);
+			continue;
+		}
+
+		// TODO: Send START STOP UNIT to devices that need a start command (04/02).
+		// TODO: Publish devices without a medium and handle media changes.
+		std::println(std::cout, "block-scsi: Device is not ready: {}", result.error().toString());
+		co_return std::unexpected{blockfs::Error::ioError};
+	}
+
+	std::println(std::cout, "block-scsi: Timed out waiting for the device to become ready");
+	co_return std::unexpected{blockfs::Error::ioError};
+}
+
+async::result<std::expected<void, blockfs::Error>> StorageDevice::readCapacity() {
+	ReadCapacity10 command{.opCode = 0x25};
+	ReadCapacity10Data data{};
+	CommandInfo info{
+		.command{nullptr, &command, sizeof(command)},
+		.data{nullptr, &data, sizeof(data)},
+		.isWrite = false
+	};
+	auto result = co_await sendWithRetries(info);
+	if (!result) {
+		std::println(std::cout, "block-scsi: READ CAPACITY(10) failed with error {}",
+				result.error().toString());
+		co_return std::unexpected{blockfs::Error::ioError};
+	}
+
+	uint64_t lastLba = loadBigEndian(data.lastLba);
+	uint64_t blockLength = loadBigEndian(data.blockLength);
+
+	if (lastLba == 0xffffffff) {
+		ReadCapacity16 command16{.opCode = 0x9e, .serviceAction = 0x10};
+		ReadCapacity16Data data16{};
+		storeBigEndian(command16.allocationLength, sizeof(data16));
+		CommandInfo info16{
+			.command{nullptr, &command16, sizeof(command16)},
+			.data{nullptr, &data16, sizeof(data16)},
+			.isWrite = false
+		};
+		auto result16 = co_await sendWithRetries(info16);
+		if (!result16) {
+			std::println(std::cout, "block-scsi: READ CAPACITY(16) failed with error {}",
+					result16.error().toString());
+			co_return std::unexpected{blockfs::Error::ioError};
+		}
+
+		lastLba = loadBigEndian(data16.lastLba);
+		blockLength = loadBigEndian(data16.blockLength);
+	}
+
+	// TODO: Support other block lengths; sectorSize is currently fixed before probing.
+	if (blockLength != sectorSize) {
+		std::println(std::cout, "block-scsi: Unsupported block length {}", blockLength);
+		co_return std::unexpected{blockfs::Error::notSupported};
+	}
+
+	// TODO: According to Linux, some devices report the number of blocks here instead of the last LBA.
+	storageSize = (lastLba + 1) << sectorShift;
+	co_return {};
+}
+
+async::result<std::expected<void, blockfs::Error>> StorageDevice::probe() {
+	// Same order as Linux: INQUIRY identifies the device, which must then be ready
+	// before it can report its capacity.
+	if (auto res = co_await checkDeviceType(); !res)
+		co_return res;
+	if (auto res = co_await waitUntilReady(); !res)
+		co_return res;
+	if (auto res = co_await readCapacity(); !res)
+		co_return res;
 	co_return {};
 }
 

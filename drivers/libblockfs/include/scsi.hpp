@@ -103,6 +103,9 @@ struct StorageDevice : Interface, blockfs::BlockDevice {
 		assert(limits.maxSectorsPerRequest && *limits.maxSectorsPerRequest <= 0xffff);
 	}
 
+	// Finds out what the device is. Must succeed before calling runDevice().
+	async::result<std::expected<void, blockfs::Error>> probe();
+
 	async::result<std::expected<void, blockfs::Error>> flush() final;
 
 	async::result<size_t> getSize() final;
@@ -119,6 +122,12 @@ protected:
 private:
 	async::result<std::expected<void, blockfs::Error>> performIo(bool isWrite, uint64_t sector,
 			arch::dma_buffer_view view);
+
+	async::result<frg::expected<Error, size_t>> sendWithRetries(const CommandInfo &info);
+
+	async::result<std::expected<void, blockfs::Error>> checkDeviceType();
+	async::result<std::expected<void, blockfs::Error>> waitUntilReady();
+	async::result<std::expected<void, blockfs::Error>> readCapacity();
 };
 
 inline constexpr uint8_t WELL_KNOWN_REPORT_LUNS_LUN = 1;
