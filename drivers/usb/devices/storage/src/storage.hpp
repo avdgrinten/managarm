@@ -44,11 +44,23 @@ struct StorageDevice : scsi::StorageDevice {
 	async::result<frg::expected<scsi::Error, size_t>> sendScsiCommand(const scsi::CommandInfo &info) override;
 
 private:
+	// Performs one BOT command.
+	// The caller must hold transportMutex_.
+	async::result<frg::expected<scsi::Error, size_t>> runCommand_(const scsi::CommandInfo &info);
+
+	async::result<std::optional<scsi::SenseData>> requestSense_();
+
+	scsi::Error failTransport_(const char *reason);
+
 	arch::dma_realm dmaRealm_;
 	arch::contiguous_pool pool_{&dmaRealm_, {.addressBits = 64}};
 
 	// Bulk-only transport allows only one command at a time.
 	async::mutex transportMutex_;
+
+	uint32_t nextTag_ = 1;
+	// There is no Reset Recovery yet, so the device stays out of sync after a transport error.
+	bool transportFailed_ = false;
 
 	protocols::usb::Device usbDevice_;
 	protocols::usb::Endpoint endp_in_;

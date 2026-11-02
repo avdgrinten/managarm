@@ -1,4 +1,5 @@
 
+#include <algorithm>
 #include <deque>
 #include <optional>
 #include <iostream>
@@ -65,9 +66,45 @@ async::result<frg::expected<scsi::Error, size_t>> StorageDevice::sendScsiCommand
 	co_await transportMutex_.async_lock();
 	frg::unique_lock transportLock{frg::adopt_lock, transportMutex_};
 
+	auto result = co_await runCommand_(info);
+	if(!result && result.error().type == scsi::ErrorType::checkCondition) {
+		auto error = result.error();
+		error.sense = co_await requestSense_();
+		co_return error;
+	}
+	co_return result;
+}
+
+async::result<std::optional<scsi::SenseData>> StorageDevice::requestSense_() {
+	scsi::FixedSense sense{};
+	scsi::RequestSense command{.opCode = 0x03, .allocationLength = sizeof(sense)};
+	scsi::CommandInfo info{
+		.command{nullptr, &command, sizeof(command)},
+		.data{nullptr, &sense, sizeof(sense)},
+		.isWrite = false
+	};
+	auto result = co_await runCommand_(info);
+	if(!result)
+		co_return std::nullopt;
+	co_return scsi::decodeSense(sense);
+}
+
+scsi::Error StorageDevice::failTransport_(const char *reason) {
+	std::cout << "block-usb: Giving up on the device: " << reason << std::endl;
+	transportFailed_ = true;
+	return {.type = scsi::ErrorType::transportError, .code = 0};
+}
+
+async::result<frg::expected<scsi::Error, size_t>> StorageDevice::runCommand_(const scsi::CommandInfo &info) {
+	if(transportFailed_)
+		co_return scsi::Error{.type = scsi::ErrorType::transportError, .code = 0};
+
+	// Commands never overlap, but a new tag catches a device repeating an earlier CSW.
+	auto tag = nextTag_++;
+
 	CommandBlockWrapper cbw{};
 	cbw.signature = Signatures::kSignCbw;
-	cbw.tag = 1;
+	cbw.tag = tag;
 	cbw.transferLength = info.data.size();
 	if(!info.isWrite) {
 		cbw.flags = 0x80; // Direction: Device-to-Host.
@@ -84,44 +121,69 @@ async::result<frg::expected<scsi::Error, size_t>> StorageDevice::sendScsiCommand
 	// TODO: Ideally, we want to post the IN-transfer first.
 	// We do this to try to avoid unnecessary IRQs
 	// and round-trips to the device and host-controller driver.
-	CommandStatusWrapper csw;
+	CommandStatusWrapper csw{};
 
 	if(logTrace)
 		std::cout << "block-usb: Sending CBW" << std::endl;
-	(co_await endp_out_.transfer(proto::BulkTransfer{proto::XferFlags::kXferToDevice,
-			arch::dma_buffer_view{nullptr, &cbw, sizeof(CommandBlockWrapper)}})).unwrap();
+	auto cbwResult = co_await endp_out_.transfer(proto::BulkTransfer{proto::XferFlags::kXferToDevice,
+			arch::dma_buffer_view{nullptr, &cbw, sizeof(CommandBlockWrapper)}});
+	if(!cbwResult)
+		co_return failTransport_("CBW failed");
 
 	if(logTrace)
 		std::cout << "block-usb: Waiting for data" << std::endl;
 	// BOT has no data stage at all when dCBWDataTransferLength is zero.
-	if(info.data.size() && !info.isWrite) {
-		proto::BulkTransfer data_info{proto::XferFlags::kXferToHost, info.data};
-		// TODO: We want this to be lazy but that only works if can ensure that
-		// the next transaction is also posted to the queue.
-//			data_info.lazyNotification = true;
-		(co_await endp_in_.transfer(data_info)).unwrap();
-	}else if(info.data.size()){
-		(co_await endp_out_.transfer(proto::BulkTransfer{proto::XferFlags::kXferToDevice, info.data})).unwrap();
+	// OUT transfers do not report how much the device took.
+	size_t hostTransferred = info.data.size();
+	if(info.data.size()) {
+		frg::expected<proto::UsbError, size_t> dataResult;
+		if(!info.isWrite) {
+			proto::BulkTransfer data_info{proto::XferFlags::kXferToHost, info.data};
+			data_info.allowShortPackets = true;
+			dataResult = co_await endp_in_.transfer(data_info);
+		}else{
+			dataResult = co_await endp_out_.transfer(proto::BulkTransfer{proto::XferFlags::kXferToDevice, info.data});
+		}
+
+		// A device fails a command by stalling the data stage, and the CSW follows.
+		if(!dataResult) {
+			if(dataResult.error() != proto::UsbError::stall)
+				co_return failTransport_("Data stage failed");
+			hostTransferred = 0;
+		}else if(!info.isWrite) {
+			hostTransferred = dataResult.value();
+		}
 	}
 
 	if(logTrace)
 		std::cout << "block-usb: Waiting for CSW" << std::endl;
-	(co_await endp_in_.transfer(proto::BulkTransfer{proto::XferFlags::kXferToHost,
-			arch::dma_buffer_view{nullptr, &csw, sizeof(CommandStatusWrapper)}})).unwrap();
+	proto::BulkTransfer csw_info{proto::XferFlags::kXferToHost,
+			arch::dma_buffer_view{nullptr, &csw, sizeof(CommandStatusWrapper)}};
+	csw_info.allowShortPackets = true;
+	auto cswResult = co_await endp_in_.transfer(csw_info);
+	// According to Linux, some devices end their data stage with a stray zero-length packet.
+	if(cswResult && !cswResult.value())
+		cswResult = co_await endp_in_.transfer(csw_info);
+	if(!cswResult && cswResult.error() == proto::UsbError::stall)
+		cswResult = co_await endp_in_.transfer(csw_info);
+	if(!cswResult)
+		co_return failTransport_("Reading the CSW failed");
 
 	if(logTrace)
 		std::cout << "block-usb: Request complete" << std::endl;
-	assert(csw.signature == Signatures::kSignCsw);
-	assert(csw.tag == 1);
-	assert(!csw.dataResidue);
+	if(cswResult.value() != sizeof(CommandStatusWrapper)
+			|| csw.signature != Signatures::kSignCsw || csw.tag != tag)
+		co_return failTransport_("Invalid CSW");
 	// CSW status is a BOT status, not a SCSI status byte. In particular,
 	// 1 is command failure and 2 is a transport phase error.
 	if(csw.status == 1)
-		co_return scsi::Error{scsi::ErrorType::checkCondition, csw.status};
+		co_return scsi::Error{.type = scsi::ErrorType::checkCondition, .code = csw.status};
 	if(csw.status)
-		co_return scsi::Error{scsi::ErrorType::deviceSpecific, csw.status};
+		co_return failTransport_("Phase error");
 
-	co_return info.data.size();
+	// Same as Linux: go by what the host saw or the device reported, whichever is less.
+	co_return std::min(hostTransferred,
+			info.data.size() - std::min<size_t>(csw.dataResidue, info.data.size()));
 }
 
 async::detached bindDevice(mbus_ng::Entity entity) {
@@ -184,6 +246,15 @@ async::detached bindDevice(mbus_ng::Entity entity) {
 
 	auto storage_device = new StorageDevice(device, entity.id());
 	co_await storage_device->initialize(config_number.value(), intf_number.value());
+
+	auto probeResult = co_await storage_device->probe();
+	if(!probeResult) {
+		std::cout << "block-usb: mbus ID " << entity.id()
+				<< ": Failed to probe device" << std::endl;
+		delete storage_device;
+		co_return;
+	}
+
 	blockfs::runDevice(storage_device);
 }
 
