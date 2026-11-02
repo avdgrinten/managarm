@@ -48,6 +48,8 @@ private:
 	// The caller must hold transportMutex_.
 	async::result<frg::expected<scsi::Error, size_t>> runCommand_(const scsi::CommandInfo &info);
 
+	async::result<std::optional<scsi::SenseData>> requestSense_();
+
 	scsi::Error failTransport_(const char *reason);
 
 	arch::dma_realm dmaRealm_;

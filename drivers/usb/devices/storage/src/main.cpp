@@ -66,7 +66,27 @@ async::result<frg::expected<scsi::Error, size_t>> StorageDevice::sendScsiCommand
 	co_await transportMutex_.async_lock();
 	frg::unique_lock transportLock{frg::adopt_lock, transportMutex_};
 
-	co_return co_await runCommand_(info);
+	auto result = co_await runCommand_(info);
+	if(!result && result.error().type == scsi::ErrorType::checkCondition) {
+		auto error = result.error();
+		error.sense = co_await requestSense_();
+		co_return error;
+	}
+	co_return result;
+}
+
+async::result<std::optional<scsi::SenseData>> StorageDevice::requestSense_() {
+	scsi::FixedSense sense{};
+	scsi::RequestSense command{.opCode = 0x03, .allocationLength = sizeof(sense)};
+	scsi::CommandInfo info{
+		.command{nullptr, &command, sizeof(command)},
+		.data{nullptr, &sense, sizeof(sense)},
+		.isWrite = false
+	};
+	auto result = co_await runCommand_(info);
+	if(!result)
+		co_return std::nullopt;
+	co_return scsi::decodeSense(sense);
 }
 
 scsi::Error StorageDevice::failTransport_(const char *reason) {
