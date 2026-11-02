@@ -128,6 +128,9 @@ private:
 	async::result<std::expected<void, blockfs::Error>> checkDeviceType();
 	async::result<std::expected<void, blockfs::Error>> waitUntilReady();
 	async::result<std::expected<void, blockfs::Error>> readCapacity();
+	async::result<std::expected<void, blockfs::Error>> probeWriteCache();
+
+	bool writeCacheEnabled = false;
 };
 
 inline constexpr uint8_t WELL_KNOWN_REPORT_LUNS_LUN = 1;

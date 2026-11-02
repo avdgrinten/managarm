@@ -3,6 +3,7 @@
 #include <arch/bit.hpp>
 #include <helix/timer.hpp>
 
+#include <algorithm>
 #include <array>
 #include <format>
 #include <print>
@@ -165,6 +166,16 @@ struct ReadCapacity16Data {
 	uint8_t reserved[20];
 };
 static_assert(sizeof(ReadCapacity16Data) == 32);
+
+struct ModeSense6 {
+	uint8_t opCode;
+	uint8_t options;
+	uint8_t pageCode;
+	uint8_t subpageCode;
+	uint8_t allocationLength;
+	uint8_t control;
+};
+static_assert(sizeof(ModeSense6) == 6);
 
 Error statusToError(uint8_t status) {
 	switch (status) {
@@ -383,6 +394,9 @@ async::result<std::expected<void, blockfs::Error>> StorageDevice::issueWrite(uns
 }
 
 async::result<std::expected<void, blockfs::Error>> StorageDevice::flush() {
+	if (!writeCacheEnabled)
+		co_return {};
+
 	// SYNCHRONIZE CACHE(10): IMMED=0 waits for durability. LBA=0 and
 	// NUMBER OF BLOCKS=0 synchronize the entire logical unit.
 	SynchronizeCache10 command{.opCode = 0x35};
@@ -391,14 +405,18 @@ async::result<std::expected<void, blockfs::Error>> StorageDevice::flush() {
 		.data = {},
 		.isWrite = false
 	};
-	auto result = co_await sendScsiCommand(info);
+	auto result = co_await sendWithRetries(info);
 	if (!result) {
+		auto sense = result.error().sense;
+		if (sense && sense->key == SenseKey::illegalRequest) {
+			std::println(std::cout, "block-scsi: Device rejects SYNCHRONIZE CACHE, not sending it again");
+			writeCacheEnabled = false;
+			co_return {};
+		}
+
 		std::println(std::cout, "block-scsi: Flush failed with error {}",
 			result.error().toString());
-		// Without sense data, CHECK CONDITION is indistinguishable from devices that lack
-		// SYNCHRONIZE CACHE, which is common for USB storage; tolerate it as before.
-		if (result.error().type != ErrorType::checkCondition)
-			co_return std::unexpected{blockfs::Error::ioError};
+		co_return std::unexpected{blockfs::Error::ioError};
 	}
 	co_return {};
 }
@@ -440,7 +458,7 @@ async::result<std::expected<void, blockfs::Error>> StorageDevice::checkDeviceTyp
 		co_return std::unexpected{blockfs::Error::ioError};
 	}
 
-	// Other device types do not implement the commands that follow, and a non-zero
+	// Other device types need not implement the commands that follow, and a non-zero
 	// qualifier means that there is no device on this LUN.
 	// Same types as Linux' sd, other than zoned devices, which need sequential writes.
 	uint8_t qualifier = data[0] >> 5;
@@ -538,6 +556,62 @@ async::result<std::expected<void, blockfs::Error>> StorageDevice::readCapacity()
 	co_return {};
 }
 
+async::result<std::expected<void, blockfs::Error>> StorageDevice::probeWriteCache() {
+	// According to Linux, some devices report generic mode pages until the media has been accessed.
+	arch::dma_buffer sector{pagePool, sectorSize};
+	(void)(co_await performIo(false, 0, sector));
+
+	// According to Linux, many devices only accept a length of 192 bytes here, which is what
+	// Windows uses, and a number of them have problems with requests for the Caching mode page.
+	constexpr uint8_t dataSize = 192;
+	std::array<uint8_t, dataSize> data{};
+	ModeSense6 command{.opCode = 0x1a, .pageCode = 0x3f, .allocationLength = dataSize};
+	CommandInfo info{
+		.command{nullptr, &command, sizeof(command)},
+		.data{nullptr, data.data(), data.size()},
+		.isWrite = false
+	};
+	auto result = co_await sendWithRetries(info);
+	if (!result) {
+		// The device cannot be recovered from this, so do not publish a dead disk.
+		if (result.error().type == ErrorType::transportError) {
+			std::println(std::cout, "block-scsi: Device failed while probing the write cache");
+			co_return std::unexpected{blockfs::Error::ioError};
+		}
+
+		std::println(std::cout, "block-scsi: No mode pages ({}), assuming write-through",
+				result.error().toString());
+		co_return {};
+	}
+
+	// The transferred size does not matter since the zeroed buffer has no valid pages.
+	bool writeProtected = data[2] & 0x80;
+	size_t length = std::min<size_t>(data[0] + 1, data.size());
+	size_t offset = 4 + data[3];
+	while (offset + 2 < length) {
+		uint8_t pageCode = data[offset] & 0x3f;
+		bool hasSubpages = data[offset] & 0x40;
+
+		if (!hasSubpages && pageCode == 8) {
+			writeCacheEnabled = (data[offset + 2] & 0x04) && !writeProtected;
+			std::println(std::cout, "block-scsi: Write cache is {}",
+					writeCacheEnabled ? "enabled" : "disabled");
+			co_return {};
+		}
+
+		if (hasSubpages) {
+			if (offset + 3 >= length)
+				break;
+			offset += 4 + ((size_t{data[offset + 2]} << 8) | data[offset + 3]);
+		} else {
+			offset += 2 + data[offset + 1];
+		}
+	}
+
+	std::println(std::cout, "block-scsi: No Caching mode page, assuming write-through");
+	co_return {};
+}
+
 async::result<std::expected<void, blockfs::Error>> StorageDevice::probe() {
 	// Same order as Linux: INQUIRY identifies the device, which must then be ready
 	// before it can report its capacity.
@@ -546,6 +620,8 @@ async::result<std::expected<void, blockfs::Error>> StorageDevice::probe() {
 	if (auto res = co_await waitUntilReady(); !res)
 		co_return res;
 	if (auto res = co_await readCapacity(); !res)
+		co_return res;
+	if (auto res = co_await probeWriteCache(); !res)
 		co_return res;
 	co_return {};
 }

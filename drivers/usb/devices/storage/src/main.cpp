@@ -161,7 +161,7 @@ async::result<frg::expected<scsi::Error, size_t>> StorageDevice::runCommand_(con
 			arch::dma_buffer_view{nullptr, &csw, sizeof(CommandStatusWrapper)}};
 	csw_info.allowShortPackets = true;
 	auto cswResult = co_await endp_in_.transfer(csw_info);
-	// Same as Linux: some devices end their data stage with a stray zero-length packet.
+	// According to Linux, some devices end their data stage with a stray zero-length packet.
 	if(cswResult && !cswResult.value())
 		cswResult = co_await endp_in_.transfer(csw_info);
 	if(!cswResult && cswResult.error() == proto::UsbError::stall)
