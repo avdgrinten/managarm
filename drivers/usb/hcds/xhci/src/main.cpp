@@ -1314,6 +1314,7 @@ EndpointState::_resetAfterError(RingPointer nextDequeue) {
 	// XXX(qookie): Linux has class drivers deal with this (but
 	// does the rest of the handling, incl. clearing TT buffers,
 	// in the xHCI driver).
+	std::optional<proto::UsbError> clearHaltError;
 	if (_type != proto::EndpointType::control) {
 		arch::dma_object<proto::SetupPacket> clearHalt{_device->setupPool()};
 		clearHalt->type = proto::setup_type::targetEndpoint | proto::setup_type::byStandard | proto::setup_type::toDevice;
@@ -1323,9 +1324,13 @@ EndpointState::_resetAfterError(RingPointer nextDequeue) {
 		clearHalt->index = ((_endpointId & 1) ? 0x80 : 0x00) | (_endpointId >> 1);
 		clearHalt->length = 0;
 
-		FRG_CO_TRY(co_await _device->transfer({protocols::usb::kXferToDevice, clearHalt, {}}));
+		auto res = co_await _device->transfer({protocols::usb::kXferToDevice, clearHalt, {}});
+		if (!res)
+			clearHaltError = res.error();
 	}
 
+	// Skip the TD even if CLEAR_FEATURE failed: its buffer is gone,
+	// so the controller must not run it again.
 	_transferRing.retire(nextDequeue);
 
 	nextDequeue.advance(1, ProducerRing::ringSize);
@@ -1339,6 +1344,8 @@ EndpointState::_resetAfterError(RingPointer nextDequeue) {
 	// Ring the doorbell to restart the pipe
 	_device->submit(_endpointId);
 
+	if (clearHaltError)
+		co_return *clearHaltError;
 	co_return frg::success;
 }
 
