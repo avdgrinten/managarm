@@ -17,7 +17,8 @@ enum class ErrorType {
 	taskSetFull,
 	acaActive,
 	taskAborted,
-	deviceSpecific
+	deviceSpecific,
+	transportError
 };
 
 struct Error {
@@ -42,6 +43,7 @@ struct Interface {
 
 	// Implementations must accept concurrent calls, serializing or pipelining them as
 	// the transport allows.
+	// Returns the number of bytes transferred, which is less than info.data.size() if the device cut the data short.
 	virtual async::result<frg::expected<Error, size_t>> sendScsiCommand(const CommandInfo &info) = 0;
 
 	async::result<frg::expected<Error, std::vector<uint64_t>>> reportLuns();

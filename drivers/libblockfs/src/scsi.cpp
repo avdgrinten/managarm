@@ -148,6 +148,9 @@ std::string Error::toString() {
 	case ErrorType::deviceSpecific:
 		errorName = "DEVICE_SPECIFIC";
 		break;
+	case ErrorType::transportError:
+		errorName = "TRANSPORT_ERROR";
+		break;
 	}
 
 	return std::format("{} (code {:#x})", errorName, code);
@@ -258,6 +261,11 @@ async::result<std::expected<void, blockfs::Error>> StorageDevice::performIo(bool
 	if (!result) {
 		std::println(std::cout, "block-scsi: Request failed with error {}",
 				result.error().toString());
+		co_return std::unexpected{blockfs::Error::ioError};
+	}
+	if (result.value() != view.size()) {
+		std::println(std::cout, "block-scsi: Request transferred only {} of {} bytes",
+				result.value(), view.size());
 		co_return std::unexpected{blockfs::Error::ioError};
 	}
 
