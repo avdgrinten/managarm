@@ -8,6 +8,9 @@
 #include <expected>
 #include <stdint.h>
 
+#include <memory>
+#include <optional>
+
 namespace blockfs {
 
 enum class Error {
@@ -27,18 +30,37 @@ inline protocols::fs::Error operator|(Error e, protocols::fs::ToFsProtoError) {
 	}
 }
 
+struct BlockDevice;
+struct IoScheduler;
+
+async::detached runDevice(BlockDevice *device);
+
 struct BlockDevice {
+	// Constraints of the issue{Read,Write}() hooks that the I/O scheduler enforces.
+	struct Limits {
+		// Largest request handed to a hook, in sectors. Absent if unlimited.
+		std::optional<size_t> maxSectorsPerRequest;
+		// Hardware queues that the hooks submit to.
+		size_t numQueues = 1;
+		// Capacity of each hardware queue, which the requests in flight in the hooks share.
+		// Every request occupies issueCost() units of it, i.e., one by default.
+		// Absent if unlimited, i.e., if the driver queues excess requests itself.
+		std::optional<size_t> queueCapacity;
+	};
+
+	BlockDevice(size_t sector_size, int64_t parent_id, arch::contiguous_pool *pool,
+			Limits limits);
 	BlockDevice(size_t sector_size, int64_t parent_id, arch::contiguous_pool *pool);
 
-	virtual ~BlockDevice() = default;
+	virtual ~BlockDevice();
 
-	virtual async::result<std::expected<void, Error>> readSectors(uint64_t, arch::dma_buffer_view) = 0;
+	// Sector I/O passes through the device's I/O scheduler, which splits requests
+	// according to limits and calls issue{Read,Write}() to perform them.
+	// Only available after runDevice() attached the scheduler.
+	virtual async::result<std::expected<void, Error>> readSectors(uint64_t sector, arch::dma_buffer_view view);
+	virtual async::result<std::expected<void, Error>> writeSectors(uint64_t sector, arch::dma_buffer_view view);
 
-	virtual async::result<std::expected<void, Error>> writeSectors(uint64_t, arch::dma_buffer_view) {
-		co_return std::unexpected{Error::notSupported};
-	}
-
-	// Flushes the device's write cache.
+	// Flushes the device's write cache. Bypasses the I/O scheduler.
 	// flush() affects all write requests that have completed before flush() starts.
 	// When flush() returns, all these write requests will have made it to durable storage.
 	virtual async::result<std::expected<void, Error>> flush() {
@@ -66,10 +88,44 @@ struct BlockDevice {
 	std::string partNameSuffix = "";
 
 	arch::contiguous_pool *pagePool;
-protected:
-};
 
-async::detached runDevice(BlockDevice *device);
+	// Drivers that learn their limits after construction set them before calling runDevice().
+	Limits limits;
+
+protected:
+	// Driver hooks. The I/O scheduler guarantees the constraints stated in Limits.
+	// The first argument is the hardware queue (below limits.numQueues) that the request
+	// was bound to when it was submitted.
+	virtual async::result<std::expected<void, Error>> issueRead(unsigned int, uint64_t, arch::dma_buffer_view) {
+		co_return std::unexpected{Error::notSupported};
+	}
+
+	virtual async::result<std::expected<void, Error>> issueWrite(unsigned int, uint64_t, arch::dma_buffer_view) {
+		co_return std::unexpected{Error::notSupported};
+	}
+
+	// Runs once per submission, before the request is split and queued,
+	// for work that issueCost() depends on.
+	virtual async::result<void> prepareIo(unsigned int, arch::dma_buffer_view) {
+		co_return;
+	}
+
+	// Returns the units of Limits::queueCapacity that a request occupies while it is in flight.
+	// Must not be less than what the hook consumes, and an overestimate holds back
+	// requests that the device could take, so this should be exact.
+	virtual size_t issueCost(unsigned int, arch::dma_buffer_view) {
+		return 1;
+	}
+
+	// Returns the hardware queue that requests of the calling thread are bound to.
+	unsigned int pickQueue() const;
+
+private:
+	friend struct IoScheduler;
+	friend async::detached runDevice(BlockDevice *device);
+
+	std::unique_ptr<IoScheduler> scheduler_;
+};
 
 extern protocols::ostrace::Event ostEvtGetLink;
 extern protocols::ostrace::Event ostEvtTraverseLinks;

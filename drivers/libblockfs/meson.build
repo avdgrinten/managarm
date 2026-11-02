@@ -1,5 +1,7 @@
 src = [
 	'src/libblockfs.cpp',
+	'src/io-dispatcher.cpp',
+	'src/io-scheduler.cpp',
 	'src/metadata-cache.cpp',
 	'src/service-budget.cpp',
 	'src/gpt.cpp',
