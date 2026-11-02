@@ -31,14 +31,13 @@ struct [[ gnu::packed ]] CommandStatusWrapper {
 static_assert(sizeof(CommandStatusWrapper) == 13);
 
 struct StorageDevice : scsi::StorageDevice {
+	// Same request limit as Linux' usb-storage (for non-USB3 devices).
+	// Bulk-only transport allows only one command at a time.
 	StorageDevice(protocols::usb::Device usb_device, int64_t parent_id)
-	: scsi::StorageDevice(512, parent_id, &pool_),
+	: scsi::StorageDevice(512, parent_id, &pool_, {.maxSectorsPerRequest = 240, .queueCapacity = 1}),
 	  usbDevice_(std::move(usb_device)),
 	  endp_in_{nullptr},
-	  endp_out_{nullptr} {
-		// Same limit as Linux' usb-storage (for non-USB3 devices).
-		maxSectorsPerCommand = 240;
-	}
+	  endp_out_{nullptr} { }
 
 	async::result<void> initialize(int config_num, int intf_num);
 
