@@ -129,6 +129,19 @@ struct drm_core::File::HandleIoctl {
 		bragi::preamble,
 		drm_core::File *self
 	) {
+		auto sendError =
+		    [&]<typename Resp = managarm::fs::GenericIoctlReply>(auto e) -> async::result<void> {
+			Resp resp;
+			resp.set_error(e);
+
+			auto [send_resp] = co_await helix_ng::exchangeMsgs(
+			    conversation, helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
+			);
+			HEL_CHECK(send_resp.error());
+			logBragiReply(resp);
+			co_return;
+		};
+
 		logBragiRequest(req);
 		if(req.command() == DRM_IOCTL_VERSION) {
 			managarm::fs::GenericIoctlReply resp;
@@ -261,9 +274,15 @@ struct drm_core::File::HandleIoctl {
 				std::println("core/drm: GETCONNECTOR()");
 
 			auto obj = self->_device->findObject(req.drm_connector_id());
-			assert(obj);
+			if (!obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto conn = obj->asConnector();
-			assert(conn);
+			if (!conn) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 
 			auto psbl_enc = conn->getPossibleEncoders();
 			for(size_t i = 0; i < psbl_enc.size(); i++) {
@@ -330,9 +349,15 @@ struct drm_core::File::HandleIoctl {
 				std::println("core/drm: GETENCODER([{}])", req.drm_encoder_id());
 
 			auto obj = self->_device->findObject(req.drm_encoder_id());
-			assert(obj);
+			if (!obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto enc = obj->asEncoder();
-			assert(enc);
+			if (!enc) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			resp.set_drm_encoder_type(enc->getEncoderType());
 			resp.set_drm_crtc_id(enc->currentCrtc() ? enc->currentCrtc()->id() : 0);
 
@@ -364,9 +389,15 @@ struct drm_core::File::HandleIoctl {
 			resp.set_drm_encoder_type(0);
 
 			auto obj = self->_device->findObject(req.drm_plane_id());
-			assert(obj);
+			if (!obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto plane = obj->asPlane();
-			assert(plane);
+			if (!plane) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 
 			uint32_t crtc_mask = 0;
 			for(auto crtc : plane->getPossibleCrtcs()) {
@@ -455,7 +486,10 @@ struct drm_core::File::HandleIoctl {
 			managarm::fs::GenericIoctlReply resp;
 
 			auto bo = self->resolveHandle(req.drm_handle());
-			assert(bo);
+			if (!bo) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto buffer = bo->sharedBufferObject();
 
 			auto fourcc = convertLegacyFormat(req.drm_bpp(), req.drm_depth());
@@ -482,7 +516,10 @@ struct drm_core::File::HandleIoctl {
 			managarm::fs::GenericIoctlReply resp;
 
 			auto bo = self->resolveHandle(req.drm_handle());
-			assert(bo);
+			if (!bo) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto buffer = bo->sharedBufferObject();
 
 			auto modifier = req.drm_flags() & DRM_MODE_FB_MODIFIERS ? req.drm_modifier() : DRM_FORMAT_MOD_LINEAR;
@@ -513,9 +550,15 @@ struct drm_core::File::HandleIoctl {
 				std::println("core/drm: RMFB([{}])", req.drm_fb_id());
 
 			auto obj = self->_device->findObject(req.drm_fb_id());
-			assert(obj);
+			if (!obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto fb = obj->asFrameBuffer();
-			assert(fb);
+			if (!fb) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			self->detachFrameBuffer(fb);
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 
@@ -531,7 +574,10 @@ struct drm_core::File::HandleIoctl {
 				std::println("core/drm: MAP_DUMB(<{}>)", req.drm_handle());
 
 			auto bo = self->resolveHandle(req.drm_handle());
-			assert(bo);
+			if (!bo) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto buffer = bo->sharedBufferObject();
 
 			resp.set_drm_offset(buffer->getMapping());
@@ -554,25 +600,29 @@ struct drm_core::File::HandleIoctl {
 			drm_mode_modeinfo mode_info;
 			memset(&mode_info, 0, sizeof(mode_info));
 
-			if(obj) {
-				auto crtc = obj->asCrtc();
-				assert(crtc);
+			if (!obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 
-				if(crtc->drmState()->mode) {
-					memcpy(&mode_info, crtc->drmState()->mode->data(), sizeof(drm_mode_modeinfo));
-					resp.set_drm_mode_valid(1);
-					resp.set_drm_x(crtc->primaryPlane()->drmState()->src_x);
-					resp.set_drm_y(crtc->primaryPlane()->drmState()->src_y);
-					/* TODO: wire up gamma once we support that */
-					resp.set_drm_gamma_size(0);
-					auto fb = crtc->primaryPlane()->drmState()->fb;
-					resp.set_drm_fb_id(fb ? fb->id() : 0);
-				}else{
-					memset(&mode_info, 0, sizeof(drm_mode_modeinfo));
-					resp.set_drm_mode_valid(0);
-				}
-			} else {
-				resp.set_error(managarm::fs::Errors::ILLEGAL_ARGUMENT);
+			auto crtc = obj->asCrtc();
+			if (!crtc) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
+
+			if(crtc->drmState()->mode) {
+				memcpy(&mode_info, crtc->drmState()->mode->data(), sizeof(drm_mode_modeinfo));
+				resp.set_drm_mode_valid(1);
+				resp.set_drm_x(crtc->primaryPlane()->drmState()->src_x);
+				resp.set_drm_y(crtc->primaryPlane()->drmState()->src_y);
+				/* TODO: wire up gamma once we support that */
+				resp.set_drm_gamma_size(0);
+				auto fb = crtc->primaryPlane()->drmState()->fb;
+				resp.set_drm_fb_id(fb ? fb->id() : 0);
+			}else{
+				memset(&mode_info, 0, sizeof(drm_mode_modeinfo));
+				resp.set_drm_mode_valid(0);
 			}
 
 			auto [send_resp, send_mode] = co_await helix_ng::exchangeMsgs(conversation,
@@ -598,15 +648,24 @@ struct drm_core::File::HandleIoctl {
 			managarm::fs::GenericIoctlReply resp;
 
 			auto obj = self->_device->findObject(req.drm_crtc_id());
-			assert(obj);
+			if (!obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto crtc = obj->asCrtc();
-			assert(crtc);
+			if (!crtc) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 
 			std::vector<drm_core::Assignment> assignments;
 			if(req.drm_mode_valid()) {
 				auto mode_blob = self->_device->registerBlob(std::move(mode_buffer));
 				auto fb = self->_device->findObject(req.drm_fb_id());
-				assert(fb);
+				if (!fb) {
+					co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+					co_return {};
+				}
 
 				assignments.push_back(Assignment::withInt(crtc->sharedModeObject(), self->_device->activeProperty(), true));
 				assignments.push_back(Assignment::withBlob(crtc->sharedModeObject(), self->_device->modeIdProperty(), mode_blob));
@@ -622,7 +681,10 @@ struct drm_core::File::HandleIoctl {
 
 				for(auto connectorId : req.drm_connector_ids()) {
 					auto con = self->_device->findObject(connectorId);
-					assert(con);
+					if (!con) {
+						co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+						co_return {};
+					}
 
 					assignments.push_back(Assignment::withModeObj(con, self->_device->crtcIdProperty(), crtc->sharedModeObject()));
 				}
@@ -653,14 +715,23 @@ struct drm_core::File::HandleIoctl {
 				std::println("core/drm: PAGE_FLIP()");
 
 			auto obj = self->_device->findObject(req.drm_crtc_id());
-			assert(obj);
+			if (!obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto crtc = obj->asCrtc();
-			assert(crtc);
+			if (!crtc) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 
 			std::vector<drm_core::Assignment> assignments;
 
 			auto fb = self->_device->findObject(req.drm_fb_id());
-			assert(fb);
+			if (!fb) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			assignments.push_back(Assignment::withModeObj(crtc->primaryPlane()->sharedModeObject(), self->_device->fbIdProperty(), fb));
 			assignments.push_back(Assignment::withModeObj(crtc->primaryPlane()->sharedModeObject(), self->_device->crtcIdProperty(), crtc->sharedModeObject()));
 
@@ -690,12 +761,17 @@ struct drm_core::File::HandleIoctl {
 
 			auto obj = self->_device->findObject(req.drm_fb_id());
 			if(!obj) {
-				resp.set_error(managarm::fs::Errors::ILLEGAL_ARGUMENT);
-			} else {
-				auto fb = obj->asFrameBuffer();
-				assert(fb);
-				fb->notifyDirty();
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
 			}
+
+			auto fb = obj->asFrameBuffer();
+			if (!fb) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
+
+			fb->notifyDirty();
 
 			auto [send_resp] = co_await helix_ng::exchangeMsgs(conversation,
 				helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
@@ -709,8 +785,15 @@ struct drm_core::File::HandleIoctl {
 				std::println("core/drm: MODE_CURSOR()");
 
 			auto crtc_obj = self->_device->findObject(req.drm_crtc_id());
-			assert(crtc_obj);
+			if (!crtc_obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto crtc = crtc_obj->asCrtc();
+			if (!crtc) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 
 			auto cursor_plane = crtc->cursorPlane();
 
@@ -735,7 +818,10 @@ struct drm_core::File::HandleIoctl {
 
 				if (bo) {
 					auto fb = self->_device->createFrameBuffer(bo->sharedBufferObject(), width, height, DRM_FORMAT_ARGB8888, width * 4, DRM_FORMAT_MOD_LINEAR);
-					assert(fb);
+					if (!fb) {
+						co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+						co_return {};
+					}
 					assignments.push_back(Assignment::withModeObj(crtc->cursorPlane()->sharedModeObject(), self->_device->fbIdProperty(), fb));
 				} else {
 					assignments.push_back(Assignment::withModeObj(crtc->cursorPlane()->sharedModeObject(), self->_device->fbIdProperty(), nullptr));
@@ -772,8 +858,15 @@ struct drm_core::File::HandleIoctl {
 				std::println("core/drm: MODE_CURSOR2()");
 
 			auto crtc_obj = self->_device->findObject(req.drm_crtc_id());
-			assert(crtc_obj);
+			if (!crtc_obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto crtc = crtc_obj->asCrtc();
+			if (!crtc) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 
 			auto cursor_plane = crtc->cursorPlane();
 
@@ -798,7 +891,10 @@ struct drm_core::File::HandleIoctl {
 
 			if(bo) {
 				auto fb = self->_device->createFrameBuffer(bo->sharedBufferObject(), width, height, DRM_FORMAT_ARGB8888, width * 4, DRM_FORMAT_MOD_LINEAR);
-				assert(fb);
+				if (!fb) {
+					co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+					co_return {};
+				}
 				assignments.push_back(Assignment::withModeObj(crtc->cursorPlane()->sharedModeObject(), self->_device->fbIdProperty(), fb));
 			} else {
 				assignments.push_back(Assignment::withModeObj(crtc->cursorPlane()->sharedModeObject(), self->_device->fbIdProperty(), nullptr));
@@ -872,7 +968,10 @@ struct drm_core::File::HandleIoctl {
 			managarm::fs::GenericIoctlReply resp;
 
 			auto obj = self->_device->findObject(req.drm_obj_id());
-			assert(obj);
+			if (!obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 
 			if (logDrmRequests)
@@ -987,10 +1086,16 @@ struct drm_core::File::HandleIoctl {
 			auto state = self->_device->atomicState();
 
 			auto mode_obj = self->_device->findObject(req.drm_obj_id());
-			assert(mode_obj);
+			if (!mode_obj) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 
 			auto prop = self->_device->getProperty(req.drm_property_id());
-			assert(prop);
+			if (!prop) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto value = req.drm_property_value();
 			auto prop_type = prop->propertyType();
 
@@ -1237,7 +1342,10 @@ struct drm_core::File::HandleIoctl {
 			HEL_CHECK(proc_creds.error());
 
 			auto bo = self->resolveHandle(req.drm_prime_handle());
-			assert(bo);
+			if (!bo) {
+				co_await sendError(managarm::fs::Errors::FILE_NOT_FOUND);
+				co_return {};
+			}
 			auto buffer = bo->sharedBufferObject();
 
 			// Create the lane used for serving the PRIME fd
