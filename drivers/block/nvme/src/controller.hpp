@@ -48,6 +48,11 @@ struct Controller {
 		return type_;
 	}
 
+	// Commands that the queue behind submitIoCommand() holds at once.
+	unsigned int ioQueueDepth() const {
+		return activeQueues_.at(1)->capacity();
+	}
+
 	async::result<void> scanNamespaces();
 
 	async::result<Command::Result> identifyController(arch::dma_object_view<spec::IdentifyController> id);

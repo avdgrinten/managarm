@@ -68,19 +68,18 @@ int PciExpressQueue::handleIrq() {
 		cqe = &cqes_[cqHead_];
 	}
 
-	if (commandsInFlight_ == depth_ && found > 0)
-		freeSlotDoorbell_.raise();
-
 	commandsInFlight_ -= found;
 
-	if (found)
+	if (found) {
+		freeSlotDoorbell_.raise();
 		doorbells_.store(arch::scalar_register<uint32_t>{0x4}, cqHead_);
+	}
 
 	return found;
 }
 
 async::result<size_t> Queue::findFreeSlot() {
-	if (commandsInFlight_ >= depth_)
+	while (commandsInFlight_ >= capacity())
 		co_await freeSlotDoorbell_.async_wait();
 
 	for (size_t i = 0; i < queuedCmds_.size(); i++) {

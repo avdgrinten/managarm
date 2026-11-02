@@ -27,12 +27,14 @@ async::detached Namespace::run() {
 		"nvme-namespace", descriptor)).unwrap());
 	parentId = mbusEntity_->id();
 
+	// All namespaces share the I/O queue, so this is an upper bound that Queue enforces.
+	limits.queueCapacity = controller_->ioQueueDepth();
 	blockfs::runDevice(this);
 
 	co_return;
 }
 
-async::result<std::expected<void, blockfs::Error>> Namespace::readSectors(uint64_t sector, arch::dma_buffer_view view) {
+async::result<std::expected<void, blockfs::Error>> Namespace::issueRead(unsigned int, uint64_t sector, arch::dma_buffer_view view) {
 	using arch::convert_endian;
 	using arch::endian;
 
@@ -55,7 +57,7 @@ async::result<std::expected<void, blockfs::Error>> Namespace::readSectors(uint64
 	co_return {};
 }
 
-async::result<std::expected<void, blockfs::Error>> Namespace::writeSectors(uint64_t sector, arch::dma_buffer_view view) {
+async::result<std::expected<void, blockfs::Error>> Namespace::issueWrite(unsigned int, uint64_t sector, arch::dma_buffer_view view) {
 	using arch::convert_endian;
 	using arch::endian;
 
