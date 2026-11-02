@@ -383,6 +383,10 @@ public:
 	// Requires a prior arch::dma_space::ensure_mapped() of the view.
 	std::vector<DmaChunk> splitContiguous(arch::dma_buffer_view view);
 
+	// Returns the number of chunks that splitContiguous() splits the view into.
+	// Requires a prior arch::dma_space::ensure_mapped() of the view.
+	size_t countContiguous(arch::dma_buffer_view view);
+
 	// Allocates a single descriptor. Special case of obtainDescriptors(), see below.
 	async::result<Handle> obtainDescriptor();
 
