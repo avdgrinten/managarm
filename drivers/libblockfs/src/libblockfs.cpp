@@ -23,6 +23,7 @@
 
 #include <blockfs.hpp>
 #include "gpt.hpp"
+#include "io-scheduler.hpp"
 #include "raw.hpp"
 #include "swap.hpp"
 #include "trace.hpp"
@@ -69,9 +70,35 @@ HelHandle fileDataHierarchy() {
 	return handle;
 }
 
-BlockDevice::BlockDevice(size_t sector_size, int64_t parent_id, arch::contiguous_pool *pool)
-: size(0), sectorSize(sector_size), sectorShift(std::countr_zero(sector_size)), parentId(parent_id), pagePool{pool} {
+BlockDevice::BlockDevice(size_t sector_size, int64_t parent_id, arch::contiguous_pool *pool,
+		Limits limits)
+: size(0), sectorSize(sector_size), sectorShift(std::countr_zero(sector_size)), parentId(parent_id),
+		pagePool{pool}, limits{limits} {
 	assert(std::has_single_bit(sector_size));
+}
+
+BlockDevice::BlockDevice(size_t sector_size, int64_t parent_id, arch::contiguous_pool *pool)
+: BlockDevice{sector_size, parent_id, pool, Limits{}} { }
+
+BlockDevice::~BlockDevice() = default;
+
+unsigned int BlockDevice::pickQueue() const {
+	// Threads outside DispatcherPool always pick queue zero.
+	// TODO: We could alternatively let them pick a random queue that is already is use,
+	//       but that requires more book keeping and there are no such threads right now anyway.
+	// TODO: The modulo causes some queues to be utilized more than others if #queues < #threads.
+	//       We could potentially use a better strategy in that situation.
+	return helix::DispatcherPool::global().thisThread().value_or(0) % limits.numQueues;
+}
+
+async::result<std::expected<void, Error>> BlockDevice::readSectors(uint64_t sector, arch::dma_buffer_view view) {
+	assert(scheduler_ && "readSectors() before runDevice()");
+	return scheduler_->submit(false, sector, view);
+}
+
+async::result<std::expected<void, Error>> BlockDevice::writeSectors(uint64_t sector, arch::dma_buffer_view view) {
+	assert(scheduler_ && "writeSectors() before runDevice()");
+	return scheduler_->submit(true, sector, view);
 }
 
 struct HandlePartition {
@@ -953,6 +980,12 @@ async::detached runDevice(BlockDevice *device) {
 		if(!totalMemory)
 			totalMemory = (co_await core::getMemoryInformation()).totalMemory;
 	}
+
+	// Every hardware queue orders its requests on its own.
+	std::vector<std::unique_ptr<IoDispatcher>> dispatchers;
+	for(size_t i = 0; i < device->limits.numQueues; ++i)
+		dispatchers.push_back(std::make_unique<FifoDispatcher>());
+	device->scheduler_ = std::make_unique<IoScheduler>(device, std::move(dispatchers));
 
 	// TODO(qookie): Don't leak the table.
 	// Currently it should be fine to leak it since neither it nor

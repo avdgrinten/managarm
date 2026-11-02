@@ -1045,10 +1045,10 @@ Queue::Queue(
 	_activeRequests.resize(_queueSize);
 }
 
-std::vector<DmaChunk> Queue::splitContiguous(arch::dma_buffer_view view) {
-	// The descriptor length field is only 32 bits wide.
-	constexpr size_t maxChunkSize = 0xFFFFF000;
+// The descriptor length field is only 32 bits wide.
+static constexpr size_t maxChunkSize = 0xFFFFF000;
 
+std::vector<DmaChunk> Queue::splitContiguous(arch::dma_buffer_view view) {
 	std::vector<DmaChunk> chunks;
 
 	size_t offset = 0;
@@ -1062,6 +1062,14 @@ std::vector<DmaChunk> Queue::splitContiguous(arch::dma_buffer_view view) {
 		}
 	});
 	return chunks;
+}
+
+size_t Queue::countContiguous(arch::dma_buffer_view view) {
+	size_t count = 0;
+	dmaSpace().for_iova_ranges_of(view, [&] (uintptr_t, size_t size) {
+		count += (size + maxChunkSize - 1) / maxChunkSize;
+	});
+	return count;
 }
 
 async::result<Handle> Queue::obtainDescriptor() {

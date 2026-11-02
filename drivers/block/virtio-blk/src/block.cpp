@@ -95,6 +95,20 @@ async::result<void> Device::runDevice() {
 		_queues.push_back(co_await _transport->setupQueue(i));
 	_queueLive = std::make_unique<std::atomic_flag[]>(numQueues);
 
+	size_t numDescriptors = _queues.front()->numDescriptors();
+	for(auto queue : _queues)
+		numDescriptors = std::min(numDescriptors, queue->numDescriptors());
+
+	// Limit to ensure that we don't monopolize the device.
+	size_t maxSectors = numDescriptors / 4;
+	assert(maxSectors >= 1);
+	limits.maxSectorsPerRequest = maxSectors;
+
+	// The capacity of a queue is its virtq's descriptors (see issueCost()),
+	// such that requests wait in the I/O scheduler and not in obtainDescriptors().
+	limits.numQueues = numQueues;
+	limits.queueCapacity = numDescriptors;
+
 	// Service queue 0 from here. It is also used by threads that are not DispatcherPool members.
 	_startServicer(0);
 
@@ -114,57 +128,46 @@ void Device::_startServicer(unsigned int index) {
 	async::detach(_queues[index]->serviceQueue());
 }
 
-virtio_core::Queue *Device::_pickQueue() {
-	// Threads outside DispatcherPool always pick queue zero.
-	// TODO: We could alternatively let them pick a random queue that is already is use,
-	//       but that requires more book keeping and there are no such threads right now anyway.
-	// TODO: The modulo causes some queues to be utilized more than others if #queues < #threads.
-	//       We could potentially use a better strategy in that situation.
-	auto index = helix::DispatcherPool::global().thisThread().value_or(0) % _queues.size();
+virtio_core::Queue *Device::_useQueue(unsigned int index) {
 	if(!_queueLive[index].test(std::memory_order_acquire))
 		_startServicer(index);
 	return _queues[index];
 }
 
-async::result<std::expected<void, blockfs::Error>> Device::readSectors(uint64_t sector, arch::dma_buffer_view view) {
+async::result<void> Device::prepareIo(unsigned int queueIndex, arch::dma_buffer_view view) {
+	// The chunks of a request are only known once it is mapped, which is rarely the case yet
+	// since manage requests import their memory into a new region.
+	auto &space = _queues[queueIndex]->dmaSpace();
+	if(!space.check_mapped(view))
+		co_await space.ensure_mapped(view);
+}
+
+size_t Device::issueCost(unsigned int queueIndex, arch::dma_buffer_view view) {
+	// The header and the status byte take one descriptor each.
+	return _queues[queueIndex]->countContiguous(view) + 2;
+}
+
+async::result<std::expected<void, blockfs::Error>> Device::issueRead(unsigned int queueIndex, uint64_t sector, arch::dma_buffer_view view) {
 	// Natural alignment makes sure a sector does not cross a page boundary.
 	assert(!((uintptr_t)view.data() % 512));
-//	printf("readSectors(%lu, %lu)\n", sector, num_sectors);
 
 	protocols::ostrace::Timer timer;
 
-	auto queue = _pickQueue();
+	auto queue = _useQueue(queueIndex);
 
-	// Limit to ensure that we don't monopolize the device.
-	auto max_sectors = queue->numDescriptors() / 4;
-	assert(max_sectors >= 1);
-	auto num_sectors = view.size() >> sectorShift;
+	UserRequest request{false, sector, view, pagePool};
+	request.enqueueTs = currentNs();
+	co_await _issueRequest(queue, &request);
 
-	// Issue all requests first, then wait for completion.
-	// Note that the individual requests can be interleaved with other virtio-block requests.
-	std::list<UserRequest> requests;
-	for(size_t progress = 0; progress < num_sectors; progress += max_sectors) {
-		auto subview = view.subview(
-		    progress << sectorShift, std::min(num_sectors - progress, max_sectors) << sectorShift
-		);
-		auto &request = requests.emplace_back(false, sector + progress, subview, pagePool);
-		request.enqueueTs = currentNs();
-		co_await _issueRequest(queue, &request);
-	}
-
-	// Wait for all requests even after an error since they live in this coroutine frame.
 	std::expected<void, blockfs::Error> result;
-	for(auto &request : requests) {
-		co_await request.event.wait();
-		if(*request.status != VIRTIO_BLK_S_OK) {
-			std::cout << "virtio: Device signaled an error for request at sector "
-					<< request.sector << ", status "
-					<< static_cast<unsigned int>(*request.status) << std::endl;
-			if(result)
-				result = std::unexpected{statusToError(*request.status)};
-		}
-		emitRequestTrace(&request, queue->queueIndex());
+	co_await request.event.wait();
+	if(*request.status != VIRTIO_BLK_S_OK) {
+		std::cout << "virtio: Device signaled an error for request at sector "
+				<< request.sector << ", status "
+				<< static_cast<unsigned int>(*request.status) << std::endl;
+		result = std::unexpected{statusToError(*request.status)};
 	}
+	emitRequestTrace(&request, queue->queueIndex());
 
 	blockfs::ostContext.emit(
 		blockfs::ostEvtVirtioBlkReadSectors,
@@ -174,45 +177,27 @@ async::result<std::expected<void, blockfs::Error>> Device::readSectors(uint64_t 
 	co_return result;
 }
 
-async::result<std::expected<void, blockfs::Error>> Device::writeSectors(uint64_t sector, arch::dma_buffer_view view) {
+async::result<std::expected<void, blockfs::Error>> Device::issueWrite(unsigned int queueIndex, uint64_t sector, arch::dma_buffer_view view) {
 	// Natural alignment makes sure a sector does not cross a page boundary.
 	assert(!((uintptr_t)view.data() % 512));
-//	printf("writeSectors(%lu, %lu)\n", sector, num_sectors);
 
 	protocols::ostrace::Timer timer;
 
-	auto queue = _pickQueue();
+	auto queue = _useQueue(queueIndex);
 
-	// Limit to ensure that we don't monopolize the device.
-	auto max_sectors = queue->numDescriptors() / 4;
-	assert(max_sectors >= 1);
-	auto num_sectors = view.size() >> sectorShift;
+	UserRequest request{true, sector, view, pagePool};
+	request.enqueueTs = currentNs();
+	co_await _issueRequest(queue, &request);
 
-	// Issue all requests first, then wait for completion.
-	// Note that the individual requests can be interleaved with other virtio-block requests.
-	std::list<UserRequest> requests;
-	for(size_t progress = 0; progress < num_sectors; progress += max_sectors) {
-		auto subview = view.subview(
-		    progress << sectorShift, std::min(num_sectors - progress, max_sectors) << sectorShift
-		);
-		auto &request = requests.emplace_back(true, sector + progress, subview, pagePool);
-		request.enqueueTs = currentNs();
-		co_await _issueRequest(queue, &request);
-	}
-
-	// Wait for all requests even after an error since they live in this coroutine frame.
 	std::expected<void, blockfs::Error> result;
-	for(auto &request : requests) {
-		co_await request.event.wait();
-		if(*request.status != VIRTIO_BLK_S_OK) {
-			std::cout << "virtio: Device signaled an error for request at sector "
-					<< request.sector << ", status "
-					<< static_cast<unsigned int>(*request.status) << std::endl;
-			if(result)
-				result = std::unexpected{statusToError(*request.status)};
-		}
-		emitRequestTrace(&request, queue->queueIndex());
+	co_await request.event.wait();
+	if(*request.status != VIRTIO_BLK_S_OK) {
+		std::cout << "virtio: Device signaled an error for request at sector "
+				<< request.sector << ", status "
+				<< static_cast<unsigned int>(*request.status) << std::endl;
+		result = std::unexpected{statusToError(*request.status)};
 	}
+	emitRequestTrace(&request, queue->queueIndex());
 
 	blockfs::ostContext.emit(
 		blockfs::ostEvtVirtioBlkWriteSectors,
@@ -244,7 +229,7 @@ async::result<std::expected<void, blockfs::Error>> Device::flush() {
 	UserRequest request{false, 0, {}, pagePool};
 
 	// VIRTIO_BLK_T_FLUSH is device-wide, so any queue covers the writes of all of them.
-	auto queue = _pickQueue();
+	auto queue = _useQueue(pickQueue());
 
 	auto &space = queue->dmaSpace();
 	co_await space.ensure_mapped(request.header.view_buffer());
@@ -294,9 +279,9 @@ async::result<void> Device::_issueRequest(virtio_core::Queue *queue, UserRequest
 
 	protocols::ostrace::Timer setupTimer;
 
-	// Establish the DMA mappings of all involved regions.
+	// Establish the DMA mappings of the remaining regions; prepareIo() mapped the data.
 	auto &space = queue->dmaSpace();
-	for(auto view : {request->view, request->header.view_buffer(), request->status.view_buffer()})
+	for(auto view : {request->header.view_buffer(), request->status.view_buffer()})
 		if(!space.check_mapped(view))
 			co_await space.ensure_mapped(view);
 

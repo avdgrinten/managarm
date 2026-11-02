@@ -83,16 +83,19 @@ struct Device : blockfs::BlockDevice {
 
 	async::result<void> runDevice();
 
-	async::result<std::expected<void, blockfs::Error>> readSectors(uint64_t sector, arch::dma_buffer_view view) override;
-	async::result<std::expected<void, blockfs::Error>> writeSectors(uint64_t sector, arch::dma_buffer_view view) override;
-
 	async::result<std::expected<void, blockfs::Error>> flush() override;
 
 	async::result<size_t> getSize() override;
 
+protected:
+	async::result<void> prepareIo(unsigned int queueIndex, arch::dma_buffer_view view) override;
+	size_t issueCost(unsigned int queueIndex, arch::dma_buffer_view view) override;
+	async::result<std::expected<void, blockfs::Error>> issueRead(unsigned int queueIndex, uint64_t sector, arch::dma_buffer_view view) override;
+	async::result<std::expected<void, blockfs::Error>> issueWrite(unsigned int queueIndex, uint64_t sector, arch::dma_buffer_view view) override;
+
 private:
-	// Returns the virtq that the calling thread submits to.
-	virtio_core::Queue *_pickQueue();
+	// Returns the given virtq after starting its completion servicer if necessary.
+	virtio_core::Queue *_useQueue(unsigned int index);
 
 	// Starts the completion servicer of a queue on the calling thread, at most once.
 	void _startServicer(unsigned int index);

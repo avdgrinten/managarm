@@ -49,6 +49,9 @@ namespace flags {
 
 namespace {
 	constexpr size_t sectorSize = 512;
+	// Each PRDT entry covers at most one page and the head of the buffer may be unaligned,
+	// so a command fits prdtEntries - 1 pages worth of sectors.
+	constexpr size_t maxSectorsPerCommand = (commandTable::prdtEntries - 1) * 0x1000 / sectorSize;
 }
 
 // TODO: We can use a more appropriate block size, but this breaks other parts of the OS.
@@ -60,7 +63,8 @@ Port::Port(
     bool staggeredSpinUp,
     arch::mem_space regs
 )
-: BlockDevice{::sectorSize, parentId, &controller->pool()},
+: BlockDevice{::sectorSize, parentId, &controller->pool(),
+		{.maxSectorsPerRequest = maxSectorsPerCommand, .queueCapacity = numCommandSlots}},
   controller_{controller},
   regs_{regs},
   deviceSize_{0},
@@ -339,14 +343,14 @@ async::result<void> Port::submitCommand_(Command *cmd) {
 	co_return;
 }
 
-async::result<std::expected<void, blockfs::Error>> Port::readSectors(uint64_t sector, arch::dma_buffer_view view) {
+async::result<std::expected<void, blockfs::Error>> Port::issueRead(unsigned int, uint64_t sector, arch::dma_buffer_view view) {
 	Command cmd{controller_, sector, view.size() >> sectorShift, view, CommandType::read};
 	pendingCmdQueue_.put(&cmd);
 	co_await cmd.getFuture();
 	co_return {};
 }
 
-async::result<std::expected<void, blockfs::Error>> Port::writeSectors(uint64_t sector, arch::dma_buffer_view view) {
+async::result<std::expected<void, blockfs::Error>> Port::issueWrite(unsigned int, uint64_t sector, arch::dma_buffer_view view) {
 	Command cmd{controller_, sector, view.size() >> sectorShift, view, CommandType::write};
 	pendingCmdQueue_.put(&cmd);
 	co_await cmd.getFuture();

@@ -66,11 +66,13 @@ private:
 	async::result<IoResult> _waitForBsyIrq();
 
 public:
-	async::result<std::expected<void, blockfs::Error>> readSectors(uint64_t sector, arch::dma_buffer_view view) override;
-	async::result<std::expected<void, blockfs::Error>> writeSectors(uint64_t sector, arch::dma_buffer_view view) override;
 	async::result<std::expected<void, blockfs::Error>> flush() override;
 
 	async::result<size_t> getSize() override;
+
+protected:
+	async::result<std::expected<void, blockfs::Error>> issueRead(unsigned int, uint64_t sector, arch::dma_buffer_view view) override;
+	async::result<std::expected<void, blockfs::Error>> issueWrite(unsigned int, uint64_t sector, arch::dma_buffer_view view) override;
 
 private:
 	enum Commands {
@@ -130,7 +132,8 @@ Controller::Controller(
     helix::UniqueDescriptor altBar,
     helix::UniqueDescriptor irq
 )
-: BlockDevice{512, parentId, nullptr},
+// PIO transfers one command at a time; the sector count register holds up to 255 sectors.
+: BlockDevice{512, parentId, nullptr, {.maxSectorsPerRequest = 255, .queueCapacity = 1}},
   _irq{std::move(irq)},
   _ioSpace{mainOffset},
   _altSpace{altOffset},
@@ -224,7 +227,7 @@ auto Controller::_waitForBsyIrq() -> async::result<IoResult> {
 	}
 }
 
-async::result<std::expected<void, blockfs::Error>> Controller::readSectors(uint64_t sector, arch::dma_buffer_view view) {
+async::result<std::expected<void, blockfs::Error>> Controller::issueRead(unsigned int, uint64_t sector, arch::dma_buffer_view view) {
 	auto numSectors = (view.size() + sectorSize - 1) >> sectorShift;
 
 	Request request{};
@@ -240,7 +243,7 @@ async::result<std::expected<void, blockfs::Error>> Controller::readSectors(uint6
 	co_return {};
 }
 
-async::result<std::expected<void, blockfs::Error>> Controller::writeSectors(uint64_t sector, arch::dma_buffer_view view) {
+async::result<std::expected<void, blockfs::Error>> Controller::issueWrite(unsigned int, uint64_t sector, arch::dma_buffer_view view) {
 	auto numSectors = (view.size() + sectorSize - 1) >> sectorShift;
 
 	Request request{};

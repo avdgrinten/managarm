@@ -31,6 +31,10 @@ struct Queue {
 	unsigned int getQueueDepth() const {
 		return depth_;
 	}
+	// Commands that the queue holds at once: a submission queue of N entries is full at N - 1 entries.
+	unsigned int capacity() const {
+		return depth_ - 1;
+	}
 
 	async::result<size_t> findFreeSlot();
 

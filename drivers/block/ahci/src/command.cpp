@@ -12,8 +12,8 @@ Command::Command(Controller *controller, uint64_t sector, size_t numSectors, arc
 		CommandType type) : controller_{controller}, sector_{sector}, numSectors_{numSectors}, numBytes_{view.size()},
 	view_{view}, type_{type}, event_{} {
 
-	// TODO: Requests larger than 64k need to be split
-	assert(numBytes_ < 65536);
+	// The I/O scheduler splits requests to the limit that Port declares; the head may be unaligned.
+	assert(numBytes_ <= (commandTable::prdtEntries - 1) * 0x1000);
 
 	if (logCommands) {
 		printf("block/ahci: queueing %zu byte %s to %p at sector %" PRIu64 "\n",

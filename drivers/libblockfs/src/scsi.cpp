@@ -266,26 +266,14 @@ async::result<std::expected<void, blockfs::Error>> StorageDevice::performIo(bool
 	co_return {};
 }
 
-async::result<std::expected<void, blockfs::Error>> StorageDevice::performSplitIo(bool isWrite, uint64_t sector,
+async::result<std::expected<void, blockfs::Error>> StorageDevice::issueRead(unsigned int, uint64_t sector,
 		arch::dma_buffer_view view) {
-	size_t maxBytes = maxSectorsPerCommand << sectorShift;
-	for (size_t offset = 0; offset < view.size(); offset += maxBytes) {
-		auto result = co_await performIo(isWrite, sector + (offset >> sectorShift),
-				view.subview(offset, std::min(maxBytes, view.size() - offset)));
-		if (!result)
-			co_return result;
-	}
-	co_return {};
+	co_return co_await performIo(false, sector, view);
 }
 
-async::result<std::expected<void, blockfs::Error>> StorageDevice::readSectors(uint64_t sector,
+async::result<std::expected<void, blockfs::Error>> StorageDevice::issueWrite(unsigned int, uint64_t sector,
 		arch::dma_buffer_view view) {
-	co_return co_await performSplitIo(false, sector, view);
-}
-
-async::result<std::expected<void, blockfs::Error>> StorageDevice::writeSectors(uint64_t sector,
-		arch::dma_buffer_view view) {
-	co_return co_await performSplitIo(true, sector, view);
+	co_return co_await performIo(true, sector, view);
 }
 
 async::result<std::expected<void, blockfs::Error>> StorageDevice::flush() {

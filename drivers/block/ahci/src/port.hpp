@@ -27,12 +27,14 @@ public:
 	void dumpState();
 	void checkErrors();
 
-	async::result<std::expected<void, blockfs::Error>> readSectors(uint64_t sector, arch::dma_buffer_view view) override;
-	async::result<std::expected<void, blockfs::Error>> writeSectors(uint64_t sector, arch::dma_buffer_view view) override;
 	async::result<std::expected<void, blockfs::Error>> flush() override;
 	async::result<size_t> getSize() override;
 
 	int getIndex() const { return portIndex_; }
+
+protected:
+	async::result<std::expected<void, blockfs::Error>> issueRead(unsigned int, uint64_t sector, arch::dma_buffer_view view) override;
+	async::result<std::expected<void, blockfs::Error>> issueWrite(unsigned int, uint64_t sector, arch::dma_buffer_view view) override;
 
 private:
 	async::result<size_t> findFreeSlot_();

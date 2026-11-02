@@ -50,14 +50,11 @@ struct Interface {
 };
 
 struct StorageDevice : Interface, blockfs::BlockDevice {
-	StorageDevice(size_t sectorSize, int64_t parentId, arch::contiguous_pool *pool)
-	: blockfs::BlockDevice(sectorSize, parentId, pool) { }
-
-	async::result<std::expected<void, blockfs::Error>> readSectors(uint64_t sector,
-			arch::dma_buffer_view view) final;
-
-	async::result<std::expected<void, blockfs::Error>> writeSectors(uint64_t sector,
-			arch::dma_buffer_view view) final;
+	// READ(10)/WRITE(10) carry a 16-bit transfer length, so limits.maxSectorsPerRequest must be set.
+	StorageDevice(size_t sectorSize, int64_t parentId, arch::contiguous_pool *pool, Limits limits)
+	: blockfs::BlockDevice(sectorSize, parentId, pool, limits) {
+		assert(limits.maxSectorsPerRequest && *limits.maxSectorsPerRequest <= 0xffff);
+	}
 
 	async::result<std::expected<void, blockfs::Error>> flush() final;
 
@@ -65,13 +62,14 @@ struct StorageDevice : Interface, blockfs::BlockDevice {
 
 	size_t storageSize{};
 
-	// Larger requests are split into multiple commands. Transports may lower this.
-	size_t maxSectorsPerCommand{0xffff};
+protected:
+	async::result<std::expected<void, blockfs::Error>> issueRead(unsigned int, uint64_t sector,
+			arch::dma_buffer_view view) final;
+
+	async::result<std::expected<void, blockfs::Error>> issueWrite(unsigned int, uint64_t sector,
+			arch::dma_buffer_view view) final;
 
 private:
-	async::result<std::expected<void, blockfs::Error>> performSplitIo(bool isWrite, uint64_t sector,
-			arch::dma_buffer_view view);
-
 	async::result<std::expected<void, blockfs::Error>> performIo(bool isWrite, uint64_t sector,
 			arch::dma_buffer_view view);
 };

@@ -363,6 +363,9 @@ async::result<void> Controller::scanNamespaces() {
 	fw_rev = std::string{idCtrl->fr, sizeof(idCtrl->fr)};
 	ioccsz_ = convert_endian<endian::little>(idCtrl->ioccsz);
 	icdoff_ = convert_endian<endian::little>(idCtrl->icdoff);
+	// MDTS is in units of CAP.MPSMIN; assuming the smallest (4 KiB) can only underestimate.
+	if (idCtrl->mdts)
+		maxTransferSize_ = size_t{0x1000} << idCtrl->mdts;
 
 	if (version_ >= flags::vs::version(1, 1, 0)) {
 		auto nsList = arch::dma_array<uint32_t>{&pool_, 1024};
