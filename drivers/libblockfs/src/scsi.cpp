@@ -1,7 +1,6 @@
 #include "scsi.hpp"
 
 #include <arch/bit.hpp>
-#include <core/logging.hpp>
 
 #include <format>
 #include <print>
@@ -9,6 +8,12 @@
 namespace {
 	constexpr bool logRequests = false;
 	constexpr bool logSteps = false;
+
+	template<size_t N>
+	void storeBigEndian(uint8_t (&bytes)[N], uint64_t value) {
+		for (size_t i = 0; i < N; i++)
+			bytes[i] = value >> (8 * (N - i - 1));
+	}
 }
 
 namespace scsi {
@@ -68,6 +73,16 @@ struct Read16 {
 	uint8_t grpNumber;
 	uint8_t control;
 };
+
+struct Write16 {
+	uint8_t opCode;
+	uint8_t options;
+	uint8_t lba[8];
+	uint8_t transferLength[4];
+	uint8_t grpNumber;
+	uint8_t control;
+};
+static_assert(sizeof(Write16) == 16);
 
 struct Read32 {
 	uint8_t opCode;
@@ -244,7 +259,13 @@ async::result<std::expected<void, blockfs::Error>> StorageDevice::performIo(bool
 			commandLength = sizeof(Read10);
 			memcpy(commandData, &command, sizeof(Read10));
 		} else {
-			logPanic("block-scsi: High LBAs are not supported!");
+			Read16 command{};
+			command.opCode = 0x88;
+			storeBigEndian(command.lba, sector);
+			storeBigEndian(command.transferLength, numSectors);
+
+			commandLength = sizeof(Read16);
+			memcpy(commandData, &command, sizeof(Read16));
 		}
 	} else {
 		if (sector <= 0xffffffff) {
@@ -260,7 +281,13 @@ async::result<std::expected<void, blockfs::Error>> StorageDevice::performIo(bool
 			commandLength = sizeof(Write10);
 			memcpy(commandData, &command, sizeof(Write10));
 		} else {
-			logPanic("block-scsi: High LBAs are not supported!");
+			Write16 command{};
+			command.opCode = 0x8a;
+			storeBigEndian(command.lba, sector);
+			storeBigEndian(command.transferLength, numSectors);
+
+			commandLength = sizeof(Write16);
+			memcpy(commandData, &command, sizeof(Write16));
 		}
 	}
 
