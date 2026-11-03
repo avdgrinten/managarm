@@ -189,6 +189,17 @@ async::result<void> E1000Nic::init() {
 	if(allZero || (mac_[0] & 1))
 		printf("e1000: MAC address is not a valid unicast address\n");
 
+	// On 82571, resetting the other port can overwrite RAR[0], so keep a copy in the last entry.
+	u16 rarCount = _hw.mac.rar_entry_count;
+	if(_hw.mac.type == e1000_82571) {
+		e1000_set_laa_state_82571(&_hw, true);
+		rarCount--;
+	}
+
+	// The unicast filter matches against all valid RARs. We never call e1000_init_hw(),
+	// so program RAR[0] and clear stale entries left by firmware ourselves.
+	e1000_init_rx_addrs_generic(&_hw, rarCount);
+
 	e1000_disable_ulp_lpt_lp(&_hw, true);
 
 	_rxd = arch::dma_array<struct e1000_rx_desc>(dmaPool_, RX_QUEUE_SIZE);
@@ -226,12 +237,14 @@ async::result<void> E1000Nic::init() {
 	}
 
 	co_await txInit();
-	co_await rxInit();
 
+	// netserver joins no multicast groups, so this is FreeBSD's em_if_multi_set() with an empty list.
+	e1000_update_mc_addr_list(&_hw, nullptr, 0);
 	u32 reg_rctl = E1000_READ_REG(&_hw, E1000_RCTL);
-	reg_rctl &= (~E1000_RCTL_SBP);
-	reg_rctl |= (E1000_RCTL_UPE | E1000_RCTL_MPE);
+	reg_rctl &= ~(E1000_RCTL_UPE | E1000_RCTL_MPE);
 	E1000_WRITE_REG(&_hw, E1000_RCTL, reg_rctl);
+
+	co_await rxInit();
 
 	e1000_clear_hw_cntrs_base_generic(&_hw);
 
