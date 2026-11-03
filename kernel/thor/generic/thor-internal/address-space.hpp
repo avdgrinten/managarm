@@ -150,9 +150,17 @@ inline CachingMode determineCachingMode(CachingMode physicalRangeCaching,
 	// check if an override caching mode was requested
 	if(requested != CachingMode::null) {
 		// allow overriding UC with WC
-		if(requested == CachingMode::writeCombine && physicalRangeCaching == CachingMode::uncached) {
+		if (requested == CachingMode::writeCombine
+		    && (physicalRangeCaching == CachingMode::uncached
+		        || physicalRangeCaching == CachingMode::mmio
+		        || physicalRangeCaching == CachingMode::mmioNonPosted)) {
 			return requested;
 		}
+		infoLogger() << frg::fmt(
+		    "thor: denied overriding caching mode {} to {}",
+		    std::to_underlying(physicalRangeCaching),
+		    std::to_underlying(requested)
+		) << frg::endlog;
 	}
 
 	// otherwise, return the caching mode from the physical range
