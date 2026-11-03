@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arch/dma_pool.hpp>
 #include <arch/mem_space.hpp>
 #include <core/drm/device.hpp>
 #include <protocols/hw/client.hpp>
@@ -196,7 +197,7 @@ struct GfxDevice final : drm_core::Device, std::enable_shared_from_this<GfxDevic
 		std::shared_ptr<GfxDevice::Plane> primaryPlane_;
 	};
 
-	GfxDevice(protocols::hw::Device device, uint32_t seg, uint32_t bus, uint32_t dev, uint32_t func);
+	GfxDevice(protocols::hw::Device device, uint32_t seg, uint32_t bus, uint32_t dev, uint32_t func, bool iommuActive, helix::UniqueDescriptor dmaSpaceHandle);
 
 	std::unique_ptr<drm_core::Configuration> createConfiguration() override;
 
@@ -257,6 +258,20 @@ public:
 	pthread_mutex_t timerLock = PTHREAD_MUTEX_INITIALIZER;
 	pthread_cond_t timerCond = PTHREAD_COND_INITIALIZER;
 
+	bool iommuActive_ = false;
+
+	arch::contiguous_pool *pool() {
+		return &pool_;
+	}
+
+	arch::dma_space &space() {
+		return dmaSpace_;
+	}
+
+	arch::dma_realm &dmaRealm() {
+		return dmaRealm_;
+	}
+
 private:
 	NvKmsKapiDevice *kmsdev = nullptr;
 
@@ -276,6 +291,11 @@ private:
 	uint8_t progIf_;
 	uint16_t subsystemVendor_;
 	uint16_t subsystemDevice_;
+
+	arch::dma_realm dmaRealm_;
+	arch::contiguous_pool pool_{&dmaRealm_, {.addressBits = 32, .allocateContigous = false}};
+	helix::UniqueDescriptor dmaSpaceHandle_;
+	arch::dma_space dmaSpace_;
 };
 
 typedef void (*workqueue_func_t)(void *);
@@ -289,6 +309,7 @@ struct WorkqueueItem {
 
 struct AllocInfo {
 	HelHandle handle;
+	arch::imported_dma_buffer buf;
 	size_t page_count;
 	uintptr_t base;
 };
