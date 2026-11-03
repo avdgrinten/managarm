@@ -96,7 +96,7 @@ uint64_t drm_core::Device::installMapping(drm_core::BufferObject *bo) {
 }
 
 void drm_core::Device::uninstallMapping(drm_core::BufferObject *bo) {
-	_memorySlotAllocator.free(bo->getMapping());
+	_memorySlotAllocator.free(bo->getMapping() >> 32);
 }
 
 void drm_core::Device::setupMinDimensions(uint32_t width, uint32_t height) {
