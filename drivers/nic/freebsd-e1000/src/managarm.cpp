@@ -55,8 +55,6 @@ E1000Nic::E1000Nic(protocols::hw::Device device, helix::UniqueDescriptor dmaSpac
   _txIndex(0, TX_QUEUE_SIZE) {}
 
 async::result<void> E1000Nic::init() {
-	u32 reg_rctl = 0;
-
 	auto info = co_await _device.getPciInfo();
 	_irq = co_await _device.accessIrq();
 
@@ -92,8 +90,8 @@ async::result<void> E1000Nic::init() {
 			}
 		}
 		if (!found_io_bar) {
-			printf("e1000: Unable to locate IO BAR");
-			goto fail;
+			printf("e1000: Unable to locate IO BAR\n");
+			co_return;
 		}
 	}
 
@@ -115,7 +113,7 @@ async::result<void> E1000Nic::init() {
 		(_hw.mac.type == e1000_ich10lan) || (_hw.mac.type == e1000_pchlan) ||
 		(_hw.mac.type == e1000_pch2lan) || (_hw.mac.type == e1000_pch_lpt)) {
 		printf("e1000: Mapping of flash unimplemented\n");
-		goto fail;
+		co_return;
 	} else if (_hw.mac.type >= e1000_pch_spt) {
 		/**
 		 * In the new SPT device flash is not a separate BAR, rather it is also in BAR0,
@@ -125,10 +123,8 @@ async::result<void> E1000Nic::init() {
 		hw2flashbase(&_hw) = ((struct e1000_osdep *) _hw.back)->membase + E1000_FLASH_BASE_ADDR;
 	}
 
-	{
-		auto init_ret = e1000_setup_init_funcs(&_hw, true);
-		assert(init_ret == E1000_SUCCESS);
-	}
+	auto init_ret = e1000_setup_init_funcs(&_hw, true);
+	assert(init_ret == E1000_SUCCESS);
 
 	e1000_get_bus_info(&_hw);
 
@@ -170,30 +166,28 @@ async::result<void> E1000Nic::init() {
 			// I219 shares the NVM with the platform firmware; a bad checksum is common there
 			// and the MAC could still be recovered from RAR0, which we do not implement.
 			std::cout << "e1000: EEPROM checksum not valid\n";
-			goto fail;
+			co_return;
 		}
 	}
 
 	if(e1000_read_mac_addr(&_hw) < 0) {
 		std::cout << "e1000: error while reading MAC address" << std::endl;
-		goto fail;
+		co_return;
 	}
 
 	for(size_t i = 0; i < ETHER_ADDR_LEN; i++) {
 		mac_[i] = _hw.mac.addr[i];
 	}
 
-	{
-		bool allZero = true;
-		for(size_t i = 0; i < ETHER_ADDR_LEN; i++)
-			allZero &= !mac_[i];
+	bool allZero = true;
+	for(size_t i = 0; i < ETHER_ADDR_LEN; i++)
+		allZero &= !mac_[i];
 
-		printf("e1000: MAC address %02x:%02x:%02x:%02x:%02x:%02x\n",
-			mac_[0], mac_[1], mac_[2], mac_[3], mac_[4], mac_[5]);
-		// Both cases indicate that the NVM read returned garbage rather than a real address.
-		if(allZero || (mac_[0] & 1))
-			printf("e1000: MAC address is not a valid unicast address\n");
-	}
+	printf("e1000: MAC address %02x:%02x:%02x:%02x:%02x:%02x\n",
+		mac_[0], mac_[1], mac_[2], mac_[3], mac_[4], mac_[5]);
+	// Both cases indicate that the NVM read returned garbage rather than a real address.
+	if(allZero || (mac_[0] & 1))
+		printf("e1000: MAC address is not a valid unicast address\n");
 
 	e1000_disable_ulp_lpt_lp(&_hw, true);
 
@@ -234,7 +228,7 @@ async::result<void> E1000Nic::init() {
 	co_await txInit();
 	co_await rxInit();
 
-	reg_rctl = E1000_READ_REG(&_hw, E1000_RCTL);
+	u32 reg_rctl = E1000_READ_REG(&_hw, E1000_RCTL);
 	reg_rctl &= (~E1000_RCTL_SBP);
 	reg_rctl |= (E1000_RCTL_UPE | E1000_RCTL_MPE);
 	E1000_WRITE_REG(&_hw, E1000_RCTL, reg_rctl);
@@ -244,12 +238,6 @@ async::result<void> E1000Nic::init() {
 	E1000_WRITE_REG(&_hw, E1000_IMS, IMS_ENABLE_MASK);
 
 	processIrqs();
-
-	co_return;
-
-fail:
-	std::cout << "e1000: FAIL" << std::endl;
-	co_return;
 }
 
 async::result<size_t> E1000Nic::receive(arch::dma_buffer_view frame) {
