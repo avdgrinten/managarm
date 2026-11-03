@@ -28,6 +28,7 @@ using PortState = uint32_t;
 
 struct HubCharacteristics {
 	int ttThinkTime; // In FS bit times
+	int powerOnToPowerGood; // In milliseconds
 };
 
 struct Hub {
@@ -44,10 +45,17 @@ public:
 	virtual async::result<frg::expected<UsbError, void>> pollUntilState(int port, uint32_t desired) = 0;
 	virtual async::result<frg::expected<UsbError, void>> issueReset(int port) = 0;
 	virtual async::result<frg::expected<UsbError, DeviceSpeed>> querySpeed(int port) = 0;
+	virtual async::result<frg::expected<UsbError, void>> setPortPower(int port, bool state) = 0;
+	virtual async::result<frg::expected<UsbError, bool>> getPortPower(int port) = 0;
 
-	virtual frg::expected<UsbError, HubCharacteristics> getCharacteristics() {
-		return UsbError::unsupported;
+	virtual HubCharacteristics getCharacteristics() {
+		return HubCharacteristics{
+			.ttThinkTime = 0,
+			.powerOnToPowerGood = state_->speed() == DeviceSpeed::superSpeed ? 100 : 20,
+		};
 	}
+
+	virtual async::detached run() = 0;
 
 	std::shared_ptr<DeviceServerData> state() const {
 		return state_;
@@ -76,7 +84,7 @@ struct Enumerator {
 	Enumerator(BaseController *controller)
 	: controller_{controller} { }
 
-	void observeHub(std::shared_ptr<Hub> hub);
+	async::detached observeHub(std::shared_ptr<Hub> hub);
 
 private:
 	async::detached observePort_(std::shared_ptr<Hub> hub, int port);

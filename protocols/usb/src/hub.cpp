@@ -14,7 +14,28 @@ namespace protocols::usb {
 // Enumerator.
 // ----------------------------------------------------------------
 
-void Enumerator::observeHub(std::shared_ptr<Hub> hub) {
+async::detached Enumerator::observeHub(std::shared_ptr<Hub> hub) {
+	bool anyPowerChange = false;
+
+	for (size_t port = 1; port <= hub->numPorts(); port++) {
+		if (auto st = co_await hub->getPortPower(port); !st)
+			std::println("usb: Failed to get port {} power state", port);
+		else if (*st) // Skip already powered on ports
+			continue;
+
+		anyPowerChange = true;
+
+		if (auto st = co_await hub->setPortPower(port, true); !st)
+			std::println("usb: Failed to power on port {}", port);
+	}
+
+	if (anyPowerChange) {
+		auto characteristics = hub->getCharacteristics();
+		co_await helix::sleepFor(characteristics.powerOnToPowerGood * 1'000'000);
+	}
+
+	hub->run();
+
 	for (size_t port = 1; port <= hub->numPorts(); port++)
 		observePort_(hub, port);
 }
@@ -167,6 +188,7 @@ namespace PortBits {
 	static constexpr uint16_t connect = 0x01;
 	static constexpr uint16_t enable = 0x02;
 	static constexpr uint16_t reset = 0x10;
+	static constexpr uint16_t power = 0x100;
 	static constexpr uint16_t lowSpeed = 0x200;
 	static constexpr uint16_t highSpeed = 0x400;
 }
@@ -186,10 +208,9 @@ struct StandardHub final : Hub {
 	: Hub{std::move(device)}, endpoint_{nullptr} { }
 
 	async::result<frg::expected<UsbError>> initialize();
+	async::detached run() override;
 
 private:
-	async::detached run_();
-
 	HubCharacteristics characteristics_;
 
 public:
@@ -197,8 +218,10 @@ public:
 	async::result<frg::expected<UsbError, void>> pollUntilState(int port, uint32_t desired) override;
 	async::result<frg::expected<UsbError, void>> issueReset(int port) override;
 	async::result<frg::expected<UsbError, DeviceSpeed>> querySpeed(int port) override;
+	async::result<frg::expected<UsbError, void>> setPortPower(int port, bool state) override;
+	async::result<frg::expected<UsbError, bool>> getPortPower(int port) override;
 
-	frg::expected<UsbError, HubCharacteristics> getCharacteristics() override {
+	HubCharacteristics getCharacteristics() override {
 		return characteristics_;
 	}
 
@@ -256,32 +279,17 @@ async::result<frg::expected<UsbError>> StandardHub::initialize() {
 	state_.resize(hubDescriptor->numPorts, PortState{0});
 
 	auto rawThinkTime = (hubDescriptor->hubCharacteristics >> 5) & 0b11;
-	characteristics_.ttThinkTime = 8 * (1 + rawThinkTime);
-
-	for (size_t port = 1; port <= hubDescriptor->numPorts; port++) {
-		// Issue a SetPortFeature request to power on the port.
-		arch::dma_object<SetupPacket> powerReq{state()->setupPool()};
-		powerReq->type = setup_type::targetOther | setup_type::byClass
-			| setup_type::toDevice;
-		powerReq->request = ClassRequests::setFeature;
-		powerReq->value = PortFeatures::power;
-		powerReq->index = port;
-		powerReq->length = 0;
-
-		FRG_CO_TRY(co_await state()->transfer(ControlTransfer{kXferToDevice,
-						powerReq, arch::dma_buffer_view{}}));
-	}
-
 	// Wait for the ports to power on (time is specified in 2 ms units).
 	// Linux waits for at least 100ms, even if the hub says less time is needed.
 	auto durationMs = std::max(hubDescriptor->powerOnToPowerGood * 2, 100);
-	co_await helix::sleepFor(durationMs * 1'000'000);
 
-	run_();
+	characteristics_.ttThinkTime = 8 * (1 + rawThinkTime);
+	characteristics_.powerOnToPowerGood = durationMs;
+
 	co_return {};
 }
 
-async::detached StandardHub::run_() {
+async::detached StandardHub::run() {
 	std::cout << "usb: Serving standard hub with "
 			<< state_.size() << " ports." << std::endl;
 
@@ -422,6 +430,39 @@ async::result<frg::expected<UsbError, DeviceSpeed>> StandardHub::querySpeed(int 
 		co_return DeviceSpeed::highSpeed;
 	else // TODO(qookie): What about SuperSpeed hubs?
 		co_return DeviceSpeed::fullSpeed;
+}
+
+async::result<frg::expected<UsbError, void>> StandardHub::setPortPower(int port, bool powerState) {
+	// Issue a SetPortFeature/ClearPortFeature request to change port power state.
+	arch::dma_object<SetupPacket> powerReq{state()->setupPool()};
+	powerReq->type = setup_type::targetOther | setup_type::byClass
+		| setup_type::toDevice;
+	powerReq->request = powerState ? ClassRequests::setFeature : ClassRequests::clearFeature;
+	powerReq->value = PortFeatures::power;
+	powerReq->index = port;
+	powerReq->length = 0;
+
+	FRG_CO_TRY(co_await state()->transfer(ControlTransfer{kXferToDevice,
+						powerReq, arch::dma_buffer_view{}}));
+
+	co_return frg::success;
+}
+
+async::result<frg::expected<UsbError, bool>> StandardHub::getPortPower(int port) {
+	// Issue a GetPortStatus request to query port power.
+	arch::dma_object<SetupPacket> statusReq{state()->setupPool()};
+	statusReq->type = setup_type::targetOther | setup_type::byClass
+		| setup_type::toHost;
+	statusReq->request = ClassRequests::getStatus;
+	statusReq->value = 0;
+	statusReq->index = port;
+	statusReq->length = 4;
+
+	arch::dma_array<uint16_t> result{state()->bufferPool(), 2};
+	FRG_CO_TRY(co_await state()->transfer(ControlTransfer{kXferToHost,
+				statusReq, result.view_buffer()}));
+
+	co_return result[0] & PortBits::power;
 }
 
 } // namespace anonymous

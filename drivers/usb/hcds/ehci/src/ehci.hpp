@@ -139,6 +139,23 @@ struct Controller final : proto::BaseController, std::enable_shared_from_this<Co
 		async::result<frg::expected<proto::UsbError, void>> issueReset(int port) override;
 		async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> querySpeed(int port) override;
 
+		// TODO(qookie): Implement this
+		async::result<frg::expected<proto::UsbError, void>> setPortPower(int port, bool state) override {
+			(void)port;
+			(void)state;
+			std::cout << "ehci: setPortPower is unimplemented for EHCI root hubs!" << std::endl;
+			co_return frg::success;
+		}
+
+		// TODO(qookie): Implement this
+		async::result<frg::expected<proto::UsbError, bool>> getPortPower(int port) override {
+			(void)port;
+			std::cout << "ehci: getPortPower is unimplemented for EHCI root hubs!" << std::endl;
+			co_return true;
+		}
+
+		async::detached run() override { co_return; }
+
 		Port &port(int portnr) {
 			assert(portnr < _controller->_numPorts);
 			return *_ports[portnr];

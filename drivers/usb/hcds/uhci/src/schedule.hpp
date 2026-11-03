@@ -35,6 +35,23 @@ struct Controller final : std::enable_shared_from_this<Controller>, proto::BaseC
 		async::result<frg::expected<proto::UsbError, void>> issueReset(int port) override;
 		async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> querySpeed(int port) override;
 
+		// TODO(qookie): Implement this
+		async::result<frg::expected<proto::UsbError, void>> setPortPower(int port, bool state) override {
+			(void)port;
+			(void)state;
+			std::cout << "uhci: setPortPower is unimplemented for UHCI root hubs!" << std::endl;
+			co_return frg::success;
+		}
+
+		// TODO(qookie): Implement this
+		async::result<frg::expected<proto::UsbError, bool>> getPortPower(int port) override {
+			(void)port;
+			std::cout << "uhci: getPortPower is unimplemented for UHCI root hubs!" << std::endl;
+			co_return true;
+		}
+
+		async::detached run() override { co_return; }
+
 		mbus_ng::EntityId mbusEntityId() override {
 			return _controller->_entity.id();
 		}

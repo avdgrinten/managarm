@@ -579,19 +579,6 @@ async::result<void> Port::setPower(bool on) {
 }
 
 async::detached Port::initPort() {
-	// Power good delay of Linux' xHCI root hubs (bPwrOn2PwrGood: 20 ms for USB 2, 100 ms for USB 3).
-	uint64_t powerGoodDelay = _proto->major == 3 ? 100'000'000 : 20'000'000;
-
-	if (powerCyclePorts) {
-		std::println("xhci: Power cycling port during initialization");
-		co_await setPower(false);
-		// Like Linux, keep the port off for twice the power good delay.
-		co_await helix_ng::sleepFor(2 * powerGoodDelay);
-	}
-
-	co_await setPower(true);
-	co_await helix_ng::sleepFor(powerGoodDelay);
-
 	// Wait for something to connect to the port
 	co_await awaitFlag(portsc::connectStatus, true);
 
@@ -709,6 +696,16 @@ async::result<frg::expected<proto::UsbError, void>> RootHub::issueReset(int port
 async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> RootHub::querySpeed(int port) {
 	co_return FRG_CO_TRY(co_await _ports[port - 1]->querySpeed());
 }
+
+async::result<frg::expected<proto::UsbError, void>> RootHub::setPortPower(int port, bool state) {
+	co_await _ports[port - 1]->setPower(state);
+	co_return frg::success;
+}
+
+async::result<frg::expected<proto::UsbError, bool>> RootHub::getPortPower(int port) {
+	co_return _ports[port - 1]->isPowered();
+}
+
 
 // ------------------------------------------------------------------------
 // Device
@@ -994,7 +991,7 @@ Device::configureAsHub(std::shared_ptr<proto::Hub> hub) {
 
 	if (speed() == proto::DeviceSpeed::highSpeed)
 		inputCtx.get(inputCtxSlot) |= SlotFields::ttThinkTime(
-				hub->getCharacteristics().unwrap().ttThinkTime / 8 - 1);
+				hub->getCharacteristics().ttThinkTime / 8 - 1);
 
 	FRG_CO_TRY(co_await _controller->evaluateContext(_slotId, inputCtx));
 
