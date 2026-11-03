@@ -191,37 +191,16 @@ struct MemoryReclaimer {
 		}
 
 		rotationTurnaround_.fetch_add(1, std::memory_order_relaxed);
-		if (shouldRotate_())
-			rotationEvent_.raise();
+		// The new page may allow the reclaimer to meet a target that it paused on.
+		bool rearm = paused_.load(std::memory_order_relaxed)
+				&& paused_.exchange(false, std::memory_order_relaxed);
+		if (rearm || shouldRotate_())
+			wakeEvent_.raise();
 	}
 
 	void removePage(CachePage *page) {
 		auto *bundle = page->bundle;
-		auto irqLock = frg::guard(&irqMutex());
-		auto lock = frg::guard(&bundle->reclaimMutex_);
-
-		assert(page->flags & CachePage::reclaimRegistered);
-
-		if(page->flags & CachePage::reclaimPosted) {
-			if(!(page->flags & CachePage::reclaimInflight)) {
-				auto it = bundle->_reclaimList.iterator_to(page);
-				bundle->_reclaimList.erase(it);
-			}
-
-			page->flags &= ~(CachePage::reclaimPosted | CachePage::reclaimInflight);
-			numPosted_.fetch_sub(1, std::memory_order_relaxed);
-		}else{
-			auto g = generationOf_(bundle, page);
-			auto it = bundle->genLists_[g].iterator_to(page);
-			bundle->genLists_[g].erase(it);
-			bundle->genSizes_[g]--;
-			numInGenerations_.fetch_sub(1, std::memory_order_relaxed);
-		}
-		page->flags &= ~CachePage::reclaimRegistered;
-	}
-
-	void bumpPage(CachePage *page) {
-		auto *bundle = page->bundle;
+		bool averted = false;
 		{
 			auto irqLock = frg::guard(&irqMutex());
 			auto lock = frg::guard(&bundle->reclaimMutex_);
@@ -229,17 +208,44 @@ struct MemoryReclaimer {
 			assert(page->flags & CachePage::reclaimRegistered);
 
 			if(page->flags & CachePage::reclaimPosted) {
-				if(!(page->flags & CachePage::reclaimInflight)) {
-					auto it = bundle->_reclaimList.iterator_to(page);
-					bundle->_reclaimList.erase(it);
-				}
+				auto it = bundle->_reclaimList.iterator_to(page);
+				bundle->_reclaimList.erase(it);
+				page->flags &= ~CachePage::reclaimPosted;
+				averted = true;
+			}else{
+				auto g = generationOf_(bundle, page);
+				auto it = bundle->genLists_[g].iterator_to(page);
+				bundle->genLists_[g].erase(it);
+				bundle->genSizes_[g]--;
+				numInGenerations_.fetch_sub(1, std::memory_order_relaxed);
+			}
+			page->flags &= ~CachePage::reclaimRegistered;
+		}
 
-				page->flags &= ~(CachePage::reclaimPosted | CachePage::reclaimInflight);
+		// The bundle did not take the page via takePosted() yet.
+		if(averted)
+			resolveOutstanding_(1);
+	}
+
+	void bumpPage(CachePage *page) {
+		auto *bundle = page->bundle;
+		bool averted = false;
+		{
+			auto irqLock = frg::guard(&irqMutex());
+			auto lock = frg::guard(&bundle->reclaimMutex_);
+
+			assert(page->flags & CachePage::reclaimRegistered);
+
+			if(page->flags & CachePage::reclaimPosted) {
+				auto it = bundle->_reclaimList.iterator_to(page);
+				bundle->_reclaimList.erase(it);
+
+				page->flags &= ~CachePage::reclaimPosted;
 				page->generation = bundle->newestGen_;
 				bundle->genLists_[bundle->newestGen_].push_back(page);
 				bundle->genSizes_[bundle->newestGen_]++;
-				numPosted_.fetch_sub(1, std::memory_order_relaxed);
 				numInGenerations_.fetch_add(1, std::memory_order_relaxed);
+				averted = true;
 			}else if(page->generation != bundle->newestGen_) {
 				auto g = generationOf_(bundle, page);
 				auto it = bundle->genLists_[g].iterator_to(page);
@@ -251,9 +257,18 @@ struct MemoryReclaimer {
 			}
 		}
 
+		// The bundle did not take the page via takePosted() yet.
+		if(averted)
+			resolveOutstanding_(1);
+
 		rotationTurnaround_.fetch_add(1, std::memory_order_relaxed);
 		if (shouldRotate_())
-			rotationEvent_.raise();
+			wakeEvent_.raise();
+	}
+
+	void handlePressure() {
+		pressurePending_.store(true, std::memory_order_relaxed);
+		wakeEvent_.raise();
 	}
 
 	auto awaitReclaim(CacheBundle *bundle, async::cancellation_token ct = {}) {
@@ -269,7 +284,10 @@ struct MemoryReclaimer {
 		);
 	}
 
-	void reclaimPages(CacheBundle *bundle, CachePagesList &out) {
+	// Takes the pages that were posted to the bundle.
+	// The pages are no longer registered but they stay outstanding until the bundle reports them to completeReclaim().
+	void takePosted(CacheBundle *bundle, CachePagesList &out) {
+		assert(out.empty());
 		auto irqLock = frg::guard(&irqMutex());
 		auto lock = frg::guard(&bundle->reclaimMutex_);
 
@@ -278,10 +296,16 @@ struct MemoryReclaimer {
 		for(auto page : out) {
 			assert(page->flags & CachePage::reclaimRegistered);
 			assert(page->flags & CachePage::reclaimPosted);
-			assert(!(page->flags & CachePage::reclaimInflight));
 
-			page->flags |= CachePage::reclaimInflight;
+			page->flags &= ~(CachePage::reclaimRegistered | CachePage::reclaimPosted);
 		}
+	}
+
+	// Reports the outcome for pages that the bundle took via takePosted().
+	// Averted pages are those that the bundle did not free (e.g., since they are in use or dirty).
+	void completeReclaim(size_t numEvicted, size_t numAverted) {
+		numEvicted_.fetch_add(numEvicted, std::memory_order_relaxed);
+		resolveOutstanding_(numEvicted + numAverted);
 	}
 
 	void runReclaimFiber() {
@@ -298,15 +322,28 @@ struct MemoryReclaimer {
 							<< " KiB in use" << frg::endlog;
 				}
 
+				// The target may have changed since we paused.
+				// Consuming the flag before reading the target ensures that later changes wake us.
+				if(pressurePending_.exchange(false, std::memory_order_relaxed))
+					paused_.store(false, std::memory_order_relaxed);
+
+				// Whether to wait until addPage(), handlePressure() or the retry timer re-arms us.
+				bool waitForRearm = false;
 				if(tortureUncaching) {
 					evictPages_(~size_t{0});
+				}else if(paused_.load(std::memory_order_relaxed)) {
+					waitForRearm = true;
 				}else if(physicalAllocator->pressureShortfall()) {
-					if(!reclaimShortfall_()) {
-						// Retrying immediately would not find more pages either.
+					auto result = reclaimShortfall_();
+					if(result == ReclaimResult::exhausted) {
 						if(logReclaim)
-							infoLogger() << "thor: Reclamation makes no progress" << frg::endlog;
-						KernelFiber::asyncBlockCurrent(
-							generalTimerEngine()->sleepFor(stalledReclaimBackoffNs));
+							infoLogger() << "thor: Reclamation is exhausted" << frg::endlog;
+						waitForRearm = true;
+					}else if(result == ReclaimResult::contended) {
+						if(logReclaim)
+							infoLogger() << "thor: Reclamation is contended" << frg::endlog;
+						armRetry_();
+						waitForRearm = true;
 					}
 				}
 
@@ -319,23 +356,18 @@ struct MemoryReclaimer {
 					continue;
 				}
 
-				// awaitPressure() is woken from allocation paths. We do not race a timer here
-				// since cancelling it would then take the timer engine's lock in those paths.
-				KernelFiber::asyncBlockCurrent(
-					async::race_and_cancel(
-						[&] (async::cancellation_token ct) {
-							return async::transform(
-								rotationEvent_.async_wait_if([&] -> bool {
-									return !shouldRotate_();
-								}, ct),
-								[] (auto) {}
-							);
-						},
-						[&] (async::cancellation_token ct) {
-							return physicalAllocator->awaitPressure(ct);
-						}
-					)
-				);
+				// handleReclaimPressure() raises wakeEvent_ from allocation paths.
+				// We only wait for this event since racing it against other senders would run their cancellation there.
+				KernelFiber::asyncBlockCurrent(async::transform(
+					wakeEvent_.async_wait_if([&] -> bool {
+						if(shouldRotate_() || pressurePending_.load(std::memory_order_relaxed))
+							return false;
+						if(waitForRearm)
+							return paused_.load(std::memory_order_relaxed);
+						return !physicalAllocator->pressureShortfall();
+					}),
+					[] (auto) {}
+				));
 			}
 		});
 	}
@@ -350,58 +382,149 @@ private:
 	// Bounds over-eviction, since the shortfall is re-measured between batches.
 	// Also ensure that evictPages_() does not do too much work without dropping locks.
 	static constexpr size_t maxEvictBatch = 2048;
-	// Time that the bundles get to evict posted pages before the next round.
-	static constexpr uint64_t evictionPollNs = 10'000'000;
-	// Rounds without new or evicted posted pages after which reclaimShortfall_() gives up.
-	static constexpr unsigned int maxPollsForEviction = 20;
-	// Time that the reclaimer waits after reclaimShortfall_() gave up.
-	static constexpr uint64_t stalledReclaimBackoffNs = 1'000'000'000;
+	// Rounds without evicted pages after which reclaimShortfall_() pauses.
+	static constexpr unsigned int maxRoundsWithoutProgress = 4;
+	// Bounds of the delay after which the retry timer re-arms a contended reclaimer.
+	static constexpr uint64_t minRetryDelayNs = 10'000'000;
+	static constexpr uint64_t maxRetryDelayNs = 1'000'000'000;
 
-	// Posts pages until pressureShortfall() drops to zero, taking the pages that are already posted
-	// (but not evicted yet) into account.
-	// Returns false if no progress could be made.
-	bool reclaimShortfall_() {
-		unsigned int numPolls = 0;
-		auto lastPosted = numPosted_.load(std::memory_order_relaxed);
+	enum class ReclaimResult {
+		// The target is met.
+		met,
+		// There are no pages that could be evicted. Only addPage() and handlePressure() can change that.
+		exhausted,
+		// Rounds do not evict pages although there are candidates: the bundles averted all
+		// evictions (for example, since the pages were looked up while the eviction was pending),
+		// or evictPages_() repeatedly found no pages that the following count did find.
+		// Pages that were registered before we paused do not re-arm us, the retry timer does.
+		contended,
+	};
+
+	// Posts pages until pressureShortfall() drops to zero.
+	// Each round waits until the bundles have evicted or averted all posted pages.
+	// Sets paused_ unless the target is met.
+	ReclaimResult reclaimShortfall_() {
+		unsigned int roundsWithoutProgress = 0;
+		unsigned int emptyPosts = 0;
 		while(true) {
 			auto shortfall = physicalAllocator->pressureShortfall();
-			if(!shortfall)
-				return true;
-
-			// Posted pages that the bundles took during the last sleep count as progress.
-			auto posted = numPosted_.load(std::memory_order_relaxed);
-			bool consumed = posted < lastPosted;
-			size_t newlyPosted = 0;
-			if(shortfall > posted)
-				newlyPosted = evictPages_(frg::min(shortfall - posted, maxEvictBatch));
-			if(logReclaim && newlyPosted)
-				infoLogger() << "thor: Reclamation posts " << newlyPosted << " pages" << frg::endlog;
-
-			if(newlyPosted || consumed) {
-				numPolls = 0;
-			}else if(++numPolls > maxPollsForEviction) {
-				return false;
+			if(!shortfall) {
+				// The next contended episode starts with the shortest retry delay again.
+				retryDelayNs_ = minRetryDelayNs;
+				return ReclaimResult::met;
 			}
-			lastPosted = numPosted_.load(std::memory_order_relaxed);
 
-			// The bundles evict the posted pages asynchronously.
-			KernelFiber::asyncBlockCurrent(generalTimerEngine()->sleepFor(evictionPollNs));
+			auto evictedBefore = numEvicted_.load(std::memory_order_relaxed);
+			auto posted = evictPages_(frg::min(shortfall, maxEvictBatch));
+			if(!posted) {
+				// Pages may have been registered after evictPages_() looked at their bundles.
+				pause_();
+				if(!countCandidates_())
+					return ReclaimResult::exhausted;
+				paused_.store(false, std::memory_order_relaxed);
+				// The new pages were not tried yet, so this is not contention.
+				// Still, bound the number of retries that do not wait for the bundles.
+				if(++emptyPosts >= maxRoundsWithoutProgress) {
+					pause_();
+					return ReclaimResult::contended;
+				}
+				continue;
+			}
+			emptyPosts = 0;
+			if(logReclaim)
+				infoLogger() << "thor: Reclamation posts " << posted << " pages" << frg::endlog;
+
+			while(numOutstanding_.load(std::memory_order_acquire)) {
+				KernelFiber::asyncBlockCurrent(async::transform(
+					feedbackEvent_.async_wait_if([this] -> bool {
+						return numOutstanding_.load(std::memory_order_acquire);
+					}),
+					[] (auto) {}
+				));
+			}
+
+			// Pages that the bundles averted (e.g., since they are in use) do not count as progress.
+			if(numEvicted_.load(std::memory_order_relaxed) != evictedBefore) {
+				roundsWithoutProgress = 0;
+				retryDelayNs_ = minRetryDelayNs;
+			}else if(++roundsWithoutProgress >= maxRoundsWithoutProgress) {
+				pause_();
+				return ReclaimResult::contended;
+			}
 		}
 	}
 
-	// Posts up to n pages to the bundles' reclaim lists, starting at the oldest generation.
-	// Each bundle contributes in proportion to its share of that generation.
-	// Returns the number of posted pages.
-	size_t evictPages_(size_t n) {
-		size_t posted = 0;
-		unsigned int emptyRotations = 0;
-		while(posted < n && numInGenerations_.load(std::memory_order_relaxed)) {
-			unsigned int oldest;
+	void pause_() {
+		// Take mutex_ such that bundles that registerBundle() publishes later observe paused_ in addPage().
+		// Bundles that were published earlier are visited by a subsequent countCandidates_()
+		// before reclaimShortfall_() reports exhaustion. Taking reclaimMutex_ in countCandidates_()
+		// is enough to ensure that they observe paused_ in addPage() calls that are ordered after countCandidates_().
+		auto irqLock = frg::guard(&irqMutex());
+		auto lock = frg::guard(&mutex_);
+		paused_.store(true, std::memory_order_relaxed);
+	}
+
+	// Number of pages that evictPages_() can post.
+	size_t countCandidates_() {
+		size_t n = 0;
+		auto bundle = pinNextBundle_(nullptr);
+		while(bundle) {
 			{
 				auto irqLock = frg::guard(&irqMutex());
-				auto lock = frg::guard(&mutex_);
-				oldest = (newestGen_ + 1) % CacheBundle::numGenerations;
+				auto lock = frg::guard(&bundle->reclaimMutex_);
+				for(unsigned int g = 0; g < CacheBundle::numGenerations; g++)
+					n += bundle->genSizes_[g];
 			}
+			bundle = pinNextBundle_(bundle.get());
+		}
+		return n;
+	}
+
+	// Arms the retry timer unless it is already armed.
+	// The delay doubles with every contended pause until a round evicts pages or the demand is met.
+	// Nothing cancels the timer: if something else re-arms us first, it causes one extra check.
+	// Limitation: if the delay is reset while a longer timer is pending, the next retry still
+	// waits for that timer (at most maxRetryDelayNs).
+	void armRetry_() {
+		if(retryArmed_.exchange(true, std::memory_order_acquire))
+			return;
+		// The previous operation has completed since its receiver cleared retryArmed_.
+		if(retryOp_.valid())
+			retryOp_.destruct();
+		retryOp_.construct_with([&] {
+			return async::execution::connect(
+				generalTimerEngine()->sleepFor(retryDelayNs_), RetryReceiver{this});
+		});
+		async::execution::start(*retryOp_);
+		retryDelayNs_ = frg::min(2 * retryDelayNs_, maxRetryDelayNs);
+	}
+
+	struct RetryReceiver {
+		void set_value(bool) {
+			// Clearing retryArmed_ allows armRetry_() to destruct the operation that contains us.
+			auto reclaimer = self;
+			reclaimer->retryArmed_.store(false, std::memory_order_release);
+			reclaimer->handlePressure();
+		}
+
+		MemoryReclaimer *self;
+	};
+
+	// Posts up to n pages to the bundles' reclaim lists, starting at the oldest generation.
+	// Each bundle contributes in proportion to its share of a generation.
+	// Returns the number of posted pages.
+	size_t evictPages_(size_t n) {
+		// Rotations only happen on this fiber, so the generations do not move while we post.
+		unsigned int newest;
+		{
+			auto irqLock = frg::guard(&irqMutex());
+			auto lock = frg::guard(&mutex_);
+			newest = newestGen_;
+		}
+
+		size_t posted = 0;
+		for(unsigned int k = 1; k <= CacheBundle::numGenerations && posted < n; k++) {
+			auto g = (newest + k) % CacheBundle::numGenerations;
 
 			size_t total = 0;
 			auto bundle = pinNextBundle_(nullptr);
@@ -409,23 +532,16 @@ private:
 				{
 					auto irqLock = frg::guard(&irqMutex());
 					auto lock = frg::guard(&bundle->reclaimMutex_);
-					total += bundle->genSizes_[oldest];
+					total += bundle->genSizes_[g];
 				}
 				bundle = pinNextBundle_(bundle.get());
 			}
-
-			if(!total) {
-				// Start a new generation once the oldest one is empty.
-				// The counters are only approximate, so do not rotate forever.
-				if(++emptyRotations > CacheBundle::numGenerations)
-					break;
-				rotateGenerations_();
+			if(!total)
 				continue;
-			}
-			emptyRotations = 0;
 
 			auto wanted = frg::min(n - posted, total);
 			size_t seen = 0;
+			size_t postedInGen = 0;
 			bundle = pinNextBundle_(nullptr);
 			while(bundle) {
 				size_t share = 0;
@@ -433,37 +549,64 @@ private:
 					auto irqLock = frg::guard(&irqMutex());
 					auto lock = frg::guard(&bundle->reclaimMutex_);
 
-					auto size = bundle->genSizes_[oldest];
+					auto size = bundle->genSizes_[g];
 					// Splitting by cumulative size keeps the sum of the shares at or below wanted.
-					// Sizes only shrink after total was computed, so seen does not exceed total.
-					auto before = wanted * seen / total;
+					// The newest generation and the bundle list can grow after total was computed,
+					// so seen may exceed total.
+					auto before = wanted * frg::min(seen, total) / total;
 					seen += size;
-					share = wanted * seen / total - before;
-					assert(share <= size);
-
-					auto &genList = bundle->genLists_[oldest];
-					for(size_t i = 0; i < share; i++) {
-						auto page = genList.pop_front();
-						assert(page->flags & CachePage::reclaimRegistered);
-						assert(!(page->flags & CachePage::reclaimPosted));
-						page->flags |= CachePage::reclaimPosted;
-						bundle->_reclaimList.push_back(page);
-					}
-					bundle->genSizes_[oldest] -= share;
-					numInGenerations_.fetch_sub(share, std::memory_order_relaxed);
-					numPosted_.fetch_add(share, std::memory_order_relaxed);
+					share = wanted * frg::min(seen, total) / total - before;
+					share = postLocked_(bundle.get(), g, frg::min(share, wanted - postedInGen));
 				}
 
 				if(share) {
-					posted += share;
+					postedInGen += share;
 					bundle->_reclaimEvent.raise();
 				}
 
 				// Drops the previous pin outside of the RCU section.
 				bundle = pinNextBundle_(bundle.get());
 			}
+
+			// If the generation shrank after total was computed, the shares can round down to zero.
+			// Take the remainder from the bundles that still have pages in it.
+			bundle = postedInGen < wanted ? pinNextBundle_(nullptr) : nullptr;
+			while(bundle && postedInGen < wanted) {
+				size_t extra;
+				{
+					auto irqLock = frg::guard(&irqMutex());
+					auto lock = frg::guard(&bundle->reclaimMutex_);
+					extra = postLocked_(bundle.get(), g, wanted - postedInGen);
+				}
+
+				if(extra) {
+					postedInGen += extra;
+					bundle->_reclaimEvent.raise();
+				}
+
+				bundle = pinNextBundle_(bundle.get());
+			}
+			posted += postedInGen;
 		}
 		return posted;
+	}
+
+	// Moves up to n pages of generation g to the bundle's reclaim list.
+	// Returns the number of moved pages. Callers must hold the bundle's reclaimMutex_.
+	size_t postLocked_(CacheBundle *bundle, unsigned int g, size_t n) {
+		n = frg::min(n, bundle->genSizes_[g]);
+		auto &genList = bundle->genLists_[g];
+		for(size_t i = 0; i < n; i++) {
+			auto page = genList.pop_front();
+			assert(page->flags & CachePage::reclaimRegistered);
+			assert(!(page->flags & CachePage::reclaimPosted));
+			page->flags |= CachePage::reclaimPosted;
+			bundle->_reclaimList.push_back(page);
+		}
+		bundle->genSizes_[g] -= n;
+		numInGenerations_.fetch_sub(n, std::memory_order_relaxed);
+		numOutstanding_.fetch_add(n, std::memory_order_relaxed);
+		return n;
 	}
 
 	// Starts a new generation in all bundles. This does not evict pages:
@@ -531,6 +674,13 @@ private:
 		return {};
 	}
 
+	void resolveOutstanding_(size_t n) {
+		if(!n)
+			return;
+		if(numOutstanding_.fetch_sub(n, std::memory_order_acq_rel) == n)
+			feedbackEvent_.raise();
+	}
+
 	// Generation index of a page. Callers must hold the bundle's reclaimMutex_.
 	unsigned int generationOf_(CacheBundle *bundle, CachePage *page) {
 		if(page->generation == oldestGeneration)
@@ -552,8 +702,24 @@ private:
 
 	// Number of pages in the generation lists of all bundles.
 	std::atomic<size_t> numInGenerations_{0};
-	// Number of pages that were posted to the bundles' reclaim lists but not removed yet.
-	std::atomic<size_t> numPosted_{0};
+	// Number of posted pages that were neither evicted nor averted yet.
+	std::atomic<size_t> numOutstanding_{0};
+	// Number of posted pages that the bundles evicted. Only grows.
+	std::atomic<size_t> numEvicted_{0};
+	// Raised when numOutstanding_ drops to zero.
+	async::recurring_event feedbackEvent_;
+	// Set by handlePressure(), consumed by the reclaimer fiber.
+	std::atomic<bool> pressurePending_{false};
+	// Set while reclaimShortfall_() cannot meet the target (see pause_() and ReclaimResult).
+	// Cleared by addPage() and when pressurePending_ is consumed.
+	std::atomic<bool> paused_{false};
+
+	// See armRetry_(). retryDelayNs_ is only accessed by the reclaimer fiber.
+	frg::manual_box<
+		async::execution::operation_t<PrecisionTimerEngine::SleepSender, RetryReceiver>
+	> retryOp_;
+	std::atomic<bool> retryArmed_{false};
+	uint64_t retryDelayNs_ = minRetryDelayNs;
 
 	// Protected against modification by mutex_.
 	frg::intrusive_rcu_list<
@@ -568,10 +734,14 @@ private:
 	// Number of pages bumped since the last generation rotation.
 	std::atomic<size_t> rotationTurnaround_{0};
 
-	async::recurring_event rotationEvent_;
+	// Raised when shouldRotate_() becomes true, when addPage() clears paused_
+	// and by handleReclaimPressure().
+	async::recurring_event wakeEvent_;
 };
 
 static frg::manual_box<MemoryReclaimer> globalReclaimer;
+// Allocations can apply pressure before globalReclaimer is initialized.
+static std::atomic<bool> globalReclaimerReady{false};
 
 static initgraph::Task initReclaim{&globalInitEngine, "generic.init-reclaim",
 	initgraph::Requires{getFibersAvailableStage()},
@@ -584,9 +754,16 @@ static initgraph::Task initReclaim{&globalInitEngine, "generic.init-reclaim",
 			infoLogger() << "thor: torture-uncaching is enabled" << frg::endlog;
 
 		globalReclaimer.initialize();
+		globalReclaimerReady.store(true, std::memory_order_release);
 		globalReclaimer->runReclaimFiber();
 	}
 };
+
+void handleReclaimPressure() {
+	if(!globalReclaimerReady.load(std::memory_order_acquire))
+		return;
+	globalReclaimer->handlePressure();
+}
 
 // --------------------------------------------------------
 // MemoryView.
@@ -1457,7 +1634,7 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 			if(_stopLoops)
 				break;
 
-			globalReclaimer->reclaimPages(this, batch);
+			globalReclaimer->takePosted(this, batch);
 
 			for(auto cachePage : batch) {
 				auto *page = frg::container_of(cachePage, &ManagedPage::cachePage);
@@ -1466,7 +1643,6 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 				assert(page->transactionState == TxState::inReclaimer);
 				assert(!page->lockCount);
 				page->transactionState = TxState::performReclaim;
-				globalReclaimer->removePage(cachePage);
 			}
 
 			discardBatch.splice(discardBatch.end(), _discardList);
@@ -1492,6 +1668,8 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 		bool anyExpedite = false;
 		bool anyDiscardQueued = false;
 		size_t sizeFreed = 0;
+		size_t numEvicted = 0;
+		size_t numAverted = 0;
 		MonitorPendingList pendingMonitors;
 		while(!batch.empty()) {
 			PhysicalAddr physical;
@@ -1518,6 +1696,7 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 						page->transactionState = TxState::none;
 						_disposeDiscarded(page, anyDiscardQueued);
 					}
+					numAverted++;
 					continue;
 				}
 
@@ -1533,6 +1712,7 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 						globalReclaimer->addPage(&page->cachePage);
 						page->transactionState = TxState::inReclaimer;
 					}
+					numAverted++;
 					continue;
 				}
 				assert(page->transactionState == TxState::performReclaim);
@@ -1549,7 +1729,9 @@ coroutine<void> ManagedSpace::_runReclaimLoop() {
 			globalPfnDb().erase(physical);
 			deallocateAndUncharge(hierarchy.get(), physical, kPageSize, PhysicalKind::evictable);
 			sizeFreed += kPageSize;
+			numEvicted++;
 		}
+		globalReclaimer->completeReclaim(numEvicted, numAverted);
 
 		while(!discardBatch.empty()) {
 			PhysicalAddr physical;
@@ -1638,8 +1820,8 @@ coroutine<void> ManagedSpace::_runDrainLoop() {
 				deadline = _writebackDeadline;
 			}
 			// Skip the deadline under memory pressure such that dirty pages become reclaimable immediately.
-			// TODO: Pressure is only sampled before we sleep. Racing the sleep against awaitPressure()
-			//       would cancel the timer from allocation paths, which wake that wait.
+			// TODO: Pressure is only sampled before we sleep. The reclaimer could expedite the writeback
+			//       instead, since it is woken by handleReclaimPressure().
 			if(tortureUncaching || physicalAllocator->pressureShortfall())
 				break;
 			if(!deadline || getClockNanos() >= deadline)
