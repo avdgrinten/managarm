@@ -356,7 +356,7 @@ void Controller::processEvent(Event ev) {
 			}
 
 			if (_ports[ev.portId - 1])
-				_ports[ev.portId - 1]->_doorbell.raise();
+				_ports[ev.portId - 1]->updateStatus();
 			break;
 
 		default:
@@ -517,42 +517,8 @@ void Interrupter::_clearPending() {
 // Port
 // ------------------------------------------------------------------------
 
-Port::Port(int id, arch::mem_space space, Controller *controller, SupportedProtocol *proto)
-: _id{id}, _controller{controller}, _proto{proto}, _space{space} {
-}
-
-void Port::reset() {
-	std::println("{} Resetting port {}", _controller, _id);
-	_space.store(port::portsc, portsc::portPower(true) | portsc::portReset(true));
-}
-
-void Port::disable() {
-	_space.store(port::portsc, portsc::portPower(true) | portsc::portEnable(true));
-}
-
-void Port::resetChangeBits() {
-	_space.store(port::portsc, portsc::portPower(true)
-			| portsc::connectStatusChange(true)
-			| portsc::portResetChange(true)
-			| portsc::portEnableChange(true)
-			| portsc::warmPortResetChange(true)
-			| portsc::overCurrentChange(true)
-			| portsc::portLinkStatusChange(true)
-			| portsc::portConfigErrorChange(true));
-}
-
-bool Port::isConnected() {
-	auto portsc = _space.load(port::portsc);
-	return portsc & portsc::connectStatus;
-}
-
-bool Port::isPowered() {
-	auto portsc = _space.load(port::portsc);
-	return portsc & portsc::portPower;
-}
-
-bool Port::isEnabled() {
-	return _space.load(port::portsc) & portsc::portEnable;
+Port::Port(int id, arch::mem_space space, Controller *controller)
+: _id{id}, _controller{controller}, _space{space} {
 }
 
 uint8_t Port::getLinkStatus() {
@@ -563,10 +529,9 @@ uint8_t Port::getSpeed() {
 	return _space.load(port::portsc) & portsc::portSpeed;
 }
 
-void Port::transitionToLinkStatus(uint8_t status) {
-	_space.store(port::portsc, portsc::portPower(true)
-			| portsc::portLinkStatus(status)
-			| portsc::portLinkStatusStrobe(true));
+bool Port::isPowered() {
+	auto portsc = _space.load(port::portsc);
+	return portsc & portsc::portPower;
 }
 
 async::result<void> Port::setPower(bool on) {
@@ -576,15 +541,6 @@ async::result<void> Port::setPower(bool on) {
 	// and confirm that it is reached its target state before modifying it again".
 	while (isPowered() != on)
 		co_await helix_ng::sleepFor(1'000'000);
-}
-
-async::detached Port::initPort() {
-	// Wait for something to connect to the port
-	co_await awaitFlag(portsc::connectStatus, true);
-
-	// Notify the enumerator
-	_state |= proto::HubStatus::connect;
-	_pollEv.raise();
 }
 
 async::result<frg::expected<proto::UsbError, void>> Port::pollUntilState(uint32_t desired) {
@@ -599,34 +555,11 @@ async::result<frg::expected<proto::UsbError, void>> Port::pollUntilState(uint32_
 }
 
 async::result<frg::expected<proto::UsbError, void>> Port::issueReset() {
-	// We know something is connected if we're here (CCS=1)
+	// Preemptively clear enable status bit to avoid racing `observationCycle_()`.
+	_state &= ~proto::HubStatus::enable;
 
-	// Reset the port only for USB 2 devices.
-	// "A USB3 protocol port attempts to automatically advance to
-	//  the Enabled state as part of the attach process."
-	// "A USB2 protocol port requires software to reset the port
-	//  to advance the port to the Enabled state [...]"
-	if (_proto->major == 2) {
-		reset();
-	}
-
-	// Wait for the port to enable.
-	co_await awaitFlag(portsc::portEnable, true);
-
-	auto linkStatus = getLinkStatus();
-
-	std::println("{} Port {} link status is {:d}", _controller, _id, linkStatus);
-
-	if (linkStatus >= 1 && linkStatus <= 3) {
-		transitionToLinkStatus(0);
-	} else {
-		assert(linkStatus == 0); // U0
-	}
-
-	// Notify the enumerator.
-	_state |= proto::HubStatus::enable;
-	_pollEv.raise();
-
+	std::println("{} Resetting port {}", _controller, _id);
+	_space.store(port::portsc, portsc::portPower(true) | portsc::portReset(true));
 	co_return frg::success;
 }
 
@@ -663,6 +596,38 @@ async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> Port::querySpe
 	}
 }
 
+void Port::updateStatus() {
+	_state = 0;
+
+	// Include power bit in the mask to keep it enabled.
+	auto portsc = _space.load(port::portsc);
+	const auto rw1cBitMask =
+		static_cast<uint32_t>(
+			portsc::portPower(true)
+			| portsc::connectStatusChange(true)
+			| portsc::portResetChange(true)
+			| portsc::portEnableChange(true)
+			| portsc::warmPortResetChange(true)
+			| portsc::overCurrentChange(true)
+			| portsc::portLinkStatusChange(true)
+			| portsc::portConfigErrorChange(true));
+
+	std::println("{} Updating status of port {}, PORTSC = {:08x}",
+			_controller, _id, static_cast<uint32_t>(portsc));
+
+	if (portsc & portsc::connectStatus)
+		_state |= proto::HubStatus::connect;
+	if (portsc & portsc::portReset)
+		_state |= proto::HubStatus::reset;
+	if (portsc & portsc::portEnable)
+		_state |= proto::HubStatus::enable;
+
+	// Clear all change bits in PORTSC
+	_space.store(port::portsc, portsc & arch::bit_mask{rw1cBitMask});
+
+	_pollEv.raise();
+}
+
 // ------------------------------------------------------------------------
 // RootHub
 // ------------------------------------------------------------------------
@@ -673,8 +638,9 @@ RootHub::RootHub(Controller *controller, SupportedProtocol &proto, arch::mem_spa
 		_ports.push_back(std::make_unique<Port>(
 					i + proto.compatiblePortStart,
 					port::spaceForIndex(portSpace, i),
-					controller, &proto));
-		_ports.back()->initPort();
+					controller));
+		// Kick initial status update without an event
+		_ports.back()->updateStatus();
 		_controller->addRootPort(_ports.back().get());
 	}
 }
@@ -1327,4 +1293,3 @@ int main() {
 	observeControllers();
 	async::run_forever(helix::currentDispatcher);
 }
-

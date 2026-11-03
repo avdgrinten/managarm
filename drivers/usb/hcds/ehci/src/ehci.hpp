@@ -156,6 +156,10 @@ struct Controller final : proto::BaseController, std::enable_shared_from_this<Co
 
 		async::detached run() override { co_return; }
 
+		proto::DeviceSpeed hubSpeed() override {
+			return proto::DeviceSpeed::highSpeed;
+		}
+
 		Port &port(int portnr) {
 			assert(portnr < _controller->_numPorts);
 			return *_ports[portnr];

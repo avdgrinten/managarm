@@ -52,6 +52,10 @@ struct Controller final : std::enable_shared_from_this<Controller>, proto::BaseC
 
 		async::detached run() override { co_return; }
 
+		proto::DeviceSpeed hubSpeed() override {
+			return proto::DeviceSpeed::fullSpeed;
+		}
+
 		mbus_ng::EntityId mbusEntityId() override {
 			return _controller->_entity.id();
 		}

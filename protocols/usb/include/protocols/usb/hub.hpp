@@ -51,11 +51,16 @@ public:
 	virtual HubCharacteristics getCharacteristics() {
 		return HubCharacteristics{
 			.ttThinkTime = 0,
-			.powerOnToPowerGood = state_->speed() == DeviceSpeed::superSpeed ? 100 : 20,
+			.powerOnToPowerGood = hubSpeed() == DeviceSpeed::superSpeed ? 100 : 20,
 		};
 	}
 
 	virtual async::detached run() = 0;
+
+	virtual DeviceSpeed hubSpeed() {
+		assert(state_ && "Root hub should override Hub::hubSpeed!");
+		return state_->speed();
+	}
 
 	std::shared_ptr<DeviceServerData> state() const {
 		return state_;

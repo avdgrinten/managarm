@@ -250,33 +250,11 @@ struct SupportedProtocol {
 };
 
 struct Port {
-	Port(int id, arch::mem_space space, Controller *controller, SupportedProtocol *port);
-	void reset();
-	void disable();
-	void resetChangeBits();
-	bool isConnected();
-	bool isEnabled();
+	Port(int id, arch::mem_space space, Controller *controller);
 	bool isPowered();
-	void transitionToLinkStatus(uint8_t status);
 	async::result<void> setPower(bool on);
-	async::detached initPort();
 
-	template <typename T>
-	async::result<void> awaitFlag(arch::field<uint32_t, T> field, T value) {
-		while (true) {
-			resetChangeBits();
-			if ((_space.load(port::portsc) & field) == value)
-				co_return;
-
-			async::cancellation_event ev;
-			helix::TimeoutCancellation tc{1'000'000'000, ev};
-
-			co_await _doorbell.async_wait(ev);
-			co_await tc.retire();
-		}
-	}
-
-	async::recurring_event _doorbell;
+	void updateStatus();
 
 	async::result<frg::expected<proto::UsbError, void>> pollUntilState(uint32_t desired);
 	async::result<frg::expected<proto::UsbError, void>> issueReset();
@@ -291,8 +269,6 @@ private:
 	uint8_t getSpeed();
 	int _id;
 	Controller *_controller;
-	std::shared_ptr<Device> _device;
-	SupportedProtocol *_proto;
 	arch::mem_space _space;
 
 	async::recurring_event _pollEv;
@@ -310,6 +286,10 @@ struct RootHub final : proto::Hub {
 	async::result<frg::expected<proto::UsbError, bool>> getPortPower(int port) override;
 
 	async::detached run() override { co_return; }
+
+	proto::DeviceSpeed hubSpeed() override {
+		return _proto->major == 3 ? proto::DeviceSpeed::superSpeed : proto::DeviceSpeed::highSpeed;
+	}
 
 	SupportedProtocol *protocol() {
 		return _proto;
