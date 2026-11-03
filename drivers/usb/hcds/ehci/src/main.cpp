@@ -290,8 +290,7 @@ void Controller::_checkPorts() {
 			if(!(sc & portsc::enableStatus)) {
 				std::cout << "ehci: Port " << i << " disabled due to error" << std::endl;
 
-				port.state.changes |= proto::HubStatus::enable;
-				port.state.status &= ~proto::HubStatus::enable;
+				port.state &= ~proto::HubStatus::enable;
 				port.pollEv.raise();
 			}else{
 				std::cout << "ehci: Spurious portsc::enableChange" << std::endl;
@@ -313,16 +312,14 @@ void Controller::_checkPorts() {
 					if(logDeviceEnumeration)
 						std::cout << "ehci: Connect on port " << i << std::endl;
 
-					port.state.changes |= proto::HubStatus::connect;
-					port.state.status |= proto::HubStatus::connect;
+					port.state |= proto::HubStatus::connect;
 					port.pollEv.raise();
 				}
 			}else{
 				if(logDeviceEnumeration)
 					std::cout << "ehci: Disconnect on port " << i << std::endl;
 
-				port.state.changes |= proto::HubStatus::connect;
-				port.state.status &= ~proto::HubStatus::connect;
+				port.state &= ~proto::HubStatus::connect;
 				port.pollEv.raise();
 			}
 		}
@@ -1010,8 +1007,7 @@ Controller::resetPort(int number) {
 		assert(!(sc & portsc::enableChange)); // See handleIrqs().
 		std::cout << "ehci: Port " << number << " was enabled." << std::endl;
 
-		port.state.changes |= proto::HubStatus::enable;
-		port.state.status |= proto::HubStatus::enable;
+		port.state |= proto::HubStatus::enable;
 		port.pollEv.raise();
 
 		co_return frg::success;
@@ -1104,8 +1100,10 @@ size_t Controller::RootHub::numPorts() {
 	return _ports.size();
 }
 
-async::result<proto::PortState> Controller::RootHub::pollState(int port) {
-	co_return co_await _ports[port - 1]->pollState();
+async::result<frg::expected<proto::UsbError, void>>
+Controller::RootHub::pollUntilState(int port, uint32_t desired) {
+	FRG_CO_TRY(co_await _ports[port - 1]->pollUntilState(desired));
+	co_return frg::success;
 }
 
 async::result<frg::expected<proto::UsbError, void>>

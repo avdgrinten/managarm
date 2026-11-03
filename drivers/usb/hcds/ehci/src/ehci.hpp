@@ -116,13 +116,18 @@ struct Controller final : proto::BaseController, std::enable_shared_from_this<Co
 	// ------------------------------------------------------------------------
 
 	struct Port {
-		async::result<proto::PortState> pollState() {
-			pollSeq = co_await pollEv.async_wait(pollSeq);
-			co_return state;
+		async::result<frg::expected<proto::UsbError, void>> pollUntilState(uint32_t desired) {
+			while (true) {
+				// TODO(qookie): Handle disconnect and errors.
+				if ((state & desired) == desired) {
+					co_return frg::success;
+				}
+
+				co_await pollEv.async_wait();
+			}
 		}
 
-		async::sequenced_event pollEv;
-		uint64_t pollSeq = 0;
+		async::recurring_event pollEv;
 		proto::PortState state{};
 	};
 
@@ -130,7 +135,7 @@ struct Controller final : proto::BaseController, std::enable_shared_from_this<Co
 		RootHub(Controller *controller);
 
 		size_t numPorts() override;
-		async::result<proto::PortState> pollState(int port) override;
+		async::result<frg::expected<proto::UsbError, void>> pollUntilState(int port, uint32_t desired) override;
 		async::result<frg::expected<proto::UsbError, void>> issueReset(int port) override;
 		async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> querySpeed(int port) override;
 

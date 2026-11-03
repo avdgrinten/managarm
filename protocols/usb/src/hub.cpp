@@ -28,12 +28,8 @@ async::result<void> Enumerator::observationCycle_(std::shared_ptr<Hub> hub, int 
 	std::unique_lock<async::mutex> enumerateLock;
 
 	// Wait until the device is connected.
-	while (true) {
-		auto s = co_await hub->pollState(port);
-
-		if (s.status & HubStatus::connect)
-			break;
-	}
+	// TODO(qookie): Deal with errors.
+	(void)(co_await hub->pollUntilState(port, HubStatus::connect));
 
 	co_await enumerateMutex_.async_lock();
 	enumerateLock = std::unique_lock<async::mutex>{enumerateMutex_, std::adopt_lock};
@@ -49,13 +45,8 @@ async::result<void> Enumerator::observationCycle_(std::shared_ptr<Hub> hub, int 
 	std::cout << "usb: Waiting for device to become enabled on port " << port << std::endl;
 
 	// Wait until the device is enabled.
-	while (true) {
-		auto s = co_await hub->pollState(port);
-
-		// TODO: Handle disconnect here.
-		if (s.status & HubStatus::enable)
-			break;
-	}
+	// TODO(qookie): Deal with errors.
+	(void)(co_await hub->pollUntilState(port, HubStatus::enable));
 
 	std::cout << "usb: Enumerating device on port " << port << std::endl;
 
@@ -78,13 +69,8 @@ async::result<void> Enumerator::observationCycle_(std::shared_ptr<Hub> hub, int 
 
 	enumerateLock.unlock();
 
-	// Wait until the device is disconnected.
-	while(true) {
-		auto s = co_await hub->pollState(port);
-
-		if(!(s.status & HubStatus::connect))
-			break;
-	}
+	// TODO(qookie): Wait until the device is disconnected.
+	co_await std::suspend_always{};
 }
 
 async::result<frg::expected<UsbError>>
@@ -208,7 +194,7 @@ private:
 
 public:
 	size_t numPorts() override;
-	async::result<PortState> pollState(int port) override;
+	async::result<frg::expected<UsbError, void>> pollUntilState(int port, uint32_t desired) override;
 	async::result<frg::expected<UsbError, void>> issueReset(int port) override;
 	async::result<frg::expected<UsbError, DeviceSpeed>> querySpeed(int port) override;
 
@@ -267,7 +253,7 @@ async::result<frg::expected<UsbError>> StandardHub::initialize() {
 	FRG_CO_TRY(co_await state()->transfer(ControlTransfer{kXferToHost,
 			getDescriptor, hubDescriptor.view_buffer()}));
 
-	state_.resize(hubDescriptor->numPorts, PortState{0, 0});
+	state_.resize(hubDescriptor->numPorts, PortState{0});
 
 	auto rawThinkTime = (hubDescriptor->hubCharacteristics >> 5) & 0b11;
 	characteristics_.ttThinkTime = 8 * (1 + rawThinkTime);
@@ -324,17 +310,16 @@ async::detached StandardHub::run_() {
 //			std::cout << "usb: Port " << port << " status: "
 //					<< result[0] << ", " << result[1] << std::endl;
 
-			state_[port - 1].status = 0;
+			state_[port - 1] = 0;
 			if(result[0] & PortBits::connect)
-				state_[port - 1].status |= HubStatus::connect;
+				state_[port - 1] |= HubStatus::connect;
 			if(result[0] & PortBits::enable)
-				state_[port - 1].status |= HubStatus::enable;
+				state_[port - 1] |= HubStatus::enable;
 			if(result[0] & PortBits::reset)
-				state_[port - 1].status |= HubStatus::reset;
+				state_[port - 1] |= HubStatus::reset;
 
 			// Inspect the status change bits and reset them.
 			if(result[1] & PortBits::connect) {
-				state_[port - 1].changes |= HubStatus::connect;
 				doorbell_.raise();
 
 				arch::dma_object<SetupPacket> clearReq{state()->setupPool()};
@@ -350,7 +335,6 @@ async::detached StandardHub::run_() {
 			}
 
 			if(result[1] & PortBits::enable) {
-				state_[port - 1].changes |= HubStatus::enable;
 				doorbell_.raise();
 
 				arch::dma_object<SetupPacket> clearReq{state()->setupPool()};
@@ -366,7 +350,6 @@ async::detached StandardHub::run_() {
 			}
 
 			if(result[1] & PortBits::reset) {
-				state_[port - 1].changes |= HubStatus::reset;
 				doorbell_.raise();
 
 				arch::dma_object<SetupPacket> clearReq{state()->setupPool()};
@@ -388,12 +371,12 @@ size_t StandardHub::numPorts() {
 	return state_.size();
 }
 
-async::result<PortState> StandardHub::pollState(int port) {
-	while(true) {
-		auto state = state_[port - 1];
-		if(state.changes) {
-			state_[port - 1].changes = 0;
-			co_return state;
+async::result<frg::expected<UsbError, void>> StandardHub::pollUntilState(int port, uint32_t desired) {
+	auto &state = state_[port - 1];
+	while (true) {
+		// TODO(qookie): Handle disconnect and errors.
+		if ((state & desired) == desired) {
+			co_return frg::success;
 		}
 
 		co_await doorbell_.async_wait();

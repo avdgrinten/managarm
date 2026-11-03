@@ -596,14 +596,19 @@ async::detached Port::initPort() {
 	co_await awaitFlag(portsc::connectStatus, true);
 
 	// Notify the enumerator
-	_state.changes |= proto::HubStatus::connect;
-	_state.status |= proto::HubStatus::connect;
+	_state |= proto::HubStatus::connect;
 	_pollEv.raise();
 }
 
-async::result<proto::PortState> Port::pollState() {
-	_pollSeq = co_await _pollEv.async_wait(_pollSeq);
-	co_return _state;
+async::result<frg::expected<proto::UsbError, void>> Port::pollUntilState(uint32_t desired) {
+	while (true) {
+		// TODO(qookie): Handle disconnect and errors.
+		if ((_state & desired) == desired) {
+			co_return frg::success;
+		}
+
+		co_await _pollEv.async_wait();
+	}
 }
 
 async::result<frg::expected<proto::UsbError, void>> Port::issueReset() {
@@ -632,8 +637,7 @@ async::result<frg::expected<proto::UsbError, void>> Port::issueReset() {
 	}
 
 	// Notify the enumerator.
-	_state.changes |= proto::HubStatus::enable;
-	_state.status |= proto::HubStatus::enable;
+	_state |= proto::HubStatus::enable;
 	_pollEv.raise();
 
 	co_return frg::success;
@@ -692,8 +696,9 @@ size_t RootHub::numPorts() {
 	return _proto->compatiblePortCount;
 }
 
-async::result<proto::PortState> RootHub::pollState(int port) {
-	co_return co_await _ports[port - 1]->pollState();
+async::result<frg::expected<proto::UsbError, void>> RootHub::pollUntilState(int port, uint32_t desired) {
+	FRG_CO_TRY(co_await _ports[port - 1]->pollUntilState(desired));
+	co_return frg::success;
 }
 
 async::result<frg::expected<proto::UsbError, void>> RootHub::issueReset(int port) {

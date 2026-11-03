@@ -24,10 +24,7 @@ namespace HubStatus {
 	static constexpr uint32_t reset = 0x04;
 }
 
-struct PortState {
-	uint32_t status;
-	uint32_t changes;
-};
+using PortState = uint32_t;
 
 struct HubCharacteristics {
 	int ttThinkTime; // In FS bit times
@@ -42,7 +39,9 @@ public:
 	: state_{state} { }
 
 	virtual size_t numPorts() = 0;
-	virtual async::result<PortState> pollState(int port) = 0;
+	// Wait for the given port to have the desired state flags set.
+	// Fails with an error when the device disconnects or enters an error state instead.
+	virtual async::result<frg::expected<UsbError, void>> pollUntilState(int port, uint32_t desired) = 0;
 	virtual async::result<frg::expected<UsbError, void>> issueReset(int port) = 0;
 	virtual async::result<frg::expected<UsbError, DeviceSpeed>> querySpeed(int port) = 0;
 

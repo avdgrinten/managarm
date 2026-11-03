@@ -348,19 +348,17 @@ void Controller::_updateFrame() {
 //					<< static_cast<uint16_t>(sc) << std::endl;
 
 			// Extract the status bits.
-			_portState[port].status = 0;
+			_portState[port] = 0;
 			if(sc & port_status_ctrl::connectStatus)
-				_portState[port].status |= proto::HubStatus::connect;
+				_portState[port] |= proto::HubStatus::connect;
 			if(sc & port_status_ctrl::enableStatus)
-				_portState[port].status |= proto::HubStatus::enable;
+				_portState[port] |= proto::HubStatus::enable;
 
 			// Extract the change bits.
 			if(sc & port_status_ctrl::connectChange) {
-				_portState[port].changes |= proto::HubStatus::connect;
 				_portDoorbell.raise();
 			}
 			if(sc & port_status_ctrl::enableChange) {
-				_portState[port].changes |= proto::HubStatus::enable;
 				_portDoorbell.raise();
 			}
 
@@ -390,12 +388,13 @@ size_t Controller::RootHub::numPorts() {
 	return 2;
 }
 
-async::result<proto::PortState> Controller::RootHub::pollState(int port) {
-	while(true) {
-		auto state = _controller->_portState[port - 1];
-		if(state.changes) {
-			_controller->_portState[port - 1].changes = 0;
-			co_return state;
+async::result<frg::expected<proto::UsbError, void>>
+Controller::RootHub::pollUntilState(int port, uint32_t desired) {
+	auto &state = _controller->_portState[port - 1];
+	while (true) {
+		// TODO(qookie): Handle disconnect and errors.
+		if ((state & desired) == desired) {
+			co_return frg::success;
 		}
 
 		co_await _controller->_portDoorbell.async_wait();
@@ -440,8 +439,7 @@ Controller::RootHub::issueReset(int port) {
 	}
 
 	// Similar to USB standard hubs we do not reset the enable-change bit.
-	_controller->_portState[port - 1].status |= proto::HubStatus::enable;
-	_controller->_portState[port - 1].changes |= proto::HubStatus::reset;
+	_controller->_portState[port - 1] |= proto::HubStatus::enable;
 	_controller->_portDoorbell.raise();
 
 	co_return frg::success;
