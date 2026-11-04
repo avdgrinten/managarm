@@ -10,6 +10,7 @@
 #include <core/clock.hpp>
 #include <core/mount.hpp>
 #include <frg/mutex.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include <helix/ipc.hpp>
 #include <helix/memory.hpp>
 #include <helix/passthrough-fd.hpp>
@@ -475,7 +476,7 @@ public:
 
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				file, &fileOperations, file->_cancelServe));
 	}
 
@@ -947,7 +948,7 @@ void DirectoryFile::serve(smarter::shared_ptr<DirectoryFile> file) {
 
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 
