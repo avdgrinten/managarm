@@ -185,25 +185,24 @@ HandleRequest::operator()(managarm::posix::SetAffinityRequest &&req,
 
 	logRequest(logRequests, self, "SET_AFFINITY");
 
-	auto handle = self->threadDescriptor().getHandle();
+	auto target = self;
 
 	if(self->pid() != req.pid()) {
 		// TODO: permission checking
-		auto target = Process::findProcess(req.pid());
+		target = Process::findProcess(req.pid());
 		if(!target) {
 			co_await sendErrorResponse<managarm::posix::SetAffinityResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 			co_return {};
 		}
-		handle = target->threadDescriptor().getHandle();
 	}
 
 	// Applications may pass masks that are larger than what thor accepts (e.g., sizeof(cpu_set_t)).
 	// Like Linux, ignore the bits beyond the last CPU instead of rejecting the oversized mask.
 	auto maskSize = std::min(req.mask().size(), getAffinityMaskSize());
 
-	HelError e = helSetAffinity(handle, req.mask().data(), maskSize);
+	HelError e = target->setAffinity(req.mask().data(), maskSize);
 
-	if(e == kHelErrIllegalArgs) {
+	if(e == kHelErrIllegalArgs || e == kHelErrThreadTerminated) {
 		co_await sendErrorResponse<managarm::posix::SetAffinityResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 		co_return {};
 	} else if(e != kHelErrNone) {
@@ -240,22 +239,21 @@ HandleRequest::operator()(managarm::posix::GetAffinityRequest &&req,
 
 	std::vector<uint8_t> affinity(req.size());
 
-	auto handle = self->threadDescriptor().getHandle();
+	auto target = self;
 
 	if(req.pid() && self->pid() != req.pid()) {
 		// TODO: permission checking
-		auto target = Process::findProcess(req.pid());
+		target = Process::findProcess(req.pid());
 		if(!target) {
 			co_await sendErrorResponse<managarm::posix::GetAffinityResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 			co_return {};
 		}
-		handle = target->threadDescriptor().getHandle();
 	}
 
 	size_t actual_size;
-	HelError e = helGetAffinity(handle, affinity.data(), req.size(), &actual_size);
+	HelError e = target->getAffinity(affinity.data(), req.size(), &actual_size);
 
-	if(e == kHelErrBufferTooSmall) {
+	if(e == kHelErrBufferTooSmall || e == kHelErrThreadTerminated) {
 		co_await sendErrorResponse<managarm::posix::GetAffinityResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 		co_return {};
 	} else if(e != kHelErrNone) {
@@ -299,9 +297,15 @@ HandleRequest::operator()(managarm::posix::GetPgidRequest &&req,
 		target = self->threadGroup()->shared_from_this();
 	}
 
+	auto pg = target->pgPointer();
+	if(!pg) {
+		co_await sendErrorResponse<managarm::posix::GetPgidResponse>(conversation, managarm::posix::Errors::NO_SUCH_RESOURCE);
+		co_return {};
+	}
+
 	managarm::posix::GetPgidResponse resp;
 	resp.set_error(managarm::posix::Errors::SUCCESS);
-	resp.set_pid(target->pgPointer()->getHull()->getPid());
+	resp.set_pid(pg->getHull()->getPid());
 
 	auto [send_resp] = co_await helix_ng::exchangeMsgs(
 			conversation,
@@ -322,71 +326,10 @@ HandleRequest::operator()(managarm::posix::SetPgidRequest &&req,
 
 	logRequest(logRequests, self, "SET_PGID");
 
-	std::shared_ptr<ThreadGroup> target;
-
-	if (req.pgid() < 0) {
-		// POSIX: reject negative `pgid` (or implementation-unsupported) values with EINVAL
-		co_await sendErrorResponse<managarm::posix::SetPgidResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
-		co_return {};
-	} else if (req.pid() > 0) {
-		target = ThreadGroup::findThreadGroup(req.pid());
-		if (!target) {
-			co_await sendErrorResponse<managarm::posix::SetPgidResponse>(conversation, managarm::posix::Errors::NO_SUCH_RESOURCE);
-			co_return {};
-		}
-
-		auto isSelf = req.pid() == self->pid();
-		auto isChild = (!isSelf && target->getParent() && target->getParent()->pid() == self->pid());
-
-		// POSIX: if `pid` is not the PID of the calling process or its children, ESRCH.
-		if (!isSelf && !isChild) {
-			co_await sendErrorResponse<managarm::posix::SetPgidResponse>(conversation, managarm::posix::Errors::NO_SUCH_RESOURCE);
-			co_return {};
-		}
-
-		// POSIX: if target process is not in the same session, EPERM.
-		if (target->pgPointer()->getSession() != self->pgPointer()->getSession()) {
-			co_await sendErrorResponse<managarm::posix::SetPgidResponse>(conversation, managarm::posix::Errors::INSUFFICIENT_PERMISSION);
-			co_return {};
-		}
-
-		// POSIX: if `pid` matches the process ID of a child and the child has successfully
-		// executed one of the `exec*` functions, return EACCES.
-		if (isChild && target->didExecute()) {
-			co_await sendErrorResponse<managarm::posix::SetPgidResponse>(conversation, managarm::posix::Errors::ACCESS_DENIED);
-			co_return {};
-		}
-	} else {
-		target = self->threadGroup()->shared_from_this();
-	}
-
-	// POSIX: We can't change the process group ID of the session leader, EPERM
-	if (target->pid() == target->pgPointer()->getSession()->getSessionId()) {
-		co_await sendErrorResponse<managarm::posix::SetPgidResponse>(conversation, managarm::posix::Errors::INSUFFICIENT_PERMISSION);
+	if(auto e = self->threadGroup()->setProcessGroupOf(req.pid(), req.pgid()); e != Error::success) {
+		co_await sendErrorResponse<managarm::posix::SetPgidResponse>(conversation, e | toPosixProtoError);
 		co_return {};
 	}
-
-	// If pgid is 0, we're going to set it to the calling process's pid, use the target group.
-	auto resolvedPgid = req.pgid() ? req.pgid() : target->pid();
-	std::shared_ptr<ProcessGroup> group = target->pgPointer()->getSession()->getProcessGroupById(resolvedPgid);
-
-	if(group) {
-		// Found, do permission checking and join
-		group->reassociateProcess(target.get());
-	} else {
-		// Not found, making it if pgid and pid match, or if pgid is 0, indicating that we should make one
-		if(target->pid() == req.pgid() || !req.pgid()) {
-			target->pgPointer()->getSession()->spawnProcessGroup(target.get());
-		} else {
-			// POSIX: invalid `pgid` supplied, return EINVAL.
-			co_await sendErrorResponse<managarm::posix::SetPgidResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
-			co_return {};
-		}
-	}
-
-	// Wake any waiters (e.g. waitpid); this is necessary as that may need to return ECHLD if we
-	// moved out the last child.
-	target->getParent()->raiseNotifyBell();
 
 	managarm::posix::SetPgidResponse resp;
 	resp.set_error(managarm::posix::Errors::SUCCESS);
@@ -420,9 +363,15 @@ HandleRequest::operator()(managarm::posix::GetSidRequest &&req,
 	} else {
 		target = self->threadGroup()->shared_from_this();
 	}
+	auto pg = target->pgPointer();
+	if(!pg) {
+		co_await sendErrorResponse<managarm::posix::GetSidResponse>(conversation, managarm::posix::Errors::NO_SUCH_RESOURCE);
+		co_return {};
+	}
+
 	managarm::posix::GetSidResponse resp;
 	resp.set_error(managarm::posix::Errors::SUCCESS);
-	resp.set_pid(target->pgPointer()->getSession()->getSessionId());
+	resp.set_pid(pg->getSession()->getSessionId());
 
 	auto [send_resp] = co_await helix_ng::exchangeMsgs(
 			conversation,
@@ -442,21 +391,15 @@ HandleRequest::operator()(managarm::posix::SetSidRequest &&req,
 	logBragiRequest(req);
 	logRequest(logRequests, self, "SETSID");
 
-	// POSIX: if the calling process is already a group leader, EPERM.
-	if(self->pgPointer()->getSession()->getSessionId() == self->pid()) {
-		co_await sendErrorResponse<managarm::posix::SetSidResponse>(conversation, managarm::posix::Errors::INSUFFICIENT_PERMISSION);
+	auto sid = self->threadGroup()->createSession();
+	if(!sid) {
+		co_await sendErrorResponse<managarm::posix::SetSidResponse>(conversation, sid.error() | toPosixProtoError);
 		co_return {};
 	}
 
-	auto session = TerminalSession::initializeNewSession(self->threadGroup());
-
-	// Wake any waiters (e.g. waitpid); this is necessary as that may need to return ECHLD if we
-	// moved out the last child.
-	self->getParent()->raiseNotifyBell();
-
 	managarm::posix::SetSidResponse resp;
 	resp.set_error(managarm::posix::Errors::SUCCESS);
-	resp.set_sid(session->getSessionId());
+	resp.set_sid(*sid);
 
 	auto ser = resp.SerializeAsString();
 	auto [send_resp] = co_await helix_ng::exchangeMsgs(conversation,

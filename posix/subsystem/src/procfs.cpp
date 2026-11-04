@@ -819,13 +819,18 @@ async::result<std::expected<std::string, Error>> StatNode::show(Process *) {
 	stream << " (" << p->name() << ") "; // Name
 	stream << "R "; // State
 	// This avoids a crash when asking for the parent of init.
-	if(p->getParent()) {
-		stream << p->getParent()->pid() << " ";
+	if(auto parent = p->getParent(); parent) {
+		stream << parent->pid() << " ";
 	} else {
 		stream << "0 ";
 	}
-	stream << p->pgPointer()->getHull()->getPid() << " "; // Pgrp
-	stream << p->pgPointer()->getSession()->getSessionId() << " "; // SID
+	// The group has no process group once it was reaped.
+	if(auto pg = p->pgPointer(); pg) {
+		stream << pg->getHull()->getPid() << " "; // Pgrp
+		stream << pg->getSession()->getSessionId() << " "; // SID
+	} else {
+		stream << "0 0 ";
+	}
 	stream << "0 "; // tty_nr
 	stream << "0 "; // tpgid
 	stream << "0 "; // flags
@@ -939,8 +944,8 @@ async::result<std::expected<std::string, Error>> ProcessStatusNode::show(Process
 	stream << "NGid: 0\n"; // NUMA Group ID, 0 if none.
 	stream << "Pid: " << tg->pid() << "\n";
 	// This avoids a crash when asking for the parent of init.
-	if(tg->getParent()) {
-		stream << "PPid: " << tg->getParent()->pid() << "\n";
+	if(auto parent = tg->getParent(); parent) {
+		stream << "PPid: " << parent->pid() << "\n";
 	} else {
 		stream << "PPid: 0\n";
 	}
@@ -1043,8 +1048,8 @@ async::result<std::expected<std::string, Error>> StatusNode::show(Process *) {
 	stream << "NGid: 0\n"; // NUMA Group ID, 0 if none.
 	stream << "Pid: " << p->tid() << "\n";
 	// This avoids a crash when asking for the parent of init.
-	if(p->getParent()) {
-		stream << "PPid: " << p->getParent()->pid() << "\n";
+	if(auto parent = p->getParent(); parent) {
+		stream << "PPid: " << parent->pid() << "\n";
 	} else {
 		stream << "PPid: 0\n";
 	}

@@ -715,15 +715,8 @@ Channel::commonIoctl(managarm::fs::GenericIoctlRequest req, helix::BorrowedDescr
 		auto process = *maybeProcess;
 
 		managarm::fs::GenericIoctlReply resp;
-		if(auto e = cts.assignSessionOf(process.get()); e == Error::illegalArguments) {
-			resp.set_error(managarm::fs::Errors::ILLEGAL_ARGUMENT);
-		}else if(e == Error::insufficientPermissions) {
-			resp.set_error(managarm::fs::Errors::INSUFFICIENT_PERMISSIONS);
-		}else{
-			assert(e == Error::success);
-			cts.getSession()->setForegroundGroup(process->pgPointer().get());
-			resp.set_error(managarm::fs::Errors::SUCCESS);
-		}
+		auto e = cts.assignSessionOf(process.get(), true);
+		resp.set_error(e | protocols::fs::toFsProtoError | protocols::fs::toFsError);
 
 		auto ser = resp.SerializeAsString();
 		auto [sendResp] = co_await helix_ng::exchangeMsgs(
@@ -754,16 +747,8 @@ Channel::commonIoctl(managarm::fs::GenericIoctlRequest req, helix::BorrowedDescr
 		}
 		auto process = *maybeProcess;
 
-		if(&cts != process->pgPointer()->getSession()->getControllingTerminal()) {
-			resp.set_error(managarm::fs::Errors::NOT_A_TERMINAL);
-		} else {
-			auto group = cts.getSession()->getForegroundGroup();
-			if (group && process->pgPointer()->getSession()->getSessionId() == process->pid())
-				group->issueSignalToGroup(SIGHUP, {});
-
-			cts.dropSession(process->pgPointer()->getSession());
-			resp.set_error(managarm::fs::Errors::SUCCESS);
-		}
+		auto e = cts.releaseSessionOf(process.get());
+		resp.set_error(e | protocols::fs::toFsProtoError | protocols::fs::toFsError);
 
 		auto [send_resp] = co_await helix_ng::exchangeMsgs(
 			conversation,
@@ -794,20 +779,11 @@ Channel::commonIoctl(managarm::fs::GenericIoctlRequest req, helix::BorrowedDescr
 		}
 		auto process = *maybeProcess;
 
-		if(&cts != process->pgPointer()->getSession()->getControllingTerminal()) {
-			resp.set_error(managarm::fs::Errors::NOT_A_TERMINAL);
+		if(auto pgid = cts.getForegroundGroupOf(process.get()); !pgid) {
+			resp.set_error(pgid.error() | protocols::fs::toFsProtoError | protocols::fs::toFsError);
 		} else {
-			auto group = cts.getSession()->getForegroundGroup();
-			if (group) {
-				resp.set_pid(group->getHull()->getPid());
-				resp.set_error(managarm::fs::Errors::SUCCESS);
-			} else {
-				// If there is no foreground process group, tcgetpgrp() shall return
-				// a value greater than 1 that does not match the process group ID of any
-				// existing process group.
-				resp.set_pid(INT_MAX);
-				resp.set_error(managarm::fs::Errors::SUCCESS);
-			}
+			resp.set_pid(*pgid);
+			resp.set_error(managarm::fs::Errors::SUCCESS);
 		}
 
 		auto ser = resp.SerializeAsString();
@@ -847,46 +823,8 @@ Channel::commonIoctl(managarm::fs::GenericIoctlRequest req, helix::BorrowedDescr
 			co_return;
 		}
 		auto process = *maybeProcess;
-		if (!cts.getSession()
-				|| process->pgPointer()->getSession()->getSessionId()
-						!= cts.getSession()->getSessionId()
-				|| !process->pgPointer()->getSession()->getControllingTerminal()
-				|| process->pgPointer()->getSession()->getControllingTerminal() != &cts) {
-
-			resp.set_error(managarm::fs::Errors::NOT_A_TERMINAL);
-			auto [send_resp] = co_await helix_ng::exchangeMsgs(
-				conversation, helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
-			);
-			HEL_CHECK(send_resp.error());
-			co_return;
-		}
-
-		auto group = process->pgPointer()->getSession()->getProcessGroupById(req.pgid());
-		if(!group) {
-			resp.set_error(managarm::fs::Errors::INSUFFICIENT_PERMISSIONS);
-		} else {
-			auto sigttouHandler = process->threadGroup()->signalContext()->getHandler(SIGTTOU);
-			if (process->pgPointer().get() == process->pgPointer()->getSession()->getForegroundGroup()
-					|| sigttouHandler.disposition == SignalDisposition::ignore
-					|| (process->signalMask() & (1 << (SIGTTOU - 1)))) {
-				// POSIX: If the calling thread is blocking SIGTTOU signals or the process is
-				// ignoring SIGTTOU signals, the process shall be allowed to perform
-				// the operation.
-
-				auto ret = cts.getSession()->setForegroundGroup(group.get());
-				resp.set_error(ret | protocols::fs::toFsProtoError | protocols::fs::toFsError);
-			} else if (process->pgPointer()->isOrphaned()) {
-				resp.set_error(managarm::fs::Errors::INTERNAL_ERROR);
-				auto [send_resp] = co_await helix_ng::exchangeMsgs(
-					conversation, helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
-				);
-				HEL_CHECK(send_resp.error());
-				co_return;
-			} else {
-				// TODO: if process is in a background PG, send SIGTTOU
-				// process->pgPointer()->issueSignalToGroup(SIGTTOU, {});
-			}
-		}
+		auto e = cts.setForegroundGroupOf(process.get(), req.pgid());
+		resp.set_error(e | protocols::fs::toFsProtoError | protocols::fs::toFsError);
 
 		auto [send_resp] = co_await helix_ng::exchangeMsgs(
 			conversation,
@@ -917,10 +855,10 @@ Channel::commonIoctl(managarm::fs::GenericIoctlRequest req, helix::BorrowedDescr
 		}
 		auto process = *maybeProcess;
 
-		if(&cts != process->pgPointer()->getSession()->getControllingTerminal()) {
-			resp.set_error(managarm::fs::Errors::NOT_A_TERMINAL);
+		if(auto sid = cts.getSessionIdOf(process.get()); !sid) {
+			resp.set_error(sid.error() | protocols::fs::toFsProtoError | protocols::fs::toFsError);
 		} else {
-			resp.set_pid(cts.getSession()->getSessionId());
+			resp.set_pid(*sid);
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 		}
 
@@ -1272,7 +1210,7 @@ SlaveDevice::open(Process *, std::shared_ptr<MountView> mount, smarter::shared_p
 		co_return Error::illegalArguments;
 	}
 
-	_channel->cts.controllingTerminal_ = weak_from_this();
+	_channel->cts.setDevice(weak_from_this());
 
 	auto file = smarter::make_shared<SlaveFile>(std::move(mount), std::move(link), _channel,
 			semantic_flags & semanticNonBlock, semantic_flags & semanticRead, semantic_flags & semanticWrite);

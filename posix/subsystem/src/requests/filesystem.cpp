@@ -1614,17 +1614,19 @@ HandleRequest::operator()(managarm::posix::OpenAtRequest &&req,
 		co_return {};
 	}
 
+	auto pg = self->pgPointer();
 	if(file->isTerminal() &&
 		!(req.flags() & managarm::posix::OpenFlags::OF_NOCTTY) &&
-        self->pgPointer() &&
-		self->pgPointer()->getSession()->getSessionId() == (pid_t)self->pid() &&
-		self->pgPointer()->getSession()->getControllingTerminal() == nullptr) {
+		pg &&
+		pg->getSession()->getSessionId() == (pid_t)self->pid() &&
+		!pg->getSession()->hasControllingTerminal()) {
 		// POSIX 1003.1-2017 11.1.3
 		auto cts = co_await file->getControllingTerminal();
 		if(!cts) {
 			std::cout << "posix: Unable to get controlling terminal (" << (int)cts.error() << ")" << std::endl;
 		} else {
-			cts.value()->assignSessionOf(self.get());
+			// This re-checks the conditions above since the session may have changed meanwhile.
+			cts.value()->assignSessionOf(self.get(), false);
 		}
 	}
 
