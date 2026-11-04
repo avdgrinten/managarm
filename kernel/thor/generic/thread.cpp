@@ -713,8 +713,8 @@ void Thread::_setRunState(RunState state) {
 }
 
 void Thread::_updateRunTime() {
-	auto now = getClockNanos();
-	assert(now >= _lastRunTimeUpdate);
+	// Threads migrate between CPUs, so tolerate clock differences between CPUs (e.g., from TSC errata).
+	auto now = frg::max(getClockNanos(), _lastRunTimeUpdate);
 
 	// TODO: Terminated counts as not runnable; we may want to revisit this.
 	assert(_runState == kRunActive || _runState == kRunDeferred
