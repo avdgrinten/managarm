@@ -129,9 +129,6 @@ struct Device final : proto::DeviceServerData, std::enable_shared_from_this<Devi
 	initialize() override;
 
 	async::result<frg::expected<proto::UsbError>>
-	readDescriptor(arch::dma_buffer_view dest, uint16_t desc);
-
-	async::result<frg::expected<proto::UsbError>>
 	setupEndpoint(int endpoint, proto::PipeType dir, size_t maxPacketSize, proto::EndpointType type, int interval);
 
 	async::result<frg::expected<proto::UsbError>>

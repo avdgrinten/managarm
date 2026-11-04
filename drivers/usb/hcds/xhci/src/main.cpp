@@ -879,20 +879,6 @@ Device::initialize() {
 	co_return frg::success;
 }
 
-async::result<frg::expected<proto::UsbError>>
-Device::readDescriptor(arch::dma_buffer_view dest, uint16_t desc) {
-	arch::dma_object<proto::SetupPacket> getDesc{setupPool()};
-	getDesc->type = proto::setup_type::targetDevice | proto::setup_type::byStandard | proto::setup_type::toHost;
-	getDesc->request = proto::request_type::getDescriptor;
-	getDesc->value = desc;
-	getDesc->index = 0;
-	getDesc->length = dest.size();
-
-	FRG_CO_TRY(co_await transfer({protocols::usb::kXferToHost, getDesc, dest}));
-
-	co_return frg::success;
-}
-
 static inline uint32_t getHcdEndpointType(proto::PipeType dir, proto::EndpointType type) {
 	using proto::EndpointType;
 	using proto::PipeType;
