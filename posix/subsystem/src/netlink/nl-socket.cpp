@@ -6,6 +6,8 @@
 #include <linux/filter.h>
 #include <iostream>
 #include <map>
+#include <mutex>
+#include <vector>
 #include <format>
 
 #include <async/recurring-event.hpp>
@@ -25,13 +27,47 @@ struct OpenFile;
 constexpr bool logSockets = false;
 constexpr bool logBroadcasts = false;
 
+// Only written by setupProtocols().
 std::map<int, const ops *> globalProtocolOpsMap;
 
+std::mutex globalMutex;
+
 /* (protocol, groupid) -> std::unique_ptr<Group> */
+// The groups themselves are only created by setupProtocols(); their subscriptions are
+// protected by globalMutex.
 std::map<std::pair<int, uint8_t>, std::unique_ptr<Group>> globalGroupMap;
 
+// Protected by globalMutex.
 uint32_t nextPort = UINT32_MAX;
+// Protected by globalMutex.
 std::map<uint32_t, OpenFile *> globalPortMap;
+
+void deliverToGroup(int protocol, uint32_t group, const core::netlink::Packet &packet) {
+	std::vector<smarter::shared_ptr<File>> subscribers;
+	{
+		std::lock_guard lock{globalMutex};
+		auto it = globalGroupMap.find({protocol, group});
+		if(it == globalGroupMap.end())
+			return;
+		for(auto socket : it->second->subscriptions) {
+			// Closed sockets leave their groups before they are destructed,
+			// but the File may already be on its way out.
+			if(auto file = static_cast<OpenFile *>(socket)->weakFile().lock(); file)
+				subscribers.push_back(std::move(file));
+		}
+	}
+
+	for(auto &file : subscribers)
+		static_cast<OpenFile *>(file.get())->deliver(packet);
+}
+
+smarter::shared_ptr<File> findPort(uint32_t port) {
+	std::lock_guard lock{globalMutex};
+	auto it = globalPortMap.find(port);
+	if(it == globalPortMap.end())
+		return nullptr;
+	return it->second->weakFile().lock();
+}
 
 // ----------------------------------------------------------------------------
 // OpenFile implementation.
@@ -44,9 +80,14 @@ OpenFile::OpenFile(int protocol, int type, bool nonBlock)
 		_inSeq{0}, _socketPort{0}, _passCreds{false}, nonBlock_{nonBlock}, type_{type} { }
 
 void OpenFile::handleClose() {
-	_isClosed = true;
+	{
+		std::lock_guard lock{_mutex};
+		_isClosed = true;
+	}
 	_statusBell.raise();
 	_cancelServe.cancel();
+
+	std::lock_guard lock{globalMutex};
 	if(_socketPort) {
 		auto it = globalPortMap.find(_socketPort);
 		assert(it != globalPortMap.end() && it->second == this);
@@ -66,19 +107,22 @@ void OpenFile::handleClose() {
 }
 
 void OpenFile::deliver(core::netlink::Packet packet) {
-	if(filter_) {
-		Bpf bpf{filter_.value()};
-		size_t accept_bytes = bpf.run(arch::dma_buffer_view{nullptr, packet.buffer.data(), packet.buffer.size()});
+	{
+		std::lock_guard lock{_mutex};
+		if(filter_) {
+			Bpf bpf{filter_.value()};
+			size_t accept_bytes = bpf.run(arch::dma_buffer_view{nullptr, packet.buffer.data(), packet.buffer.size()});
 
-		if(!accept_bytes)
-			return;
+			if(!accept_bytes)
+				return;
 
-		if(accept_bytes < packet.buffer.size())
-			packet.buffer.resize(accept_bytes);
+			if(accept_bytes < packet.buffer.size())
+				packet.buffer.resize(accept_bytes);
+		}
+
+		_recvQueue.push_back(std::move(packet));
+		_inSeq = ++_currentSeq;
 	}
-
-	_recvQueue.push_back(std::move(packet));
-	_inSeq = ++_currentSeq;
 	_statusBell.raise();
 }
 
@@ -87,23 +131,33 @@ OpenFile::readSome(Process *, void *data, size_t max_length, async::cancellation
 	if(logSockets)
 		std::cout << "posix: Read from socket " << this << std::endl;
 
-	if(_recvQueue.empty() && nonBlock_) {
-		if(logSockets)
-			std::cout << "posix: netlink socket would block" << std::endl;
-		co_return std::unexpected{Error::wouldBlock};
-	}
-	while (_recvQueue.empty()) {
-		if (!co_await _statusBell.async_wait(ce))
+	while(true) {
+		{
+			std::lock_guard lock{_mutex};
+			if(!_recvQueue.empty()) {
+				// TODO: Truncate packets (for SOCK_DGRAM) here.
+				auto packet = &_recvQueue.front();
+				auto size = packet->buffer.size();
+				assert(max_length >= size);
+				memcpy(data, packet->buffer.data(), size);
+				_recvQueue.pop_front();
+				co_return size;
+			}
+
+			if(nonBlock_) {
+				if(logSockets)
+					std::cout << "posix: netlink socket would block" << std::endl;
+				co_return std::unexpected{Error::wouldBlock};
+			}
+		}
+
+		auto waitResult = co_await _statusBell.async_wait_if([&] {
+			std::lock_guard lock{_mutex};
+			return _recvQueue.empty();
+		}, ce);
+		if (!waitResult)
 			co_return std::unexpected{Error::interrupted};
 	}
-
-	// TODO: Truncate packets (for SOCK_DGRAM) here.
-	auto packet = &_recvQueue.front();
-	auto size = packet->buffer.size();
-	assert(max_length >= size);
-	memcpy(data, packet->buffer.data(), size);
-	_recvQueue.pop_front();
-	co_return size;
 }
 
 async::result<frg::expected<Error, size_t>>
@@ -138,14 +192,21 @@ OpenFile::recvMsg(Process *, uint32_t flags, void *data, size_t max_length,
 		std::cout << std::format("posix: Unsupported flags 0x{:x} in recvMsg", flags) << std::endl;
 	}
 
+	std::unique_lock lock{_mutex};
 	if(_recvQueue.empty() && ((flags & MSG_DONTWAIT) || nonBlock_)) {
 		if(logSockets)
 			std::cout << "posix: netlink socket would block" << std::endl;
 		co_return RecvResult { protocols::fs::Error::wouldBlock };
 	}
 
-	while(_recvQueue.empty())
-		co_await _statusBell.async_wait();
+	while(_recvQueue.empty()) {
+		lock.unlock();
+		co_await _statusBell.async_wait_if([&] {
+			std::lock_guard guard{_mutex};
+			return _recvQueue.empty();
+		});
+		lock.lock();
+	}
 
 	// TODO: Truncate packets (for SOCK_DGRAM) here.
 	auto packet = &_recvQueue.front();
@@ -229,12 +290,14 @@ OpenFile::sendMsg(Process *process, uint32_t flags, const void *data, size_t max
 		grp_idx = __builtin_ffs(sa.nl_groups);
 	}
 
-	// TODO: Associate port otherwise.
-	assert(_socketPort);
+	// Closed sockets do not get a port, and port 0 would claim that the kernel sent this.
+	auto port = socketPort();
+	if(!port)
+		co_return protocols::fs::Error::illegalArguments;
 
 	core::netlink::Packet packet;
 	packet.senderPid = process->pid();
-	packet.senderPort = _socketPort;
+	packet.senderPort = port;
 	packet.group = grp_idx;
 	packet.buffer.resize(max_length);
 	memcpy(packet.buffer.data(), data, max_length);
@@ -254,32 +317,42 @@ OpenFile::sendMsg(Process *process, uint32_t flags, const void *data, size_t max
 async::result<frg::expected<Error, PollWaitResult>>
 OpenFile::pollWait(Process *, uint64_t past_seq, int mask,
 		async::cancellation_token cancellation) {
-	assert(past_seq <= _currentSeq);
 	int edges = 0;
+	uint64_t sequence;
 
 	while (true) {
-		if(_isClosed)
-			co_return Error::fileClosed;
+		{
+			std::lock_guard lock{_mutex};
+			assert(past_seq <= _currentSeq);
+			if(_isClosed)
+				co_return Error::fileClosed;
+			sequence = _currentSeq;
 
-		// For now making sockets always writable is sufficient.
-		edges = EPOLLOUT;
-		if(_inSeq > past_seq)
-			edges |= EPOLLIN;
+			// For now making sockets always writable is sufficient.
+			edges = EPOLLOUT;
+			if(_inSeq > past_seq)
+				edges |= EPOLLIN;
+		}
 
 		if (edges & mask)
 			break;
 
-		if (!co_await _statusBell.async_wait(cancellation))
+		auto waitResult = co_await _statusBell.async_wait_if([&] {
+			std::lock_guard lock{_mutex};
+			return !_isClosed && _currentSeq == sequence;
+		}, cancellation);
+		if (!waitResult)
 			break;
 	}
 
 	// std::println("posix: pollWait({}, {}) on \e[1;34m{}\e[0m returns ({}, {})",
-	// 	past_seq, mask, structName(), _currentSeq, edges & mask);
+	// 	past_seq, mask, structName(), sequence, edges & mask);
 
-	co_return PollWaitResult(_currentSeq, edges & mask);
+	co_return PollWaitResult(sequence, edges & mask);
 }
 
 async::result<frg::expected<Error, PollStatusResult>> OpenFile::pollStatus(Process *) {
+	std::lock_guard lock{_mutex};
 	int events = EPOLLOUT;
 	if(!_recvQueue.empty())
 		events |= EPOLLIN;
@@ -291,13 +364,14 @@ async::result<protocols::fs::Error> OpenFile::bind(Process *,
 		const void *addr_ptr, size_t addr_length) {
 	if(addr_length < sizeof(struct sockaddr_nl))
 		co_return protocols::fs::Error::illegalArguments;
-	// The file may have been closed concurrently.
-	if(_isClosed)
-		co_return protocols::fs::Error::illegalArguments;
 
 	struct sockaddr_nl sa;
 	memcpy(&sa, addr_ptr, addr_length);
 
+	std::lock_guard lock{globalMutex};
+	// handleClose() takes globalMutex after isOpen() turns false, so it undoes what we do here.
+	if(!isOpen())
+		co_return protocols::fs::Error::illegalArguments;
 	if(_socketPort) {
 		// Like Linux, a bound socket can only be bound to the same port again.
 		if(sa.nl_pid != _socketPort)
@@ -335,13 +409,15 @@ async::result<protocols::fs::Error> OpenFile::bind(Process *,
 }
 
 async::result<size_t> OpenFile::sockname(void *addr_ptr, size_t max_addr_length) {
-	assert(_socketPort);
-
 	// TODO: Fill in nl_groups.
 	struct sockaddr_nl sa;
 	memset(&sa, 0, sizeof(struct sockaddr_nl));
 	sa.nl_family = AF_NETLINK;
-	sa.nl_pid = _socketPort;
+	{
+		std::lock_guard lock{globalMutex};
+		assert(_socketPort);
+		sa.nl_pid = _socketPort;
+	}
 	memcpy(addr_ptr, &sa, std::min(sizeof(struct sockaddr_nl), max_addr_length));
 
 	co_return sizeof(struct sockaddr_nl);
@@ -356,12 +432,10 @@ async::result<frg::expected<protocols::fs::Error>> OpenFile::setSocketOption(int
 		if(!bpf.validate())
 			co_return protocols::fs::Error::illegalArguments;
 
+		std::lock_guard lock{_mutex};
 		filter_ = optbuf;
 	} else if(layer == SOL_NETLINK && number == NETLINK_ADD_MEMBERSHIP) {
 		if(optbuf.size() < sizeof(int))
-			co_return protocols::fs::Error::illegalArguments;
-		// The socket may have been closed concurrently.
-		if(_isClosed)
 			co_return protocols::fs::Error::illegalArguments;
 		auto val = *reinterpret_cast<int *>(optbuf.data());
 		std::cout << "posix: Join netlink group "
@@ -372,6 +446,10 @@ async::result<frg::expected<protocols::fs::Error>> OpenFile::setSocketOption(int
 		auto it = globalGroupMap.find({_protocol, val});
 		if(it == globalGroupMap.end())
 			co_return protocols::fs::Error::illegalArguments;
+		std::lock_guard lock{globalMutex};
+		// See bind() for why this check has to be under globalMutex.
+		if(!isOpen())
+			co_return protocols::fs::Error::illegalArguments;
 		if(!(joinedGroups_ & (1 << (val - 1)))) {
 			auto group = it->second.get();
 			group->subscriptions.push_back(this);
@@ -379,10 +457,13 @@ async::result<frg::expected<protocols::fs::Error>> OpenFile::setSocketOption(int
 		}
 	} else if(layer == SOL_NETLINK && number == NETLINK_PKTINFO) {
 		auto val = *reinterpret_cast<int *>(optbuf.data());
+		std::lock_guard lock{_mutex};
 		pktinfo_ = (val != 0);
 	} else if(layer == SOL_SOCKET && number == SO_PASSCRED) {
-		if(optbuf.size() >= sizeof(int))
+		if(optbuf.size() >= sizeof(int)) {
+			std::lock_guard lock{_mutex};
 			_passCreds = *reinterpret_cast<int *>(optbuf.data());
+		}
 	} else {
 		printf("netserver: unhandled setsockopt layer %d number %d\n", layer, number);
 		co_return protocols::fs::Error::invalidProtocolOption;
@@ -425,6 +506,15 @@ async::result<int> OpenFile::getFileFlags() {
 	co_return 0;
 }
 
+uint32_t OpenFile::socketPort() {
+	std::lock_guard lock{globalMutex};
+	// After handleClose(), nothing would release a port that we take here.
+	if(!_socketPort && isOpen())
+		_associatePort();
+	return _socketPort;
+}
+
+// Must be called with globalMutex held.
 void OpenFile::_associatePort() {
 	assert(!_socketPort);
 	// Skip ports that were bound explicitly, and port 0 since it means "unbound".
@@ -463,10 +553,8 @@ void broadcast(int proto_idx, uint32_t grp_idx, std::string buffer) {
 	packet.buffer.resize(buffer.size());
 	memcpy(packet.buffer.data(), buffer.data(), buffer.size());
 
-	auto it = globalGroupMap.find({proto_idx, grp_idx});
-	assert(it != globalGroupMap.end());
-	auto group = it->second.get();
-	group->carbonCopy(packet);
+	assert(globalGroupMap.contains({proto_idx, grp_idx}));
+	deliverToGroup(proto_idx, grp_idx, packet);
 
 	if(logBroadcasts)
 		std::cout << std::format("posix/netlink: broadcasting \"{}\"", buffer) << std::endl;
