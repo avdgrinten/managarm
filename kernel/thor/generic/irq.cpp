@@ -356,7 +356,9 @@ void IrqPin::warnIfPending() {
 	if(!_inService || (_maskState & maskedForNack))
 		return;
 
-	if(getClockNanos() - _raiseClock > 1000000000 && !_warnedAfterPending) {
+	// The IRQ may have been raised on another CPU, so tolerate clock differences between CPUs.
+	auto now = frg::max(getClockNanos(), _raiseClock);
+	if(now - _raiseClock > 1000000000 && !_warnedAfterPending) {
 		auto log = debugLogger();
 		log << "thor: Pending IRQ " << _name << " has not been"
 				" acked/nacked for more than one second.";
