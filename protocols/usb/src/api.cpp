@@ -82,12 +82,13 @@ async::result<frg::expected<UsbError, size_t>> Device::transfer(ControlTransfer 
 // DeviceServerData.
 // ----------------------------------------------------------------------------
 
-std::shared_ptr<Hub> DeviceServerData::nearestTTHub() const {
+std::tuple<std::shared_ptr<Hub>, int> DeviceServerData::nearestTTHub() const {
 	// Only LS and FS devices use TTs.
 	if (speed() != DeviceSpeed::lowSpeed && speed() != DeviceSpeed::fullSpeed)
-		return nullptr;
+		return {nullptr, -1};
 
 	auto curHub = parent();
+	auto curPort = port();
 	while (!curHub->rootHub()) {
 		auto hubDevice = curHub->state();
 
@@ -97,17 +98,18 @@ std::shared_ptr<Hub> DeviceServerData::nearestTTHub() const {
 		assert(hubDevice->speed() == DeviceSpeed::lowSpeed
 				|| hubDevice->speed() == DeviceSpeed::fullSpeed);
 
+		curPort = hubDevice->port();
 		curHub = hubDevice->parent();
 	}
 
 	// Root hubs don't count as TTs.
 	if (curHub->rootHub()) {
-		return nullptr;
+		return {nullptr, -1};
 	}
 
 	auto hubDevice = curHub->state();
 	assert(hubDevice->speed() == DeviceSpeed::highSpeed);
-	return curHub;
+	return {curHub, curPort};
 }
 
 std::tuple<uint32_t, std::shared_ptr<Hub>, int>

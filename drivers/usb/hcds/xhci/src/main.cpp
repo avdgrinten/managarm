@@ -843,14 +843,15 @@ Device::initialize() {
 	// For LS/FS devices, look for a TT in the path, and fill out the appropriate fields if one exists.
 	// TODO(qookie): These fields should also be filled out for USB 3 hubs, when a device is plugged
 	// into a higher rank hub, e.g. Gen1x1 device in a Gen1x2 hub or Gen1x2 device in Gen2x2 hub.
-	auto ttHub = nearestTTHub();
+	auto [ttHub, ttPort] = nearestTTHub();
 	if (ttHub) {
+		assert(ttPort != -1);
 		auto hubDevice = std::static_pointer_cast<Device>(ttHub->state());
 
 		assert(hubDevice->speed() == proto::DeviceSpeed::highSpeed);
 
 		// We need to fill these fields out for split transactions.
-		slotCtx |= SlotFields::parentHubPort(hubDevice->port());
+		slotCtx |= SlotFields::parentHubPort(ttPort);
 		slotCtx |= SlotFields::parentHubSlot(hubDevice->slot());
 	}
 

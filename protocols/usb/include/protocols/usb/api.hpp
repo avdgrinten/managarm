@@ -206,7 +206,7 @@ public:
 		return port_;
 	}
 
-	std::shared_ptr<Hub> nearestTTHub() const;
+	std::tuple<std::shared_ptr<Hub>, int> nearestTTHub() const;
 
 	std::tuple<uint32_t, std::shared_ptr<Hub>, int>
 	routeString() const;
