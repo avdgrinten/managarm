@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include <bragi/helpers-std.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include <helix/memory.hpp>
 #include <protocols/fs/client.hpp>
 #include <protocols/fs/defs.hpp>
@@ -300,7 +301,7 @@ openExternalDevice(helix::BorrowedLane lane,
 		HEL_CHECK(fd_send_req.error());
 		HEL_CHECK(fd_lane.error());
 
-		async::detach(serveServerLane(std::move(std::move(local_lane))));
+		helix::DispatcherPool::global().detach(serveServerLane(std::move(std::move(local_lane))));
 	}
 	co_return File::constructHandle(std::move(file));
 }

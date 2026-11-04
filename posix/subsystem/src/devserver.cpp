@@ -7,6 +7,7 @@
 #include <bragi/helpers-std.hpp>
 #include <core/dispatch.hpp>
 #include <frg/std_compat.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include <protocols/fs/client.hpp>
 #include <protocols/mbus/client.hpp>
 
@@ -190,7 +191,7 @@ async::result<void> enumerate() {
 	sysfsRoot = extern_fs::createRoot(std::move(sysfsLane), pullNode.descriptor(),
 			nullptr, mountResp.caps(), "sysfs", mountResp.root_inode());
 
-	async::detach(serveDeviceEvents());
+	helix::DispatcherPool::global().detach(serveDeviceEvents());
 }
 
 async::result<smarter::shared_ptr<FsLink, LinkRc>> getSysfsRoot() {
