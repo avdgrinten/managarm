@@ -43,28 +43,45 @@ OpenFile::readSome(Process *process, void *data, size_t maxLength, async::cancel
 	co_return sizeof(struct signalfd_siginfo);
 }
 
+// Not a coroutine: the process is only borrowed for the duration of this call, so it has to be
+// pinned here and not in the coroutine body, which may start running after we return.
 async::result<frg::expected<Error, PollWaitResult>>
 OpenFile::pollWait(Process *process, uint64_t inSeq, int pollMask,
 		async::cancellation_token cancellation) {
-	if ((EPOLLIN & pollMask) == EPOLLIN) {
-		auto [newSeq, signalEdges] = co_await process->pollSignal(
-		    inSeq, _mask, cancellation
-		);
+	// epoll items outlive the thread that registered them; that thread receives no more signals.
+	// Without EPOLLIN, there is nothing to wait for either.
+	// TODO: An exited thread stays pinned until a matching signal arrives or the epoll item is
+	//       modified or removed (once the signalfd is closed, only a signal or closing the epoll
+	//       does that), and its items go idle even if the thread group still receives signals.
+	//       Linux has neither issue: items wait on the sighand of whoever called EPOLL_CTL_ADD,
+	//       each epoll_wait() evaluates readiness for its own caller, and signalfd_cleanup()
+	//       detaches the waits when the sighand goes away.
+	std::shared_ptr<Process> pinnedProcess;
+	if (process && (EPOLLIN & pollMask))
+		pinnedProcess = process->shared_from_this();
+	return pollSignal_(std::move(pinnedProcess), inSeq, cancellation);
+}
 
-		if (newSeq > inSeq && (signalEdges & _mask))
-			co_return PollWaitResult{newSeq, EPOLLIN};
-		else
-			co_return PollWaitResult{newSeq, 0};
-	} else {
+// Waits indefinitely if process is null.
+async::result<frg::expected<Error, PollWaitResult>>
+OpenFile::pollSignal_(std::shared_ptr<Process> process, uint64_t inSeq,
+		async::cancellation_token cancellation) {
+	if (!process) {
 		co_await async::suspend_indefinitely(cancellation);
-		co_return PollWaitResult{
-		    std::get<0>(process->checkSignal()), 0
-		};
+		co_return PollWaitResult{inSeq, 0};
 	}
+
+	auto [newSeq, signalEdges] = co_await process->pollSignal(inSeq, _mask, cancellation);
+
+	if (newSeq > inSeq && (signalEdges & _mask))
+		co_return PollWaitResult{newSeq, EPOLLIN};
+	co_return PollWaitResult{newSeq, 0};
 }
 
 async::result<frg::expected<Error, PollStatusResult>>
 OpenFile::pollStatus(Process *process) {
+	if (!process)
+		co_return PollStatusResult{0, 0};
 	auto [seq, active] = process->checkSignal();
 	co_return PollStatusResult{seq, (active & _mask) ? EPOLLIN : 0};
 }

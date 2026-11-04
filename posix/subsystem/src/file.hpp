@@ -580,6 +580,9 @@ public:
 	// Waits until the poll sequence changes *and* one of the events in the mask receives an edge.
 	// Returns (current-sequence, edges since in-sequence).
 	// current-sequence is incremented each time an edge (i.e. an event bit transitions from clear to set) happens.
+	// The process can be null. It is only borrowed for the duration of the call, not for the
+	// returned operation (which may start after the call returns): implementations that use it
+	// in the operation must take a reference before returning, i.e., outside of a coroutine body.
 	virtual async::result<frg::expected<Error, PollWaitResult>> pollWait(Process *,
 			uint64_t sequence, int mask,
 			async::cancellation_token cancellation = {});
