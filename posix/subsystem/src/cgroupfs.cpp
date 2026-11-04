@@ -4,6 +4,7 @@
 #include <sstream>
 
 #include <core/clock.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include "common.hpp"
 #include "cgroupfs.hpp"
 #include "process.hpp"
@@ -46,7 +47,7 @@ void RegularFile::serve(smarter::shared_ptr<RegularFile> file) {
 
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 
@@ -109,7 +110,7 @@ void DirectoryFile::serve(smarter::shared_ptr<DirectoryFile> file) {
 
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 

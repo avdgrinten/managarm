@@ -1,6 +1,7 @@
 #include <asm/ioctls.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <helix/dispatcher-pool.hpp>
 
 #include "../common.hpp"
 #include "ttyn.hpp"
@@ -312,7 +313,7 @@ public:
 	static void serve(smarter::shared_ptr<TTYNFile> file) {
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				file, &fileOperations, file->_cancelServe));
 	}
 

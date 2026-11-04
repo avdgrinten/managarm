@@ -15,6 +15,7 @@
 #include <protocols/fs/file-locks.hpp>
 #include <posix.bragi.hpp>
 #include <sys/socket.h>
+#include <helix/dispatcher-pool.hpp>
 
 #include "common.hpp"
 #include "link-rc.hpp"
@@ -664,7 +665,7 @@ public:
 	static void serve(smarter::shared_ptr<DummyFile> file) {
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				file, &fileOperations, file->_cancelServe));
 	}
 

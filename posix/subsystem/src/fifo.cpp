@@ -11,6 +11,7 @@
 #include <bragi/helpers-std.hpp>
 #include <core/dispatch.hpp>
 #include <frg/ringbuffer.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include <helix/ipc.hpp>
 #include "fifo.hpp"
 #include "fs.bragi.hpp"
@@ -66,7 +67,7 @@ public:
 
 		helix::UniqueLane lane;
 		std::tie(lane, file->_passthrough) = helix::createStream();
-		async::detach(protocols::fs::servePassthrough(std::move(lane),
+		helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 				smarter::shared_ptr<File>{file}, &File::fileOperations));
 	}
 
