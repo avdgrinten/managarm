@@ -68,6 +68,8 @@ public:
 
 	std::string getName() override;
 
+	std::pair<smarter::shared_ptr<FsLink, LinkRc>, std::string> getParentAndName() override;
+
 	// Same as getParentNode() but avoids refcount churn.
 	// Callers must hold the superblock mutex, unless the link is being destructed.
 	FsNode *ownerNode() {
@@ -687,6 +689,11 @@ std::string Link::getName() {
 	std::lock_guard lock{_sb->mutex()};
 	assert(_owner);
 	return _name;
+}
+
+std::pair<smarter::shared_ptr<FsLink, LinkRc>, std::string> Link::getParentAndName() {
+	std::lock_guard lock{_sb->mutex()};
+	return {_owner, _name};
 }
 
 async::result<frg::expected<Error>> Link::obstruct() {

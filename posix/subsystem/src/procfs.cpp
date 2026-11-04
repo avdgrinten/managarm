@@ -80,6 +80,10 @@ async::result<frg::expected<Error, off_t>> RegularFile::seek(off_t offset, VfsSe
 	co_return _offset;
 }
 
+async::result<frg::expected<Error, off_t>> RegularFile::getPosition() {
+	co_return _offset;
+}
+
 async::result<std::expected<size_t, Error>>
 RegularFile::readSome(Process *process, void *data, size_t max_length, async::cancellation_token) {
 	assert(max_length > 0);
@@ -1486,8 +1490,8 @@ helix::BorrowedDescriptor FdInfoDirectoryFile::getPassthroughLane() {
 }
 
 async::result<std::expected<std::string, Error>> FdInfoNode::show(Process *) {
-	auto seekResult = co_await file_->seek(0, VfsSeek::relative);
-	auto pos = seekResult ? seekResult.value() : 0;
+	auto positionResult = co_await file_->getPosition();
+	auto pos = positionResult ? positionResult.value() : 0;
 	auto mountId = mountView_ ? mountView_->mountId() : 0;
 	auto extraInfo = co_await file_->getFdInfo();
 

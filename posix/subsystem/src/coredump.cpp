@@ -68,6 +68,12 @@ size_t ntSizeAlign(size_t noteSize) {
 	return (noteSize + 3) & ~3;
 }
 
+// Removes a core file that could not be written completely.
+static async::result<void> removeCoreFile(FsLink *link) {
+	auto [parent, name] = link->getParentAndName();
+	auto res[[maybe_unused]] = co_await parent->getTarget()->unlink(std::move(name));
+}
+
 static const auto simdStateSize = [] () -> size_t {
 	HelRegisterInfo regInfo;
 	HEL_CHECK(helQueryRegisterInfo(kHelRegsSimd, &regInfo));
@@ -132,13 +138,13 @@ async::result<void> Process::coredump(TerminationState state) {
 
 	auto resizeResult = co_await file->truncate(memoryDumpOffset + memoryDumpSize);
 	if (!resizeResult) {
-		auto res[[maybe_unused]] = co_await file->associatedLink()->getParentNode()->unlink(file->associatedLink()->getName());
+		co_await removeCoreFile(file->associatedLink().get());
 		co_return;
 	}
 
 	auto memory = co_await file->accessMemory();
 	if (!memory) {
-		auto res[[maybe_unused]] = co_await file->associatedLink()->getParentNode()->unlink(file->associatedLink()->getName());
+		co_await removeCoreFile(file->associatedLink().get());
 		co_return;
 	}
 
@@ -393,7 +399,7 @@ async::result<void> Process::coredump(TerminationState state) {
 
 	auto storeHeaders = co_await helix_ng::writeMemory(memory, 0, headers.size(), headers.data());
 	if(storeHeaders.error()) {
-		auto res[[maybe_unused]] = co_await file->associatedLink()->getParentNode()->unlink(file->associatedLink()->getName());
+		co_await removeCoreFile(file->associatedLink().get());
 		co_return;
 	}
 
@@ -414,7 +420,7 @@ async::result<void> Process::coredump(TerminationState state) {
 			auto storeMemory = co_await helix_ng::writeMemory(memory, fileOffset + progress,
 				chunk, buffer.data());
 			if(storeMemory.error()) {
-				auto res[[maybe_unused]] = co_await file->associatedLink()->getParentNode()->unlink(file->associatedLink()->getName());
+				co_await removeCoreFile(file->associatedLink().get());
 				co_return;
 			}
 		}

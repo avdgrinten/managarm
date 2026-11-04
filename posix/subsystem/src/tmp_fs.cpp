@@ -1,7 +1,10 @@
 #include <fcntl.h>
 #include <linux/magic.h>
 #include <unistd.h>
+#include <atomic>
+#include <mutex>
 #include <set>
+#include <shared_mutex>
 
 #include <async/mutex.hpp>
 #include <core/clock.hpp>
@@ -29,9 +32,26 @@ HelHandle __raw_map(int fd);
 
 namespace tmp_fs {
 
+// Locking. tmpfs only suspends to access file data and to open FIFOs, hence all locks except for
+// the ones that protect file data and offsets are std:: locks. Locks are taken in the following
+// order:
+// 1. MemoryFile::_offsetMutex (async::mutex): the file offset; not taken by pread/pwrite.
+// 2. Superblock::_topologyMutex (std::shared_mutex): taken shared by every operation that
+//    mutates directory entries and exclusively by rename(). Also protects Link::_owner and
+//    Link::_name.
+// 3. DirectoryNode::_dirMutex (std::shared_mutex): _entries and _dead. When two are held,
+//    the parent's is taken first; only rename() (under exclusive topology) holds more.
+// 4. MemoryNode::_dataMutex (async::shared_mutex): the file's memory; never held together with 3.
+// 5. Node::_metaMutex (std::mutex): mode, owner, timestamps and link count. Leaf lock.
+// Links that are removed from a directory are only dropped after releasing all locks, since
+// destructing them can destruct directories (and their locks) or FIFO channels.
+// Observers are notified after releasing all locks.
+
 namespace {
 
 struct Superblock;
+
+std::shared_mutex &topologyMutexOf(FsSuperblock *superblock);
 
 struct Node : FsNode {
 	Node(Superblock *superblock, FsNode::DefaultOps default_ops = 0);
@@ -48,11 +68,11 @@ protected:
 		_gid = gid;
 	}
 
-public:
-	async::result<frg::expected<Error, FileStats>> getStats() override {
+	// Returns the stats of this node except for the file size.
+	FileStats baseStats() {
+		std::lock_guard lock{_metaMutex};
 		FileStats stats{};
 		stats.inodeNumber = _inodeNumber;
-		stats.fileSize = 0;
 		stats.numLinks = _numLinks;
 		stats.mode = _mode;
 		stats.uid = _uid;
@@ -63,52 +83,32 @@ public:
 		stats.mtimeNanos = _mtime.tv_nsec;
 		stats.ctimeSecs = _ctime.tv_sec;
 		stats.ctimeNanos = _ctime.tv_nsec;
-		co_return stats;
+		return stats;
+	}
+
+public:
+	async::result<frg::expected<Error, FileStats>> getStats() override {
+		co_return baseStats();
 	}
 
 	int64_t inodeNumber() {
 		return _inodeNumber;
 	}
 
-	int numLinks() {
-		return _numLinks;
-	}
-
 	void adjustLinkCount(int delta) {
+		std::lock_guard lock{_metaMutex};
 		_numLinks += delta;
 	}
 
-	mode_t mode() {
-		return _mode;
-	}
-
-	uid_t uid() {
-		return _uid;
-	}
-
-	gid_t gid() {
-		return _gid;
-	}
-
-	timespec atime() {
-		return _atime;
-	}
-
-	timespec mtime() {
-		return _mtime;
-	}
-
-	timespec ctime() {
-		return _ctime;
-	}
-
 	async::result<Error> chmod(int mode) override {
+		std::lock_guard lock{_metaMutex};
 		_mode = (_mode & 0xFFFFF000) | mode;
 		co_return Error::success;
 	}
 
 	async::result<Error> utimensat(std::optional<timespec> atime, std::optional<timespec> mtime,
 			timespec ctime) override {
+		std::lock_guard lock{_metaMutex};
 		if(atime) {
 			_atime.tv_sec = atime->tv_sec;
 			_atime.tv_nsec = atime->tv_nsec;
@@ -125,6 +125,7 @@ public:
 	}
 
 	async::result<std::expected<void, Error>> chown(std::optional<uid_t> uid, std::optional<gid_t> gid) override {
+		std::lock_guard lock{_metaMutex};
 		if(uid)
 			_uid = *uid;
 		if(gid)
@@ -134,12 +135,22 @@ public:
 
 private:
 	int64_t _inodeNumber;
+
+	// Leaf lock.
+	std::mutex _metaMutex;
+	// Protected by _metaMutex.
 	int _numLinks = 1;
+	// Protected by _metaMutex.
 	mode_t _mode = 0;
+	// Protected by _metaMutex.
 	uid_t _uid = 0;
+	// Protected by _metaMutex.
 	gid_t _gid = 0;
+	// Protected by _metaMutex.
 	timespec _atime = {0, 0};
+	// Protected by _metaMutex.
 	timespec _mtime = {0, 0};
+	// Protected by _metaMutex.
 	timespec _ctime = {0, 0};
 };
 
@@ -157,19 +168,8 @@ public:
 	SymlinkNode(Superblock *superblock, std::string link);
 
 	async::result<frg::expected<Error, FileStats>> getStats() override {
-		FileStats stats{};
-		stats.inodeNumber = inodeNumber();
+		auto stats = baseStats();
 		stats.fileSize = _link.size();
-		stats.numLinks = numLinks();
-		stats.mode = mode();
-		stats.uid = uid();
-		stats.gid = gid();
-		stats.atimeSecs = atime().tv_sec;
-		stats.atimeNanos = atime().tv_nsec;
-		stats.mtimeSecs = mtime().tv_sec;
-		stats.mtimeNanos = mtime().tv_nsec;
-		stats.ctimeSecs = ctime().tv_sec;
-		stats.ctimeNanos = ctime().tv_nsec;
 		co_return stats;
 	}
 
@@ -234,53 +234,79 @@ public:
 struct Link final : FsLink {
 public:
 	explicit Link(smarter::shared_ptr<FsNode> target)
-	: _target(std::move(target)) { }
+	: _sb(target->superblock()), _target(std::move(target)) { }
 
+	// The superblock is the one of the directory: populateRootView() links nodes of other
+	// superblocks into tmpfs directories.
 	explicit Link(smarter::shared_ptr<FsLink, LinkRc> owner, std::string name, smarter::shared_ptr<FsNode> target)
-	: _owner(std::move(owner)), _name(std::move(name)), _target(std::move(target)) {
+	: _sb(owner->getTarget()->superblock()), _owner(std::move(owner)), _name(std::move(name)),
+			_target(std::move(target)) {
 		assert(_owner);
 		assert(!_name.empty());
 	}
 
 	smarter::shared_ptr<FsLink, LinkRc> getParent() override {
+		std::shared_lock lock{topologyMutexOf(_sb)};
 		return _owner;
 	}
 
 	std::string getName() override {
+		std::shared_lock lock{topologyMutexOf(_sb)};
 		// The root link does not have a name.
 		assert(_owner);
 		return _name;
+	}
+
+	std::pair<smarter::shared_ptr<FsLink, LinkRc>, std::string> getParentAndName() override {
+		std::shared_lock lock{topologyMutexOf(_sb)};
+		return {_owner, _name};
 	}
 
 	smarter::shared_ptr<FsNode> getTarget() override {
 		return _target;
 	}
 
-	void renameTo(smarter::shared_ptr<FsLink, LinkRc> owner, std::string name) {
+	// Callers must hold the topology lock or the lock of the directory that contains the link:
+	// rename() only renames links while they are not part of any directory.
+	const std::string &nameLocked() {
+		return _name;
+	}
+
+	// Callers must hold the topology lock.
+	Link *ownerLocked() {
+		return static_cast<Link *>(_owner.get());
+	}
+
+	// Callers must hold the topology lock exclusively.
+	// Returns the previous owner, which callers drop after releasing their locks.
+	smarter::shared_ptr<FsLink, LinkRc> renameTo(smarter::shared_ptr<FsLink, LinkRc> owner, std::string name) {
 		assert(_owner); // The root link is never renamed.
-		_owner = std::move(owner);
 		_name = std::move(name);
+		return std::exchange(_owner, std::move(owner));
 	}
 
 private:
+	FsSuperblock *_sb;
+	// Protected by the topology lock.
 	smarter::shared_ptr<FsLink, LinkRc> _owner;
 	std::string _name;
 	smarter::shared_ptr<FsNode> _target;
 };
 
+// Callers must hold the lock of the directory whose entries are compared.
 struct LinkCompare {
 	struct is_transparent { };
 
 	bool operator() (const smarter::shared_ptr<Link, LinkRc> &link, const std::string &name) const {
-		return link->getName() < name;
+		return link->nameLocked() < name;
 	}
 
 	bool operator() (const std::string &name, const smarter::shared_ptr<Link, LinkRc> &link) const {
-		return name < link->getName();
+		return name < link->nameLocked();
 	}
 
 	bool operator() (const smarter::shared_ptr<Link, LinkRc> &a, const smarter::shared_ptr<Link, LinkRc> &b) const {
-		return a->getName() < b->getName();
+		return a->nameLocked() < b->nameLocked();
 	}
 };
 
@@ -311,7 +337,9 @@ private:
 	// The '.' and '..' entries are synthesized before iterating _entries.
 	DotEntriesPhase _dots = DotEntriesPhase::dot;
 
-	std::set<smarter::shared_ptr<Link, LinkRc>, LinkCompare>::iterator _iter;
+	// Name of the last entry that readEntries() returned.
+	std::optional<std::string> _lastName;
+	size_t _numEntries = 0;
 };
 
 struct DirectoryNode final : Node {
@@ -351,17 +379,7 @@ private:
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> link(FsLink *parent, std::string name,
-			smarter::shared_ptr<FsNode> target) override {
-		// Directories have a single parent, such that the directory tree stays acyclic.
-		if(target->getType() == VfsType::directory)
-			co_return Error::insufficientPermissions;
-		if(!(_entries.find(name) == _entries.end()))
-			co_return Error::alreadyExists;
-		static_cast<Node *>(target.get())->adjustLinkCount(1);
-		auto link = makeFsShared<Link>(parent->sharedFromThis(), std::move(name), std::move(target));
-		_entries.insert(link);
-		co_return link;
-	}
+			smarter::shared_ptr<FsNode> target) override;
 
 	async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	mkdir(FsLink *parent, Process *p, std::string name, mode_t mode) override;
@@ -374,47 +392,11 @@ private:
 
 	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> mkfifo(FsLink *parent, std::string name, mode_t mode) override;
 
-	async::result<frg::expected<Error>> unlink(std::string name) override {
-		auto it = _entries.find(name);
-		if(it == _entries.end())
-			co_return Error::noSuchFile;
-
-		auto target = it->get()->getTarget();
-		if(target->getType() == VfsType::directory)
-			co_return Error::directoryNotEmpty;
-
-		static_cast<Node *>(target.get())->adjustLinkCount(-1);
-		_entries.erase(it);
-
-		notifyObservers(FsObserver::deleteEvent, name, 0);
-		co_return {};
-	}
+	async::result<frg::expected<Error>> unlink(std::string name) override;
 
 	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> mksocket(FsLink *parent, std::string name, mode_t mode, uid_t uid, gid_t gid) override;
 
-	async::result<frg::expected<Error>> rmdir(std::string name) override {
-		auto it = _entries.find(name);
-		if(it == _entries.end())
-			co_return Error::noSuchFile;
-
-		auto target = it->get()->getTarget();
-		if(target->getType() == VfsType::directory) {
-			auto dir_target = reinterpret_cast<DirectoryNode *>(target.get());
-
-			if(dir_target->_entries.size()) {
-				co_return Error::directoryNotEmpty;
-			}
-		} else {
-			co_return Error::notDirectory;
-		}
-
-		_entries.erase(it);
-		// Drop the removed subdirectory's '..' backlink.
-		adjustLinkCount(-1);
-
-		notifyObservers(FsObserver::deleteEvent, name, 0, true);
-		co_return {};
-	}
+	async::result<frg::expected<Error>> rmdir(std::string name) override;
 
 public:
 	DirectoryNode(Superblock *superblock, int mode, uid_t uid, gid_t gid);
@@ -426,12 +408,33 @@ public:
 	std::expected<smarter::shared_ptr<Link, LinkRc>, Error>
 	createDirectory(FsLink *parent, std::string name, int mode, uid_t uid, gid_t gid);
 
+	// Returns the existing entry (of any type) or creates a new directory.
+	std::expected<smarter::shared_ptr<Link, LinkRc>, Error>
+	getOrCreateDirectory(FsLink *parent, std::string name, int mode, uid_t uid, gid_t gid);
+
 	std::expected<smarter::shared_ptr<Link, LinkRc>, Error>
 	createDevice(FsLink *parent, std::string name, VfsType type, DeviceId id);
 
 private:
+	using EntrySet = std::set<smarter::shared_ptr<Link, LinkRc>, LinkCompare>;
+
+	// Returns the entry called name, or inserts a link to the node that makeNode() returns.
+	// The bool is true if the link was inserted.
+	template<typename MakeNode>
+	std::expected<std::pair<smarter::shared_ptr<Link, LinkRc>, bool>, Error>
+	getOrInsert(FsLink *parent, const std::string &name, bool isDirectory, MakeNode makeNode);
+
+	// Like getOrInsert(), but fails if the entry exists already.
+	template<typename MakeNode>
+	std::expected<smarter::shared_ptr<Link, LinkRc>, Error>
+	insert(FsLink *parent, const std::string &name, bool isDirectory, MakeNode makeNode);
+
+	std::shared_mutex _dirMutex;
+	// Protected by _dirMutex.
 	// TODO: This creates a circular reference -- fix this.
-	std::set<smarter::shared_ptr<Link, LinkRc>, LinkCompare> _entries;
+	EntrySet _entries;
+	// Protected by _dirMutex. Set once the directory was removed; no entries can be added anymore.
+	bool _dead = false;
 };
 
 // TODO: Remove this class in favor of MemoryNode.
@@ -525,7 +528,7 @@ private:
 struct MemoryNode final : Node {
 	friend struct MemoryFile;
 
-	MemoryNode(Superblock *superblock);
+	MemoryNode(Superblock *superblock, mode_t mode = 0);
 	~MemoryNode();
 
 	VfsType getType() override {
@@ -549,24 +552,16 @@ struct MemoryNode final : Node {
 	}
 
 	async::result<frg::expected<Error, FileStats>> getStats() override {
-		FileStats stats{};
-		stats.inodeNumber = inodeNumber();
-		stats.fileSize = _fileSize;
-		stats.numLinks = numLinks();
-		stats.mode = mode();
-		stats.uid = uid();
-		stats.gid = gid();
-		stats.atimeSecs = atime().tv_sec;
-		stats.atimeNanos = atime().tv_nsec;
-		stats.mtimeSecs = mtime().tv_sec;
-		stats.mtimeNanos = mtime().tv_nsec;
-		stats.ctimeSecs = ctime().tv_sec;
-		stats.ctimeNanos = ctime().tv_nsec;
+		auto stats = baseStats();
+		stats.fileSize = _fileSize.load(std::memory_order_relaxed);
 		co_return stats;
 	}
 
 private:
+	// Must be called with _dataMutex held exclusively.
 	async::result<void> _resizeFile(size_t new_size) {
+		// TODO: Growing the file again exposes the truncated contents. Zero them on shrink once memory
+		//       objects can discard a range; writing zeros would allocate all of it.
 		_fileSize = new_size;
 
 		size_t aligned_size = (new_size + 0xFFF) & ~size_t(0xFFF);
@@ -606,9 +601,14 @@ private:
 		co_return {};
 	}
 
+	// Never held together with a directory lock.
+	async::shared_mutex _dataMutex;
+	// Protected by _dataMutex.
 	helix::UniqueDescriptor _memory;
+	// Protected by _dataMutex.
 	size_t _areaSize;
-	size_t _fileSize;
+	// Only written with _dataMutex held exclusively; atomic such that getStats() can read it.
+	std::atomic<size_t> _fileSize;
 };
 
 struct Superblock final : FsSuperblock {
@@ -624,55 +624,88 @@ struct Superblock final : FsSuperblock {
 	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> rename(FsLink *src_fs_link,
 			FsLink *dest_fs_link, std::string dest_name) override {
 		auto src_link = static_cast<Link *>(src_fs_link);
+		auto dest_link = static_cast<Link *>(dest_fs_link);
 
 		auto dest_fs_dir = dest_fs_link->getTarget();
 		if(dest_fs_dir->getType() != VfsType::directory)
 			co_return Error::notDirectory;
 		auto dest_dir = static_cast<DirectoryNode *>(dest_fs_dir.get());
 
-		auto src_dir = static_cast<DirectoryNode *>(src_link->getParentNode().get());
-		auto it = src_dir->_entries.find(src_link->getName());
-		if(it == src_dir->_entries.end() || it->get() != src_link)
-			co_return Error::alreadyExists;
-
 		auto target = src_link->getTarget();
+
+		// Dropped after releasing the locks.
+		DirectoryNode::EntrySet::node_type overwritten_entry;
+		smarter::shared_ptr<FsLink, LinkRc> old_owner;
+		smarter::shared_ptr<FsNode> src_fs_dir;
+		smarter::shared_ptr<FsNode> overwritten;
+		smarter::shared_ptr<Link, LinkRc> result;
+
+		std::unique_lock topology_lock{_topologyMutex};
+
+		auto src_owner = src_link->ownerLocked();
+		if(!src_owner)
+			co_return Error::illegalArguments;
+		src_fs_dir = src_owner->getTarget();
+		auto src_dir = static_cast<DirectoryNode *>(src_fs_dir.get());
 
 		// Moving a directory into its own subtree would detach it into a cycle.
 		if(target->getType() == VfsType::directory) {
-			for(auto ancestor = dest_fs_link->sharedFromThis(); ancestor; ancestor = ancestor->getParent()) {
-				if(ancestor.get() == src_link)
+			for(auto ancestor = dest_link; ancestor; ancestor = ancestor->ownerLocked()) {
+				if(ancestor == src_link)
 					co_return Error::illegalArguments;
 			}
 		}
 
+		// Nobody else holds more than one directory lock under exclusive topology,
+		// hence the order does not matter here.
+		std::unique_lock src_lock{src_dir->_dirMutex};
+		std::unique_lock<std::shared_mutex> dest_lock;
+		if(dest_dir != src_dir)
+			dest_lock = std::unique_lock{dest_dir->_dirMutex};
+
+		if(dest_dir->_dead)
+			co_return Error::noSuchFile;
+
+		auto it = src_dir->_entries.find(src_link->nameLocked());
+		if(it == src_dir->_entries.end() || it->get() != src_link)
+			co_return Error::noSuchFile;
+
 		// Unlink an existing link if such a link exists.
 		if(auto dest_it = dest_dir->_entries.find(dest_name);
 				dest_it != dest_dir->_entries.end()) {
-			auto overwritten = (*dest_it)->getTarget();
+			overwritten = (*dest_it)->getTarget();
 			// Renaming a file onto itself is a no-op.
-			if(overwritten.get() == target.get())
-				co_return *dest_it;
+			if(overwritten.get() == target.get()) {
+				result = *dest_it;
+				co_return result;
+			}
 
 			if(overwritten->getType() == VfsType::directory) {
 				// A directory may only be replaced by another empty directory.
 				if(target->getType() != VfsType::directory)
 					co_return Error::isDirectory;
-				if(!static_cast<DirectoryNode *>(overwritten.get())->_entries.empty())
+				auto victim = static_cast<DirectoryNode *>(overwritten.get());
+				// The source directory contains the source link.
+				if(victim == src_dir)
 					co_return Error::directoryNotEmpty;
+				std::unique_lock victim_lock{victim->_dirMutex};
+				if(!victim->_entries.empty())
+					co_return Error::directoryNotEmpty;
+				victim->_dead = true;
 				dest_dir->adjustLinkCount(-1); // Drop its '..' backlink.
 			}else{
 				if(target->getType() == VfsType::directory)
 					co_return Error::notDirectory;
 				static_cast<Node *>(overwritten.get())->adjustLinkCount(-1);
 			}
-			dest_dir->_entries.erase(dest_it);
+			overwritten_entry = dest_dir->_entries.extract(dest_it);
 		}
 
 		// _entries is ordered by name, so the link has to leave the set before it is renamed.
-		auto link = *it;
-		src_dir->_entries.erase(it);
-		link->renameTo(dest_fs_link->sharedFromThis(), std::move(dest_name));
-		dest_dir->_entries.insert(link);
+		auto moved = src_dir->_entries.extract(it);
+		result = moved.value();
+		old_owner = result->renameTo(dest_fs_link->sharedFromThis(), std::move(dest_name));
+		dest_dir->_entries.insert(std::move(moved));
 
 		if(target->getType() == VfsType::directory) {
 			// Account for the moved directory's '..' backlink.
@@ -681,7 +714,12 @@ struct Superblock final : FsSuperblock {
 				dest_dir->adjustLinkCount(1);
 			}
 		}
-		co_return link;
+
+		if(dest_lock)
+			dest_lock.unlock();
+		src_lock.unlock();
+		topology_lock.unlock();
+		co_return result;
 	}
 
 	async::result<frg::expected<Error, FsStats>> getFsStats() override {
@@ -696,7 +734,11 @@ struct Superblock final : FsSuperblock {
 	}
 
 	int64_t allocateInode() {
-		return _inodeCounter++;
+		return _inodeCounter.fetch_add(1, std::memory_order_relaxed);
+	}
+
+	std::shared_mutex &topologyMutex() {
+		return _topologyMutex;
 	}
 
 	dev_t deviceNumber() override {
@@ -704,18 +746,26 @@ struct Superblock final : FsSuperblock {
 	}
 
 private:
-	int64_t _inodeCounter = 1;
+	std::atomic<int64_t> _inodeCounter = 1;
+
+	std::shared_mutex _topologyMutex;
 
 	std::string fsType_;
 	unsigned int deviceMinor_;
 };
 
+std::shared_mutex &topologyMutexOf(FsSuperblock *superblock) {
+	return static_cast<Superblock *>(superblock)->topologyMutex();
+}
+
 // ----------------------------------------------------------------------------
 // MemoryNode and MemoryFile implementation.
 // ----------------------------------------------------------------------------
 
-MemoryNode::MemoryNode(Superblock *superblock)
-: Node{superblock, FsNode::defaultSupportsObservers}, _areaSize{0}, _fileSize{0} { }
+MemoryNode::MemoryNode(Superblock *superblock, mode_t mode)
+: Node{superblock, FsNode::defaultSupportsObservers}, _areaSize{0}, _fileSize{0} {
+	initializeMode(mode);
+}
 
 MemoryNode::~MemoryNode() {
 	notifyObservers(FsObserver::deleteSelfEvent, {}, 0);
@@ -741,7 +791,7 @@ MemoryFile::seek(off_t delta, VfsSeek whence) {
 		_offset += delta;
 	}else if(whence == VfsSeek::eof) {
 		auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
-		_offset = delta + node->_fileSize;
+		_offset = delta + node->_fileSize.load(std::memory_order_relaxed);
 	} else {
 		co_return Error::illegalArguments;
 	}
@@ -756,10 +806,13 @@ MemoryFile::readSome(Process *, void *buffer, size_t max_length, async::cancella
 	{
 		co_await _offsetMutex.async_lock();
 		frg::unique_lock offset_lock{frg::adopt_lock, _offsetMutex};
+		co_await node->_dataMutex.async_lock_shared();
+		frg::shared_lock data_lock{frg::adopt_lock, node->_dataMutex};
 
-		if(!(_offset <= node->_fileSize))
+		size_t file_size = node->_fileSize.load(std::memory_order_relaxed);
+		if(!(_offset <= file_size))
 			co_return std::unexpected{Error::eof};
-		chunk = std::min(node->_fileSize - _offset, max_length);
+		chunk = std::min(file_size - _offset, max_length);
 
 		if(auto result = co_await node->_readData(_offset, buffer, chunk); !result)
 			co_return std::unexpected{result.error()};
@@ -779,11 +832,13 @@ MemoryFile::writeAll(Process *, const void *buffer, size_t length) {
 	{
 		co_await _offsetMutex.async_lock();
 		frg::unique_lock offset_lock{frg::adopt_lock, _offsetMutex};
+		co_await node->_dataMutex.async_lock();
+		frg::unique_lock data_lock{frg::adopt_lock, node->_dataMutex};
 
 		if(flags_ & semanticAppend)
-			_offset = node->_fileSize;
+			_offset = node->_fileSize.load(std::memory_order_relaxed);
 
-		if(_offset + length > node->_fileSize)
+		if(_offset + length > node->_fileSize.load(std::memory_order_relaxed))
 			co_await node->_resizeFile(_offset + length);
 
 		FRG_CO_TRY(co_await node->_writeData(_offset, buffer, length));
@@ -797,9 +852,13 @@ async::result<std::expected<size_t, Error>>
 MemoryFile::pread(Process *, int64_t offset, void *buffer, size_t length) {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
 
-	if(static_cast<size_t>(offset) >= node->_fileSize)
+	co_await node->_dataMutex.async_lock_shared();
+	frg::shared_lock data_lock{frg::adopt_lock, node->_dataMutex};
+
+	size_t file_size = node->_fileSize.load(std::memory_order_relaxed);
+	if(static_cast<size_t>(offset) >= file_size)
 		co_return std::unexpected{Error::eof};
-	auto chunk = std::min(node->_fileSize - offset, length);
+	auto chunk = std::min(file_size - offset, length);
 
 	if(auto result = co_await node->_readData(offset, buffer, chunk); !result)
 		co_return std::unexpected{result.error()};
@@ -811,7 +870,10 @@ async::result<frg::expected<Error, size_t>>
 MemoryFile::pwrite(Process *, int64_t offset, const void *buffer, size_t length) {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
 
-	if(offset + length > node->_fileSize)
+	co_await node->_dataMutex.async_lock();
+	frg::unique_lock data_lock{frg::adopt_lock, node->_dataMutex};
+
+	if(offset + length > node->_fileSize.load(std::memory_order_relaxed))
 		co_await node->_resizeFile(offset + length);
 
 	FRG_CO_TRY(co_await node->_writeData(offset, buffer, length));
@@ -822,6 +884,9 @@ async::result<frg::expected<protocols::fs::Error>>
 MemoryFile::truncate(size_t size) {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
 
+	co_await node->_dataMutex.async_lock();
+	frg::unique_lock data_lock{frg::adopt_lock, node->_dataMutex};
+
 	co_await node->_resizeFile(size);
 	co_return {};
 }
@@ -830,8 +895,11 @@ async::result<frg::expected<protocols::fs::Error>>
 MemoryFile::allocate(int64_t offset, size_t size) {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
 
+	co_await node->_dataMutex.async_lock();
+	frg::unique_lock data_lock{frg::adopt_lock, node->_dataMutex};
+
 	// TODO: Careful about overflow.
-	if(offset + size <= node->_fileSize)
+	if(offset + size <= node->_fileSize.load(std::memory_order_relaxed))
 		co_return {};
 	co_await node->_resizeFile(offset + size);
 	co_return {};
@@ -858,6 +926,10 @@ async::result<int> MemoryFile::getFileFlags() {
 FutureMaybe<helix::UniqueDescriptor>
 MemoryFile::accessMemory() {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
+
+	co_await node->_dataMutex.async_lock_shared();
+	frg::shared_lock data_lock{frg::adopt_lock, node->_dataMutex};
+
 	co_return node->_memory.dup();
 }
 
@@ -885,10 +957,8 @@ void DirectoryFile::handleClose() {
 
 DirectoryFile::DirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 : FileWithDefaults{FileKind::unknown,  StructName::get("tmpfs.dir"), std::move(mount), std::move(link)},
-		_node{static_cast<DirectoryNode *>(associatedLink()->getTarget().get())},
-		_iter{_node->_entries.begin()} { }
+		_node{static_cast<DirectoryNode *>(associatedLink()->getTarget().get())} { }
 
-// TODO: This iteration mechanism only works as long as _iter is not concurrently deleted.
 async::result<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>>
 DirectoryFile::readEntries() {
 	// '.' and '..' are not stored in _entries; synthesize them before iterating.
@@ -900,11 +970,23 @@ DirectoryFile::readEntries() {
 			co_return *entry;
 	}
 
-	if(_iter != _node->_entries.end()) {
-		auto name = (*_iter)->getName();
-		auto target = static_cast<Node *>((*_iter)->getTarget().get());
+	std::string name;
+	smarter::shared_ptr<FsNode> targetPtr;
+	{
+		std::shared_lock lock{_node->_dirMutex};
+		// Continue after the last name such that concurrent insertions and removals are tolerated.
+		auto it = _lastName ? _node->_entries.upper_bound(*_lastName) : _node->_entries.begin();
+		if(it != _node->_entries.end()) {
+			name = (*it)->nameLocked();
+			targetPtr = (*it)->getTarget();
+		}
+	}
+
+	if(targetPtr) {
+		auto target = static_cast<Node *>(targetPtr.get());
 		auto type = target->getType();
-		_iter++;
+		_lastName = name;
+		_numEntries++;
 
 		int64_t fileType = managarm::fs::FileType::REGULAR;
 
@@ -935,7 +1017,7 @@ DirectoryFile::readEntries() {
 		co_return protocols::fs::ReadEntriesResult{
 			.name = name,
 			.inode = static_cast<ino_t>(target->inodeNumber()),
-			.offset = 2 + std::distance(_node->_entries.begin(), _iter),
+			.offset = static_cast<long>(2 + _numEntries),
 			.fileType = fileType
 		};
 	}else{
@@ -1004,21 +1086,120 @@ DirectoryNode::DirectoryNode(Superblock *superblock, int mode, uid_t uid, gid_t 
 	adjustLinkCount(1);
 }
 
+template<typename MakeNode>
+std::expected<std::pair<smarter::shared_ptr<Link, LinkRc>, bool>, Error>
+DirectoryNode::getOrInsert(FsLink *parent, const std::string &name, bool isDirectory,
+		MakeNode makeNode) {
+	smarter::shared_ptr<Link, LinkRc> link;
+	{
+		std::shared_lock topology_lock{topologyMutexOf(superblock())};
+		std::unique_lock dir_lock{_dirMutex};
+		if(_dead)
+			return std::unexpected{Error::noSuchFile};
+		if(auto it = _entries.find(name); it != _entries.end())
+			return std::pair{*it, false};
+		link = makeFsShared<Link>(parent->sharedFromThis(), name, makeNode());
+		_entries.insert(link);
+		// Account for the new subdirectory's '..' backlink.
+		if(isDirectory)
+			adjustLinkCount(1);
+	}
+	return std::pair{std::move(link), true};
+}
+
+template<typename MakeNode>
+std::expected<smarter::shared_ptr<Link, LinkRc>, Error>
+DirectoryNode::insert(FsLink *parent, const std::string &name, bool isDirectory,
+		MakeNode makeNode) {
+	auto result = getOrInsert(parent, name, isDirectory, std::move(makeNode));
+	if(!result)
+		return std::unexpected{result.error()};
+	if(!result->second)
+		return std::unexpected{Error::alreadyExists};
+	return std::move(result->first);
+}
+
 async::result<std::expected<smarter::shared_ptr<FsLink, LinkRc>, Error>>
 DirectoryNode::getLinkOrCreate(FsLink *parent, Process *, std::string name, mode_t mode,
 		bool exclusive) {
-	auto linkResult = co_await getLink(parent, name);
-	if (linkResult && !exclusive)
-		co_return linkResult.value();
-	else if (linkResult && exclusive)
-		co_return std::unexpected{Error::alreadyExists};
-
-	auto node = makeFsShared<MemoryNode>(static_cast<Superblock *>(superblock()));
-	co_await node->chmod(mode);
-	auto link = makeFsShared<Link>(parent->sharedFromThis(), name, std::move(node));
-	_entries.insert(link);
+	auto result = getOrInsert(parent, name, false, [&] {
+		return makeFsShared<MemoryNode>(static_cast<Superblock *>(superblock()), mode);
+	});
+	if(!result)
+		co_return std::unexpected{result.error()};
+	auto [link, inserted] = std::move(*result);
+	if(!inserted) {
+		if(exclusive)
+			co_return std::unexpected{Error::alreadyExists};
+		co_return link;
+	}
 	notifyObservers(FsObserver::createEvent, name, 0, false);
 	co_return link;
+}
+
+async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
+DirectoryNode::link(FsLink *parent, std::string name, smarter::shared_ptr<FsNode> target) {
+	// Directories have a single parent, such that the directory tree stays acyclic.
+	if(target->getType() == VfsType::directory)
+		co_return Error::insufficientPermissions;
+	auto result = insert(parent, name, false, [&] {
+		static_cast<Node *>(target.get())->adjustLinkCount(1);
+		return target;
+	});
+	if(!result)
+		co_return result.error();
+	co_return smarter::shared_ptr<FsLink, LinkRc>{std::move(*result)};
+}
+
+async::result<frg::expected<Error>> DirectoryNode::unlink(std::string name) {
+	// Dropped after releasing the locks.
+	EntrySet::node_type removed;
+	{
+		std::shared_lock topology_lock{topologyMutexOf(superblock())};
+		std::unique_lock dir_lock{_dirMutex};
+		auto it = _entries.find(name);
+		if(it == _entries.end())
+			co_return Error::noSuchFile;
+
+		auto target = it->get()->getTarget();
+		if(target->getType() == VfsType::directory)
+			co_return Error::directoryNotEmpty;
+
+		static_cast<Node *>(target.get())->adjustLinkCount(-1);
+		removed = _entries.extract(it);
+	}
+
+	notifyObservers(FsObserver::deleteEvent, name, 0);
+	co_return {};
+}
+
+async::result<frg::expected<Error>> DirectoryNode::rmdir(std::string name) {
+	// Dropped after releasing the locks.
+	EntrySet::node_type removed;
+	{
+		std::shared_lock topology_lock{topologyMutexOf(superblock())};
+		std::unique_lock dir_lock{_dirMutex};
+		auto it = _entries.find(name);
+		if(it == _entries.end())
+			co_return Error::noSuchFile;
+
+		auto target = it->get()->getTarget();
+		if(target->getType() != VfsType::directory)
+			co_return Error::notDirectory;
+
+		auto dir_target = static_cast<DirectoryNode *>(target.get());
+		std::unique_lock child_lock{dir_target->_dirMutex};
+		if(!dir_target->_entries.empty())
+			co_return Error::directoryNotEmpty;
+		dir_target->_dead = true;
+
+		removed = _entries.extract(it);
+		// Drop the removed subdirectory's '..' backlink.
+		adjustLinkCount(-1);
+	}
+
+	notifyObservers(FsObserver::deleteEvent, name, 0, true);
+	co_return {};
 }
 
 async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>>
@@ -1035,13 +1216,13 @@ DirectoryNode::mkdir(FsLink *parent, Process *proc, std::string name, mode_t mod
 
 async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 DirectoryNode::symlink(FsLink *parent, std::string name, std::string path) {
-	if(!(_entries.find(name) == _entries.end()))
-		co_return Error::alreadyExists;
-	auto node = makeFsShared<SymlinkNode>(static_cast<Superblock *>(superblock()),
-			std::move(path));
-	auto link = makeFsShared<Link>(parent->sharedFromThis(), std::move(name), std::move(node));
-	_entries.insert(link);
-	co_return link;
+	auto result = insert(parent, name, false, [&] {
+		return makeFsShared<SymlinkNode>(static_cast<Superblock *>(superblock()),
+				std::move(path));
+	});
+	if(!result)
+		co_return result.error();
+	co_return smarter::shared_ptr<FsLink, LinkRc>{std::move(*result)};
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
@@ -1053,6 +1234,7 @@ DirectoryNode::mkdev(FsLink *parent, std::string name, VfsType type, DeviceId id
 }
 
 smarter::shared_ptr<Link, LinkRc> DirectoryNode::lookup(const std::string &name) {
+	std::shared_lock lock{_dirMutex};
 	auto it = _entries.find(name);
 	if(it == _entries.end())
 		return nullptr;
@@ -1061,49 +1243,58 @@ smarter::shared_ptr<Link, LinkRc> DirectoryNode::lookup(const std::string &name)
 
 std::expected<smarter::shared_ptr<Link, LinkRc>, Error>
 DirectoryNode::createDirectory(FsLink *parent, std::string name, int mode, uid_t uid, gid_t gid) {
-	if(!(_entries.find(name) == _entries.end()))
-		return std::unexpected{Error::alreadyExists};
-
-	auto node = makeFsShared<DirectoryNode>(static_cast<Superblock *>(superblock()), mode, uid, gid);
-	auto link = makeFsShared<Link>(parent->sharedFromThis(), name, std::move(node));
-	_entries.insert(link);
-	// Account for the new subdirectory's '..' backlink.
-	adjustLinkCount(1);
+	auto result = insert(parent, name, true, [&] {
+		return makeFsShared<DirectoryNode>(static_cast<Superblock *>(superblock()), mode, uid, gid);
+	});
+	if(!result)
+		return std::unexpected{result.error()};
 	notifyObservers(FsObserver::createEvent, name, 0, true);
-	return link;
+	return std::move(*result);
+}
+
+std::expected<smarter::shared_ptr<Link, LinkRc>, Error>
+DirectoryNode::getOrCreateDirectory(FsLink *parent, std::string name, int mode, uid_t uid, gid_t gid) {
+	auto result = getOrInsert(parent, name, true, [&] {
+		return makeFsShared<DirectoryNode>(static_cast<Superblock *>(superblock()), mode, uid, gid);
+	});
+	if(!result)
+		return std::unexpected{result.error()};
+	auto [link, inserted] = std::move(*result);
+	if(inserted)
+		notifyObservers(FsObserver::createEvent, name, 0, true);
+	return std::move(link);
 }
 
 std::expected<smarter::shared_ptr<Link, LinkRc>, Error>
 DirectoryNode::createDevice(FsLink *parent, std::string name, VfsType type, DeviceId id) {
-	if(!(_entries.find(name) == _entries.end()))
-		return std::unexpected{Error::alreadyExists};
-	auto node = makeFsShared<DeviceNode>(static_cast<Superblock *>(superblock()),
-			type, id);
-	auto link = makeFsShared<Link>(parent->sharedFromThis(), name, std::move(node));
-	_entries.insert(link);
+	auto result = insert(parent, name, false, [&] {
+		return makeFsShared<DeviceNode>(static_cast<Superblock *>(superblock()), type, id);
+	});
+	if(!result)
+		return std::unexpected{result.error()};
 	notifyObservers(FsObserver::createEvent, name, 0);
-	return link;
+	return std::move(*result);
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 DirectoryNode::mkfifo(FsLink *parent, std::string name, mode_t mode) {
-	if(!(_entries.find(name) == _entries.end()))
-		co_return Error::alreadyExists;
-	auto node = makeFsShared<FifoNode>(static_cast<Superblock *>(superblock()), mode);
-	auto link = makeFsShared<Link>(parent->sharedFromThis(), name, std::move(node));
-	_entries.insert(link);
+	auto result = insert(parent, name, false, [&] {
+		return makeFsShared<FifoNode>(static_cast<Superblock *>(superblock()), mode);
+	});
+	if(!result)
+		co_return result.error();
 	notifyObservers(FsObserver::createEvent, name, 0);
-	co_return link;
+	co_return smarter::shared_ptr<FsLink, LinkRc>{std::move(*result)};
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> DirectoryNode::mksocket(FsLink *parent, std::string name, mode_t mode, uid_t uid, gid_t gid) {
-	if(!(_entries.find(name) == _entries.end()))
-		co_return Error::alreadyExists;
-	auto node = makeFsShared<SocketNode>(static_cast<Superblock *>(superblock()), mode, uid, gid);
-	auto link = makeFsShared<Link>(parent->sharedFromThis(), name, std::move(node));
-	_entries.insert(link);
+	auto result = insert(parent, name, false, [&] {
+		return makeFsShared<SocketNode>(static_cast<Superblock *>(superblock()), mode, uid, gid);
+	});
+	if(!result)
+		co_return result.error();
 	notifyObservers(FsObserver::createEvent, name, 0);
-	co_return link;
+	co_return smarter::shared_ptr<FsLink, LinkRc>{std::move(*result)};
 }
 
 } // anonymous namespace
@@ -1124,13 +1315,10 @@ createDevtmpfsNode(FsLink *root, std::string_view path, VfsType type, DeviceId i
 
 		assert(s > k);
 		std::string name{path.substr(k, s - k)};
-		smarter::shared_ptr<FsLink, LinkRc> link = dir->lookup(name);
-		if(!link) {
-			auto result = dir->createDirectory(dirLink.get(), name, 0755, 0, 0);
-			if(!result)
-				return std::unexpected{result.error()};
-			link = std::move(*result);
-		}
+		auto result = dir->getOrCreateDirectory(dirLink.get(), name, 0755, 0, 0);
+		if(!result)
+			return std::unexpected{result.error()};
+		smarter::shared_ptr<FsLink, LinkRc> link = std::move(*result);
 		// devtmpfs is writable, hence userspace may have put non-directories (incl. symlinks) here.
 		if(link->getTarget()->getType() != VfsType::directory)
 			return std::unexpected{Error::notDirectory};

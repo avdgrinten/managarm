@@ -40,6 +40,7 @@ public:
 	void handleClose() override;
 
 	async::result<frg::expected<Error, off_t>> seek(off_t offset, VfsSeek whence) override;
+	async::result<frg::expected<Error, off_t>> getPosition() override;
 
 	async::result<std::expected<size_t, Error>>
 	readSome(Process *, void *data, size_t max_length, async::cancellation_token ce) override;

@@ -522,14 +522,11 @@ HandleRequest::operator()(managarm::posix::SymlinkAtRequest &&req,
 	auto parent = parentLink->getTarget();
 	auto result = co_await parent->symlink(parentLink.get(), resolver.nextComponent(), req.target_path());
 	if(auto error = std::get_if<Error>(&result); error) {
-		if(*error == Error::alreadyExists) {
-			co_await sendErrorResponse<managarm::posix::SymlinkAtResponse>(conversation, managarm::posix::Errors::ALREADY_EXISTS);
-			co_return {};
-		} else {
-			assert(*error == Error::illegalOperationTarget);
-			co_await sendErrorResponse<managarm::posix::SymlinkAtResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
-			co_return {};
-		}
+		auto posixError = *error == Error::illegalOperationTarget
+			? managarm::posix::Errors::ILLEGAL_ARGUMENTS
+			: *error | toPosixProtoError;
+		co_await sendErrorResponse<managarm::posix::SymlinkAtResponse>(conversation, posixError);
+		co_return {};
 	}
 
 	managarm::posix::SymlinkAtResponse resp;
@@ -804,19 +801,20 @@ HandleRequest::operator()(managarm::posix::UnlinkAtRequest &&req,
 
 	target_link = resolver.currentLink();
 
-	auto owner = target_link->getParentNode();
-	if(!owner) {
+	auto [parent, name] = target_link->getParentAndName();
+	if(!parent) {
 		co_await sendErrorResponse<managarm::posix::UnlinkAtResponse>(conversation, managarm::posix::Errors::RESOURCE_IN_USE);
 		co_return {};
 	}
+	auto owner = parent->getTarget();
 	if (req.flags() & AT_REMOVEDIR) {
-		auto result = co_await owner->rmdir(target_link->getName());
+		auto result = co_await owner->rmdir(std::move(name));
 		if(!result) {
 			co_await sendErrorResponse<managarm::posix::UnlinkAtResponse>(conversation, result.error() | toPosixProtoError);
 			co_return {};
 		}
 	} else {
-		auto result = co_await owner->unlink(target_link->getName());
+		auto result = co_await owner->unlink(std::move(name));
 		if(!result) {
 			co_await sendErrorResponse<managarm::posix::UnlinkAtResponse>(conversation, result.error() | toPosixProtoError);
 			co_return {};
@@ -864,8 +862,8 @@ HandleRequest::operator()(managarm::posix::RmdirRequest &&req,
 
 	target_link = resolver.currentLink();
 
-	auto owner = target_link->getParentNode();
-	auto result = co_await owner->rmdir(target_link->getName());
+	auto [parent, name] = target_link->getParentAndName();
+	auto result = co_await parent->getTarget()->rmdir(std::move(name));
 	if(!result) {
 		co_await sendErrorResponse<managarm::posix::RmdirResponse>(conversation, result.error() | toPosixProtoError);
 		co_return {};

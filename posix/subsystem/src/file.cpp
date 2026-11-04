@@ -398,6 +398,10 @@ async::result<frg::expected<Error, off_t>> File::seek(off_t, VfsSeek) {
 	}
 }
 
+async::result<frg::expected<Error, off_t>> File::getPosition() {
+	return seek(0, VfsSeek::relative);
+}
+
 async::result<frg::expected<Error, PollWaitResult>> File::pollWait(Process *,
 		uint64_t sequence, int mask,
 		async::cancellation_token ct) {

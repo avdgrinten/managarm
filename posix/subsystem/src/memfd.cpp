@@ -64,6 +64,8 @@ async::result<frg::expected<Error>> MemoryFile::_resizeFile(size_t new_size) {
 	if(new_size < _fileSize && _seals & F_SEAL_SHRINK)
 		co_return Error::insufficientPermissions;
 
+	// TODO: Growing the file again exposes the truncated contents. Zero them on shrink once memory
+	//       objects can discard a range; writing zeros would allocate all of it.
 	_fileSize = new_size;
 
 	size_t aligned_size = (new_size + 0xFFF) & ~size_t(0xFFF);

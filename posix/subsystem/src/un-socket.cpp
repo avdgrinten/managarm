@@ -650,7 +650,7 @@ public:
 			auto nodeResult = co_await parentLink->getTarget()->mksocket(parentLink.get(),
 					resolver.nextComponent(), (0666 & ~process->fsContext()->getUmask()), process->threadGroup()->uid(), process->threadGroup()->gid());
 			if(!nodeResult) {
-				co_return protocols::fs::Error::alreadyExists;
+				co_return nodeResult.error() | protocols::fs::toFsProtoError;
 			}
 			assert(nodeResult);
 			auto node = nodeResult.value();
