@@ -225,10 +225,17 @@ File::ptSendMsg(void *object, helix_ng::CredentialsView creds, uint32_t flags,
 	}
 
 	std::vector<smarter::shared_ptr<File, FileHandle>> files;
-	for(auto fd : fds) {
-		auto file = (*maybeProcess)->fileContext()->getFile(fd);
-		assert(file && "Illegal FD for SENDMSG cmsg");
-		files.push_back(std::move(file));
+	{
+		// The sending thread may have exited; do not keep its files open across sendMsg().
+		auto fileContext = (*maybeProcess)->fileContext();
+		if(!fileContext)
+			co_return protocols::fs::Error::noSuchProcess;
+
+		for(auto fd : fds) {
+			auto file = fileContext->getFile(fd);
+			assert(file && "Illegal FD for SENDMSG cmsg");
+			files.push_back(std::move(file));
+		}
 	}
 
 	co_return co_await self->sendMsg(maybeProcess->get(), flags,

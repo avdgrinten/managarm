@@ -22,6 +22,14 @@ SuperBlock procfsSuperblock;
 
 namespace {
 
+// Threads that exited have no open files.
+std::unordered_map<int, FileDescriptor> snapshotFileTableOf(Process *process) {
+	auto fileContext = process->fileContext();
+	if(!fileContext)
+		return {};
+	return fileContext->snapshotFileTable();
+}
+
 // Leaf lock; unlinked entries are destroyed after releasing it.
 std::shared_mutex treeMutex;
 
@@ -680,7 +688,13 @@ async::result<std::expected<std::string, Error>> MapNode::show(Process *) {
 	if (!p)
 		co_return std::unexpected(Error::noSuchProcess);
 
-	auto areas = co_await p->vmContext()->snapshotAreas();
+	// Like on Linux, threads that exited have no mappings.
+	auto vmContext = p->vmContext();
+	auto fsContext = p->fsContext();
+	if (!vmContext || !fsContext)
+		co_return std::string{};
+
+	auto areas = co_await vmContext->snapshotAreas();
 	std::stringstream stream;
 	for (auto &area : areas) {
 		stream << std::hex << area.baseAddress();
@@ -708,7 +722,7 @@ async::result<std::expected<std::string, Error>> MapNode::show(Process *) {
 			stream << " ";
 			stream << std::setw(0) << fileStats.value().inodeNumber;
 			stream << "    ";
-			stream << viewPath.getPath(p->fsContext()->getRoot());
+			stream << viewPath.getPath(fsContext->getRoot());
 		} else {
 			// TODO: In the case of memfd files, show the name here.
 			stream << "00000000 00:00 0";
@@ -775,7 +789,11 @@ expected<std::string> RootLink::readSymlink(FsLink *, Process *) {
 	if (!p)
 		co_return Error::noSuchProcess;
 
-	co_return p->fsContext()->getRoot().getPath(p->fsContext()->getRoot());
+	// Like on Linux, threads that exited have no root or working directory.
+	auto fsContext = p->fsContext();
+	if (!fsContext)
+		co_return Error::noSuchFile;
+	co_return fsContext->getRoot().getPath(fsContext->getRoot());
 }
 
 async::result<frg::expected<Error, FileStats>> RootLink::getStats() {
@@ -1018,8 +1036,8 @@ async::result<std::expected<std::string, Error>> StatusNode::show(Process *) {
 	// Based on the man page from Linux man-pages 6.01, updated on 2022-10-09.
 	std::stringstream stream;
 	stream << "Name: " << p->name() << "\n"; // Name is hardcoded to be the last part of the path
-	if (p->fsContext())
-		stream << std::format("Umask: 0{:03o}\n", p->fsContext()->getUmask());
+	if (auto fsContext = p->fsContext(); fsContext)
+		stream << std::format("Umask: 0{:03o}\n", fsContext->getUmask());
 	stream << std::format("State:\t{}\n", state);
 	stream << "Tgid: " << p->pid() << "\n"; // Thread group id, same as gid for now
 	stream << "NGid: 0\n"; // NUMA Group ID, 0 if none.
@@ -1117,7 +1135,11 @@ expected<std::string> CwdLink::readSymlink(FsLink *, Process *) {
 	if (!p)
 		co_return Error::noSuchProcess;
 
-	co_return p->fsContext()->getWorkingDirectory().getPath(p->fsContext()->getWorkingDirectory());
+	// Like on Linux, threads that exited have no root or working directory.
+	auto fsContext = p->fsContext();
+	if (!fsContext)
+		co_return Error::noSuchFile;
+	co_return fsContext->getWorkingDirectory().getPath(fsContext->getWorkingDirectory());
 }
 
 async::result<frg::expected<Error, FileStats>> CwdLink::getStats() {
@@ -1177,7 +1199,7 @@ void FdDirectoryFile::serve(smarter::shared_ptr<FdDirectoryFile> file) {
 
 FdDirectoryFile::FdDirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link, Process *process)
 : FileWithDefaults{FileKind::unknown,  StructName::get("procfs.fddir"), std::move(mount), std::move(link)},
-		_process{process->weak_from_this()}, _fileTable{process->fileContext()->snapshotFileTable()}, _iter{_fileTable.begin()} {}
+		_process{process->weak_from_this()}, _fileTable{snapshotFileTableOf(process)}, _iter{_fileTable.begin()} {}
 
 void FdDirectoryFile::handleClose() {
 	_cancelServe.cancel();
@@ -1242,7 +1264,7 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> FdDirec
 	if (!p)
 		co_return Error::noSuchProcess;
 
-	for(const auto &[fdnum, fd] : p->fileContext()->snapshotFileTable()) {
+	for(const auto &[fdnum, fd] : snapshotFileTableOf(p.get())) {
 		if(name != std::to_string(fdnum))
 			continue;
 		auto pointee = makeFsShared<SymlinkNode>(p.get(), fd.file->associatedMount(), fd.file->associatedLink());
@@ -1263,8 +1285,11 @@ expected<std::string> SymlinkNode::readSymlink(FsLink *, Process *process) {
 	if(desc)
 		co_return desc.value();
 
+	auto fsContext = process ? process->fsContext() : nullptr;
+	if(!fsContext)
+		co_return Error::noSuchProcess;
 	ViewPath viewPath = {_mount, link};
-	auto path = viewPath.getPath(process->fsContext()->getRoot());
+	auto path = viewPath.getPath(fsContext->getRoot());
 
 	co_return path;
 }
@@ -1289,22 +1314,25 @@ MountsNode::MountsNode(Process* process)
 	{ }
 
 async::result<std::expected<std::string, Error>> MountsNode::show(Process *proc) {
-	auto root = proc->fsContext()->getRoot();
+	auto fsContext = proc->fsContext();
+	if(!fsContext)
+		co_return std::unexpected{Error::noSuchProcess};
+	auto rootPath = fsContext->getRoot();
 
-	auto processMount = [&proc](std::shared_ptr<MountView> mount, bool root = false) {
+	auto processMount = [&rootPath](std::shared_ptr<MountView> mount, bool root = false) {
 		auto dev = mount->getDevice();
 		auto fsType = mount->getOrigin()->getTarget()->superblock()->getFsType();
 
 		std::string devName = [&]() {
 			if(dev.second) {
-				return dev.getPath(proc->fsContext()->getRoot());
+				return dev.getPath(rootPath);
 			} else {
 				return fsType;
 			}
 		}();
 
 		auto mountPath = root ? "/" :
-			ViewPath{mount->getParent(), mount->getAnchor()}.getPath(proc->fsContext()->getRoot());
+			ViewPath{mount->getParent(), mount->getAnchor()}.getPath(rootPath);
 
 		return std::format("{} {} {} rw 0 0\n",
 			devName, mountPath, fsType);
@@ -1322,8 +1350,8 @@ async::result<std::expected<std::string, Error>> MountsNode::show(Process *proc)
 		return ret;
 	};
 
-	std::string ret = processMount(root.first, true);
-	ret.append(processChildren(root.first->mounts()));
+	std::string ret = processMount(rootPath.first, true);
+	ret.append(processChildren(rootPath.first->mounts()));
 
 	co_return ret;
 }
@@ -1347,9 +1375,12 @@ MountInfoNode::MountInfoNode(Process *process)
 	{ }
 
 async::result<std::expected<std::string, Error>> MountInfoNode::show(Process *proc) {
-	auto root = proc->fsContext()->getRoot();
+	auto fsContext = proc->fsContext();
+	if(!fsContext)
+		co_return std::unexpected{Error::noSuchProcess};
+	auto rootPath = fsContext->getRoot();
 
-	auto processMount = [&proc](std::shared_ptr<MountView> mount, bool root = false) {
+	auto processMount = [&rootPath](std::shared_ptr<MountView> mount, bool root = false) {
 		auto mountId = mount->mountId();
 		auto devno = mount->getOrigin()->getTarget()->superblock()->deviceNumber();
 		auto parentId = mount->getParent() ? mount->getParent()->mountId() : mountId;
@@ -1358,14 +1389,14 @@ async::result<std::expected<std::string, Error>> MountInfoNode::show(Process *pr
 
 		auto devName = [&]() -> std::string {
 			if(dev.second) {
-				return dev.getPath(proc->fsContext()->getRoot());
+				return dev.getPath(rootPath);
 			} else {
 				return "none";
 			}
 		}();
 
 		auto mountPath = root ? "/" :
-			ViewPath{mount->getParent(), mount->getAnchor()}.getPath(proc->fsContext()->getRoot());
+			ViewPath{mount->getParent(), mount->getAnchor()}.getPath(rootPath);
 
 		return std::format("{} {} {}:{} {} {} rw - {} {} rw\n",
 			mountId, parentId, major(devno), minor(devno), "/", mountPath, fsType, devName);
@@ -1383,8 +1414,8 @@ async::result<std::expected<std::string, Error>> MountInfoNode::show(Process *pr
 		return ret;
 	};
 
-	std::string ret = processMount(root.first, true);
-	ret.append(processChildren(root.first->mounts()));
+	std::string ret = processMount(rootPath.first, true);
+	ret.append(processChildren(rootPath.first->mounts()));
 
 	co_return ret;
 }
@@ -1445,7 +1476,10 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> FdInfoD
 		co_return Error::noSuchProcess;
 
 	auto nameNum = std::stoi(name);
-	if(auto file = p->fileContext()->getFile(nameNum)) {
+	auto fileContext = p->fileContext();
+	if(!fileContext)
+		co_return Error::noSuchFile;
+	if(auto file = fileContext->getFile(nameNum)) {
 		auto pointee = makeFsShared<FdInfoNode>(file->associatedMount(), file);
 		co_return makeFsShared<Link>(parent->sharedFromThis(), name, pointee);
 	}
@@ -1462,7 +1496,7 @@ void FdInfoDirectoryFile::serve(smarter::shared_ptr<FdInfoDirectoryFile> file) {
 
 FdInfoDirectoryFile::FdInfoDirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link, Process* process)
 : FileWithDefaults{FileKind::unknown,  StructName::get("procfs.fdinfodir"), std::move(mount), std::move(link)},
-		_process{process->weak_from_this()}, _fileTable{process->fileContext()->snapshotFileTable()}, _iter{_fileTable.begin()} {}
+		_process{process->weak_from_this()}, _fileTable{snapshotFileTableOf(process)}, _iter{_fileTable.begin()} {}
 
 void FdInfoDirectoryFile::handleClose() {
 	_cancelServe.cancel();

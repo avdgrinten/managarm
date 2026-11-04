@@ -1352,10 +1352,14 @@ Process::Process(ThreadGroup *threadGroup, std::shared_ptr<PidHull> tidHull)
 
 }
 
+// Processes are unlinked from procfs and the process graph by terminate() and
+// ThreadGroup::retire(), such that the last reference can be dropped on any thread.
 Process::~Process() {
 	std::cout << std::format("\e[33mposix: Process {} is destructed\e[39m", tid()) << std::endl;
+	assert(!procfsTaskLink_);
+}
 
-	// Unlink /proc/[pid]/task/[tid] here, as we want to keep it around even if we're a zombie.
+void Process::unlinkProcfsTask_() {
 	if(procfsTaskLink_) {
 		procfsTaskLink_->unlinkSelf();
 		procfsTaskLink_ = nullptr;
@@ -1512,12 +1516,15 @@ void Process::dumpRegisters() {
 async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 	auto hull = std::make_shared<PidHull>(1);
 	auto threadGroup = ThreadGroup::init(hull);
-	threadGroup->_uid = 0;
-	threadGroup->_euid = 0;
-	threadGroup->_gid = 0;
-	threadGroup->_egid = 0;
-	threadGroup->_suid = 0;
-	threadGroup->_sgid = 0;
+	{
+		std::lock_guard lock{threadGroup->credentialsMutex_};
+		threadGroup->_uid = 0;
+		threadGroup->_euid = 0;
+		threadGroup->_gid = 0;
+		threadGroup->_egid = 0;
+		threadGroup->_suid = 0;
+		threadGroup->_sgid = 0;
+	}
 
 	auto hierarchy = extendHierarchyForProcess(hull->getPid(), path);
 
@@ -1668,12 +1675,7 @@ async::result<std::shared_ptr<Process>> Process::fork(std::shared_ptr<Process> o
 
 	process->_clientAuxBegin = original->_clientAuxBegin;
 	process->_clientAuxEnd = original->_clientAuxEnd;
-	process->threadGroup()->_uid = original->threadGroup()->_uid;
-	process->threadGroup()->_euid = original->threadGroup()->_euid;
-	process->threadGroup()->_gid = original->threadGroup()->_gid;
-	process->threadGroup()->_egid = original->threadGroup()->_egid;
-	process->threadGroup()->_suid = original->threadGroup()->_suid;
-	process->threadGroup()->_sgid = original->threadGroup()->_sgid;
+	process->threadGroup()->inheritCredentials(original->threadGroup());
 	process->getTidHull()->initializeThreadGroup(threadGroup);
 	process->threadGroup()->didExecute_ = false;
 
@@ -1817,12 +1819,7 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 	process->_clientAuxEnd = original->_clientAuxEnd;
 
 	if (!(args->flags & CLONE_THREAD)) {
-		process->threadGroup()->_uid = original->threadGroup()->_uid;
-		process->threadGroup()->_euid = original->threadGroup()->_euid;
-		process->threadGroup()->_gid = original->threadGroup()->_gid;
-		process->threadGroup()->_egid = original->threadGroup()->_egid;
-		process->threadGroup()->_suid = original->threadGroup()->_suid;
-		process->threadGroup()->_sgid = original->threadGroup()->_sgid;
+		process->threadGroup()->inheritCredentials(original->threadGroup());
 	}
 
 	process->getTidHull()->initializeProcess(process.get());
@@ -1936,16 +1933,18 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 	}
 	process->_posixLane = std::move(server_lane);
 	process->_threadDescriptor = std::move(execResult.thread);
-	process->_vmContext = std::move(exec_vm_context);
+	{
+		std::lock_guard lock{process->taskMutex_};
+		std::swap(process->_vmContext, exec_vm_context);
+	}
+	exec_vm_context = nullptr;
 	process->threadGroup()->_signalContext->resetHandlers();
 	process->setAltStackEnabled(false);
 	process->setAltStackSp(0, 0);
 
 	// Handle setuid and friends
-	process->threadGroup()->_euid = execResult.effectiveUid;
-	process->threadGroup()->_egid = execResult.effectiveGid;
-	process->threadGroup()->_suid = execResult.savedUid;
-	process->threadGroup()->_sgid = execResult.savedGid;
+	process->threadGroup()->setExecCredentials(execResult.effectiveUid, execResult.effectiveGid,
+			execResult.savedUid, execResult.savedGid);
 
 	process->_clientThreadPage = exec_thread_page;
 	process->_clientPosixLane = exec_posix_lane;
@@ -1989,9 +1988,19 @@ async::result<void> Process::terminate(bool *lastInGroup) {
 
 	_posixLane = {};
 	_threadDescriptor = {};
-	_vmContext = nullptr;
-	_fsContext = nullptr;
-	_fileContext = nullptr;
+	// Dropping the contexts closes files, hence do it after releasing the lock.
+	std::shared_ptr<VmContext> vmContext;
+	std::shared_ptr<FsContext> fsContext;
+	std::shared_ptr<FileContext> fileContext;
+	{
+		std::lock_guard lock{taskMutex_};
+		vmContext = std::move(_vmContext);
+		fsContext = std::move(_fsContext);
+		fileContext = std::move(_fileContext);
+	}
+	vmContext = nullptr;
+	fsContext = nullptr;
+	fileContext = nullptr;
 	//_signalContext = nullptr; // TODO: Migrate the notifications to PID 1.
 	_currentGeneration = nullptr;
 
@@ -2003,6 +2012,9 @@ async::result<void> Process::terminate(bool *lastInGroup) {
 	std::erase_if(tgPointer_->threads_, [&](auto e) {
 		return e.get() == this;
 	});
+	// The leader's /proc/[pid]/task/[tid] stays until the group is reaped, like a zombie.
+	if (tgPointer_->leader_.get() != this)
+		unlinkProcfsTask_();
 	if (lastInGroup)
 		*lastInGroup = tgPointer_->threads_.empty();
 	tgPointer_->processTerminationSeq_.fetch_add(1, std::memory_order_release);
@@ -2124,8 +2136,10 @@ ThreadGroup::ThreadGroup(std::shared_ptr<PidHull> hull, ThreadGroup *parent)
 
 }
 
+// ThreadGroups are unlinked from the process graph by retire(), such that the last
+// reference can be dropped on any thread.
 ThreadGroup::~ThreadGroup() {
-	pgPointer()->dropProcess(this);
+	assert(!pgPointer_);
 }
 
 std::shared_ptr<ThreadGroup> ThreadGroup::init(std::shared_ptr<PidHull> hull) {
@@ -2139,11 +2153,41 @@ ThreadGroup *ThreadGroup::create(std::shared_ptr<PidHull> hull, ThreadGroup *par
 	return tg.get();
 }
 
+void ThreadGroup::inheritCredentials(ThreadGroup *other) {
+	uid_t uid, euid, suid;
+	gid_t gid, egid, sgid;
+	{
+		std::lock_guard lock{other->credentialsMutex_};
+		uid = other->_uid;
+		euid = other->_euid;
+		suid = other->_suid;
+		gid = other->_gid;
+		egid = other->_egid;
+		sgid = other->_sgid;
+	}
+	std::lock_guard lock{credentialsMutex_};
+	_uid = uid;
+	_euid = euid;
+	_suid = suid;
+	_gid = gid;
+	_egid = egid;
+	_sgid = sgid;
+}
+
+void ThreadGroup::setExecCredentials(uid_t euid, gid_t egid, uid_t suid, gid_t sgid) {
+	std::lock_guard lock{credentialsMutex_};
+	_euid = euid;
+	_egid = egid;
+	_suid = suid;
+	_sgid = sgid;
+}
+
 Error ThreadGroup::setUid(uid_t uid) {
 	if(uid < 0)
 		return Error::illegalArguments;
 
-	if(isRoot()) {
+	std::lock_guard lock{credentialsMutex_};
+	if(isRootLocked_()) {
 		_uid = uid;
 		_euid = uid;
 		_suid = uid;
@@ -2160,7 +2204,8 @@ Error ThreadGroup::setGid(gid_t gid) {
 	if(gid < 0)
 		return Error::illegalArguments;
 
-	if(isRoot()) {
+	std::lock_guard lock{credentialsMutex_};
+	if(isRootLocked_()) {
 		_gid = gid;
 		_egid = gid;
 		_sgid = gid;
@@ -2174,6 +2219,7 @@ Error ThreadGroup::setGid(gid_t gid) {
 }
 
 Error ThreadGroup::setResuid(uint64_t ruid, uint64_t euid, uint64_t suid) {
+	std::lock_guard lock{credentialsMutex_};
 	const auto oldUid = _uid;
 	const auto oldEuid = _euid;
 	const auto oldSuid = _suid;
@@ -2189,7 +2235,7 @@ Error ThreadGroup::setResuid(uint64_t ruid, uint64_t euid, uint64_t suid) {
 	if(auto error = resolveSetIdRequest(suid, oldSuid, newSuid); error != Error::success)
 		return error;
 
-	if(!isRoot()) {
+	if(!isRootLocked_()) {
 		auto permitted = [&](uid_t id) {
 			return id == oldUid || id == oldEuid || id == oldSuid;
 		};
@@ -2206,6 +2252,7 @@ Error ThreadGroup::setResuid(uint64_t ruid, uint64_t euid, uint64_t suid) {
 }
 
 Error ThreadGroup::setResgid(uint64_t rgid, uint64_t egid, uint64_t sgid) {
+	std::lock_guard lock{credentialsMutex_};
 	const auto oldGid = _gid;
 	const auto oldEgid = _egid;
 	const auto oldSgid = _sgid;
@@ -2221,7 +2268,7 @@ Error ThreadGroup::setResgid(uint64_t rgid, uint64_t egid, uint64_t sgid) {
 	if(auto error = resolveSetIdRequest(sgid, oldSgid, newSgid); error != Error::success)
 		return error;
 
-	if(!isRoot()) {
+	if(!isRootLocked_()) {
 		auto permitted = [&](gid_t id) {
 			return id == oldGid || id == oldEgid || id == oldSgid;
 		};
@@ -2238,6 +2285,7 @@ Error ThreadGroup::setResgid(uint64_t rgid, uint64_t egid, uint64_t sgid) {
 }
 
 Error ThreadGroup::setReuid(uint64_t ruid, uint64_t euid) {
+	std::lock_guard lock{credentialsMutex_};
 	const auto oldUid = _uid;
 	const auto oldEuid = _euid;
 	const auto oldSuid = _suid;
@@ -2251,7 +2299,7 @@ Error ThreadGroup::setReuid(uint64_t ruid, uint64_t euid) {
 	if(auto error = resolveSetIdRequest(euid, oldEuid, newEuid); error != Error::success)
 		return error;
 
-	if(!isRoot()) {
+	if(!isRootLocked_()) {
 		// Linux permits an unprivileged real-ID change to the old real or
 		// effective ID; POSIX leaves this case unspecified.
 		if(changeUid && newUid != oldUid && newUid != oldEuid)
@@ -2272,6 +2320,7 @@ Error ThreadGroup::setReuid(uint64_t ruid, uint64_t euid) {
 }
 
 Error ThreadGroup::setRegid(uint64_t rgid, uint64_t egid) {
+	std::lock_guard lock{credentialsMutex_};
 	const auto oldGid = _gid;
 	const auto oldEgid = _egid;
 	const auto oldSgid = _sgid;
@@ -2285,7 +2334,7 @@ Error ThreadGroup::setRegid(uint64_t rgid, uint64_t egid) {
 	if(auto error = resolveSetIdRequest(egid, oldEgid, newEgid); error != Error::success)
 		return error;
 
-	if(!isRoot()) {
+	if(!isRootLocked_()) {
 		// Linux permits the same real-ID choices as setreuid; POSIX leaves
 		// this real-ID case unspecified.
 		if(changeGid && newGid != oldGid && newGid != oldEgid)
@@ -2407,22 +2456,29 @@ async::result<void> ThreadGroup::terminateGroup(TerminationState state) {
 }
 
 void ThreadGroup::retire(ThreadGroup *tg) {
+	// The parent's _children holds the last reference; keep the group alive until we are done.
+	auto self = tg->shared_from_this();
+	auto parent = tg->parent_;
+
+	if (tg->leader_)
+		tg->leader_->unlinkProcfsTask_();
 	tg->leader_ = nullptr;
+
+	if (tg->pgPointer_)
+		tg->pgPointer_->dropProcess(tg);
 
 	if (tg->procfsLink_) {
 		tg->procfsLink_->unlinkSelf();
 		tg->procfsLink_ = nullptr;
 	}
 
-	tg->parent_->_children.erase(
-	    std::ranges::find_if(tg->parent_->_children, [pid = tg->pid()](auto e) {
-		    return e->pid() == pid;
-	    })
-	);
+	auto it = std::ranges::find(parent->_children, self);
+	assert(it != parent->_children.end());
+	parent->_children.erase(it);
 
 	// We need to ring _notifyBell once the process is retired
 	// since waitpid() returns an error once no children are left.
-	tg->parent_->raiseNotifyBell();
+	parent->raiseNotifyBell();
 }
 
 void ThreadGroup::associateProcess(std::shared_ptr<Process> process) {

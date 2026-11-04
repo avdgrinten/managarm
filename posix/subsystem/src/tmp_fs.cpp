@@ -1204,7 +1204,8 @@ async::result<frg::expected<Error>> DirectoryNode::rmdir(std::string name) {
 
 async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 DirectoryNode::mkdir(FsLink *parent, Process *proc, std::string name, mode_t mode) {
-	auto umask = proc ? proc->fsContext()->getUmask() : 0;
+	auto fsContext = proc ? proc->fsContext() : nullptr;
+	auto umask = fsContext ? fsContext->getUmask() : 0;
 	auto uid = proc ? proc->threadGroup()->uid() : 0;
 	auto gid = proc ? proc->threadGroup()->gid() : 0;
 

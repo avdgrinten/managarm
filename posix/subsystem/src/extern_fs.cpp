@@ -955,7 +955,8 @@ private:
 
 	async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 	mkdir(FsLink *parent, Process *proc, std::string name, mode_t mode) override {
-		auto umask = proc ? proc->fsContext()->getUmask() : 0;
+		auto fsContext = proc ? proc->fsContext() : nullptr;
+		auto umask = fsContext ? fsContext->getUmask() : 0;
 
 		managarm::fs::MkdirRequest req;
 		req.set_path(name);

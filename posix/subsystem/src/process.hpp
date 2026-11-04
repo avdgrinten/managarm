@@ -607,9 +607,20 @@ public:
 
 	// As the contexts associated with a process can change (e.g. when unshare() is implemented),
 	// those functions return refcounted pointers.
-	std::shared_ptr<VmContext> vmContext() { return _vmContext; }
-	std::shared_ptr<FsContext> fsContext() { return _fsContext; }
-	std::shared_ptr<FileContext> fileContext() { return _fileContext; }
+	// They return null once the thread terminated; callers other than the thread's own
+	// request handlers have to handle that.
+	std::shared_ptr<VmContext> vmContext() {
+		std::lock_guard lock{taskMutex_};
+		return _vmContext;
+	}
+	std::shared_ptr<FsContext> fsContext() {
+		std::lock_guard lock{taskMutex_};
+		return _fsContext;
+	}
+	std::shared_ptr<FileContext> fileContext() {
+		std::lock_guard lock{taskMutex_};
+		return _fileContext;
+	}
 	ThreadGroup *threadGroup() { return tgPointer_.get(); }
 	std::shared_ptr<ProcessGroup> pgPointer();
 
@@ -748,9 +759,17 @@ private:
 	helix::UniqueLane _posixLane;
 	helix::UniqueDescriptor _threadDescriptor;
 	std::shared_ptr<Generation> _currentGeneration;
+	// The contexts are only written by the thread's own serve tree (exec() and terminate(); fork()
+	// and clone() before they publish the thread), which reads them without taskMutex_.
+	// Protected by taskMutex_.
 	std::shared_ptr<VmContext> _vmContext;
+	// Protected by taskMutex_.
 	std::shared_ptr<FsContext> _fsContext;
+	// Protected by taskMutex_.
 	std::shared_ptr<FileContext> _fileContext;
+
+	// Unlinks /proc/[pid]/task/[tid].
+	void unlinkProcfsTask_();
 
 	smarter::shared_ptr<procfs::Link, LinkRc> procfsTaskLink_;
 
@@ -835,6 +854,7 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	Error setRegid(uint64_t rgid, uint64_t egid);
 
 	uid_t uid() {
+		std::lock_guard lock{credentialsMutex_};
 		return _uid;
 	}
 
@@ -842,7 +862,8 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 		if(euid < 0) {
 			return Error::illegalArguments;
 		}
-		if(isRoot() || euid == _uid) {
+		std::lock_guard lock{credentialsMutex_};
+		if(isRootLocked_() || euid == _uid) {
 			_euid = euid;
 			return Error::success;
 		}
@@ -850,6 +871,7 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	}
 
 	uid_t euid() {
+		std::lock_guard lock{credentialsMutex_};
 		return _euid;
 	}
 
@@ -857,7 +879,8 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 		if(suid < 0) {
 			return Error::illegalArguments;
 		}
-		if(isRoot() || suid == _uid || suid == _euid) {
+		std::lock_guard lock{credentialsMutex_};
+		if(isRootLocked_() || suid == _uid || suid == _euid) {
 			_suid = suid;
 			return Error::success;
 		}
@@ -865,12 +888,14 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	}
 
 	uid_t suid() {
+		std::lock_guard lock{credentialsMutex_};
 		return _suid;
 	}
 
 	Error setGid(gid_t gid);
 
 	gid_t gid() {
+		std::lock_guard lock{credentialsMutex_};
 		return _gid;
 	}
 
@@ -878,7 +903,8 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 		if(egid < 0) {
 			return Error::illegalArguments;
 		}
-		if(isRoot() || _gid == egid || _egid == egid) {
+		std::lock_guard lock{credentialsMutex_};
+		if(isRootLocked_() || _gid == egid || _egid == egid) {
 			_egid = egid;
 			return Error::success;
 		}
@@ -886,6 +912,7 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	}
 
 	gid_t egid() {
+		std::lock_guard lock{credentialsMutex_};
 		return _egid;
 	}
 
@@ -893,7 +920,8 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 		if(sgid < 0) {
 			return Error::illegalArguments;
 		}
-		if(isRoot() || _gid == sgid || _egid == sgid) {
+		std::lock_guard lock{credentialsMutex_};
+		if(isRootLocked_() || _gid == sgid || _egid == sgid) {
 			_sgid = sgid;
 			return Error::success;
 		}
@@ -901,23 +929,31 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	}
 
 	gid_t sgid() {
+		std::lock_guard lock{credentialsMutex_};
 		return _sgid;
 	}
 
 	bool isRoot() {
-		if(_uid == 0 || _euid == 0)
-			return true;
-		return false;
+		std::lock_guard lock{credentialsMutex_};
+		return isRootLocked_();
 	}
 
-	const std::vector<gid_t> &supplementaryGroups() const {
+	std::vector<gid_t> supplementaryGroups() {
+		std::lock_guard lock{credentialsMutex_};
 		return supplementaryGids_;
 	}
 
 	Error setSupplementaryGroups(std::vector<gid_t> list) {
+		std::lock_guard lock{credentialsMutex_};
 		supplementaryGids_ = std::move(list);
 		return Error::success;
 	}
+
+	// Copies the user and group IDs (but not the supplementary groups) of another group.
+	void inheritCredentials(ThreadGroup *other);
+
+	// Sets the IDs that exec() of a set-user-ID or set-group-ID binary changes.
+	void setExecCredentials(uid_t euid, gid_t egid, uid_t suid, gid_t sgid);
 
 	ResourceUsage selfUsage() {
 		std::lock_guard lock{usageMutex_};
@@ -1053,13 +1089,26 @@ private:
 	std::shared_ptr<ProcessGroup> pgPointer_;
 	frg::default_list_hook<ThreadGroup> pgHook_;
 
+	bool isRootLocked_() {
+		return _uid == 0 || _euid == 0;
+	}
+
+	// Leaf lock.
+	std::mutex credentialsMutex_;
+	// Protected by credentialsMutex_.
 	uid_t _uid;
+	// Protected by credentialsMutex_.
 	uid_t _euid;
+	// Protected by credentialsMutex_.
 	uid_t _suid;
+	// Protected by credentialsMutex_.
 	gid_t _gid;
+	// Protected by credentialsMutex_.
 	gid_t _egid;
+	// Protected by credentialsMutex_.
 	gid_t _sgid;
 
+	// Protected by credentialsMutex_.
 	std::vector<gid_t> supplementaryGids_;
 
 	// Raised by Process::terminate() after incrementing processTerminationSeq_.
