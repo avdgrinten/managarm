@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -82,9 +83,12 @@ private:
 	helix::UniqueLane _passthrough;
 	async::cancellation_event _cancelServe;
 
+	std::mutex _positionMutex;
+	// Protected by _positionMutex.
 	DotEntriesPhase _dots = DotEntriesPhase::dot;
-	// Name of the last entry that readEntries() returned.
+	// Protected by _positionMutex. Name of the last entry that readEntries() returned.
 	std::optional<std::string> _lastName;
+	// Protected by _positionMutex.
 	size_t _numEntries = 0;
 };
 
