@@ -37,6 +37,7 @@ namespace tmp_fs {
 // the ones that protect file data and offsets are std:: locks. Locks are taken in the following
 // order:
 // 1. MemoryFile::_offsetMutex (async::mutex): the file offset; not taken by pread/pwrite.
+//    DirectoryFile::_positionMutex (std::mutex): the directory read position.
 // 2. Superblock::_topologyMutex (std::shared_mutex): taken shared by every operation that
 //    mutates directory entries and exclusively by rename(). Also protects Link::_owner and
 //    Link::_name.
@@ -335,11 +336,13 @@ private:
 	helix::UniqueLane _passthrough;
 	async::cancellation_event _cancelServe;
 
-	// The '.' and '..' entries are synthesized before iterating _entries.
+	std::mutex _positionMutex;
+	// Protected by _positionMutex. The '.' and '..' entries are synthesized before iterating _entries.
 	DotEntriesPhase _dots = DotEntriesPhase::dot;
 
-	// Name of the last entry that readEntries() returned.
+	// Protected by _positionMutex. Name of the last entry that readEntries() returned.
 	std::optional<std::string> _lastName;
+	// Protected by _positionMutex.
 	size_t _numEntries = 0;
 };
 
@@ -962,6 +965,8 @@ DirectoryFile::DirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_p
 
 async::result<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>>
 DirectoryFile::readEntries() {
+	std::lock_guard positionLock{_positionMutex};
+
 	// '.' and '..' are not stored in _entries; synthesize them before iterating.
 	if(_dots != DotEntriesPhase::done) {
 		// The parent of the root directory is the root itself.
