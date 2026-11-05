@@ -228,7 +228,7 @@ if build_drivers or provide_deps
 
 	# delay these dirs until last as they require other libs
 	# to already be built
-	delay = [ 'drivers/nic/virtio', 'servers/netserver', 'drivers/clocktracker' ]
+	delay = [ 'drivers/nic/virtio', 'servers/netserver', 'servers/vsockserver', 'drivers/clocktracker' ]
 
 	foreach dir : protocols
 		subdir('protocols'/dir)
@@ -267,7 +267,8 @@ if build_drivers
 		'drivers/gfx/90-managarm-vga.rules',
 		'drivers/nic/90-managarm-nic.rules',
 		'drivers/usb/90-managarm-usb.rules',
-		'drivers/block/90-managarm-block.rules'
+		'drivers/block/90-managarm-block.rules',
+		'servers/vsockserver/90-managarm-vsock.rules'
 	]
 
 	install_data(rules, install_dir : 'lib/udev/rules.d')
