@@ -2,10 +2,11 @@
 #include <arch/io_space.hpp>
 #include <arch/register.hpp>
 #include <thor-internal/arch/debug.hpp>
+#include <thor-internal/main.hpp>
 
 namespace thor {
 
-constinit PIOLogHandler pioLogHandler;
+constinit frg::manual_box<PIOLogHandler> pioLogHandler;
 
 inline constexpr arch::scalar_register<uint8_t> data(0);
 inline constexpr arch::scalar_register<uint8_t> baudLow(0);
@@ -34,6 +35,8 @@ extern bool debugToSerial;
 extern bool debugToBochs;
 
 void setupDebugging() {
+	pioLogHandler.initialize();
+
 	if(debugToSerial) {
 		auto base = arch::global_io.subspace(0x3F8);
 
@@ -55,8 +58,18 @@ void setupDebugging() {
 		base.store(modemControl, dtr(true) | rts(true));
 	}
 
-	enableLogHandler(&pioLogHandler);
+	enableLogHandler(pioLogHandler.get());
 }
+
+// The device is registered only here since its resources live on the kernel heap.
+static initgraph::Task registerBootSerialTask{&globalInitEngine, "x86.register-boot-serial",
+	[] {
+		if(!debugToSerial)
+			return;
+		pioLogHandler->addResource({KernelDeviceResourceKind::io, 0x3F8, 8});
+		registerKernelDevice(pioLogHandler.get());
+	}
+};
 
 void PIOLogHandler::emit(frg::string_view record) {
 	auto [md, msg] = destructureLogRecord(record);
@@ -87,11 +100,14 @@ void PIOLogHandler::printChar(char c) {
 
 		serialBuffer[serialBufferIndex++] = val;
 		if (serialBufferIndex == 16) {
+			serialBufferIndex = 0;
+			// Output is lost while the UART is suspended.
+			if (isSuspended())
+				return;
 			while(!(base.load(lineStatus) & txReady)) {
 				// do nothing until the UART is ready to transmit.
 			}
 			base.store_iterative(data, serialBuffer, 16);
-			serialBufferIndex = 0;
 		}
 	};
 

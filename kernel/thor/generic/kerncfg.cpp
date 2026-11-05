@@ -200,7 +200,7 @@ private:
 
 			auto error = managarm::kerncfg::Error::NO_SUCH_DEVICE;
 			if (auto device = findKernelDevice(req->id())) {
-				claimKernelDevice(device);
+				co_await claimKernelDevice(device);
 				error = managarm::kerncfg::Error::SUCCESS;
 			}
 			FRG_CO_TRY(co_await sendSvrResponse(lane, error));

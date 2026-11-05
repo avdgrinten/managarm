@@ -1,5 +1,6 @@
 #include <thor-internal/debug.hpp>
 #include <thor-internal/kernel-device.hpp>
+#include <thor-internal/rcu.hpp>
 
 namespace thor {
 
@@ -54,9 +55,37 @@ KernelDevice *findKernelDevice(uint64_t id) {
 	return nullptr;
 }
 
-void claimKernelDevice(KernelDevice *device) {
-	if (device->claimed_.exchange(true, std::memory_order_relaxed))
-		return;
+coroutine<void> suspendKernelDevice(KernelDevice *device) {
+	device->suspendCount_.fetch_add(1, std::memory_order_seq_cst);
+	// Drivers check the gate with scheduling disabled, so one quiescent state per CPU
+	// guarantees that no access that missed the closed gate is still in flight.
+	co_await rcuBarrier();
+}
+
+bool resumeKernelDevice(KernelDevice *device) {
+	auto count = device->suspendCount_.load(std::memory_order_relaxed);
+	do {
+		if (!count)
+			return false;
+	} while (!device->suspendCount_.compare_exchange_weak(
+		count,
+		count - 1,
+		std::memory_order_release,
+		std::memory_order_relaxed
+	));
+
+	if (count == 1 && !device->claimed_.load(std::memory_order_relaxed))
+		device->resume();
+	return true;
+}
+
+coroutine<void> claimKernelDevice(KernelDevice *device) {
+	auto first = !device->claimed_.exchange(true, std::memory_order_seq_cst);
+	// Same read side as in suspendKernelDevice(); this also covers a racing resume().
+	// Repeated claims wait as well since they must not return while accesses are in flight.
+	co_await rcuBarrier();
+	if (!first)
+		co_return;
 	infoLogger() << "thor: Userspace claimed kernel device " << device->name() << frg::endlog;
 	device->claim();
 }

@@ -3,12 +3,13 @@
 #include <eir/interface.hpp>
 #include <thor-internal/arch/debug.hpp>
 #include <thor-internal/elf-notes.hpp>
+#include <thor-internal/main.hpp>
 #include <uart/uart.hpp>
 
 namespace thor {
 
 constinit common::uart::AnyUart bootUart;
-constinit UartLogHandler uartLogHandler{&bootUart};
+constinit frg::manual_box<UartLogHandler> uartLogHandler;
 
 extern bool debugToSerial;
 
@@ -24,10 +25,23 @@ void setupDebugging() {
 		}
 
 		if (!std::holds_alternative<std::monostate>(bootUart)) {
-			enableLogHandler(&uartLogHandler);
+			uartLogHandler.initialize(&bootUart);
+			enableLogHandler(uartLogHandler.get());
 		}
 	}
 }
+
+// The device is registered only here since its resources live on the kernel heap.
+static initgraph::Task registerBootUartTask{&globalInitEngine, "arm.register-boot-uart",
+	[] {
+		if (!uartLogHandler.valid())
+			return;
+		uartLogHandler->addResource(
+		    {KernelDeviceResourceKind::mmio, bootUartConfig->address, bootUartConfig->size}
+		);
+		registerKernelDevice(uartLogHandler.get());
+	}
+};
 
 void UartLogHandler::emit(frg::string_view record) {
 	auto [md, msg] = destructureLogRecord(record);
@@ -41,6 +55,9 @@ void UartLogHandler::emitUrgent(frg::string_view record) {
 }
 
 void UartLogHandler::print(frg::string_view line, bool printNL) {
+	// Output is lost while the UART is suspended.
+	if (isSuspended())
+		return;
 	std::visit(
 	    frg::overloaded{
 	        [](std::monostate) { __builtin_trap(); },
