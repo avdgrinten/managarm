@@ -95,7 +95,7 @@ private:
 
 namespace extern_socket {
 
-async::result<smarter::shared_ptr<File, FileHandle>> createSocket(helix::BorrowedLane lane,
+async::result<std::expected<smarter::shared_ptr<File, FileHandle>, Error>> createSocket(helix::BorrowedLane lane,
 		int domain, int type, int proto, int flags) {
 	managarm::fs::CntRequest req;
 	req.set_req_type(managarm::fs::CntReqType::CREATE_SOCKET);
@@ -116,12 +116,15 @@ async::result<smarter::shared_ptr<File, FileHandle>> createSocket(helix::Borrowe
 	HEL_CHECK(offer.error());
 	HEL_CHECK(sendReq.error());
 	HEL_CHECK(recvResp.error());
-	HEL_CHECK(pullCtrl.error());
-	HEL_CHECK(pullPt.error());
 
 	managarm::fs::SvrResponse resp;
 	resp.ParseFromArray(recvResp.data(), recvResp.length());
-	assert(resp.error() == managarm::fs::Errors::SUCCESS);
+	recvResp.reset();
+
+	if (resp.error() != managarm::fs::Errors::SUCCESS)
+		co_return std::unexpected{resp.error() | toPosixError};
+	HEL_CHECK(pullCtrl.error());
+	HEL_CHECK(pullPt.error());
 
 	auto file = smarter::make_shared<Socket>(pullCtrl.descriptor(), pullPt.descriptor());
 	file->setupWeakFile(file);

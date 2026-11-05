@@ -130,6 +130,9 @@ enum class Error {
 
 	unsupportedSocketType,
 
+	// Corresponds with EAFNOSUPPORT
+	addressFamilyNotSupported,
+
 	notSocket,
 
 	interrupted,
@@ -176,6 +179,7 @@ inline protocols::fs::Error operator|(Error e, protocols::fs::ToFsProtoError) {
 		case Error::noChildProcesses: return protocols::fs::Error::internalError;
 		case Error::alreadyConnected: return protocols::fs::Error::alreadyConnected;
 		case Error::notSocket: return protocols::fs::Error::notSocket;
+		case Error::addressFamilyNotSupported: return protocols::fs::Error::afNotSupported;
 		case Error::interrupted: return protocols::fs::Error::interrupted;
 		case Error::noSuchProcess: return protocols::fs::Error::noSuchProcess;
 		case Error::noFileDescriptorsAvailable: return protocols::fs::Error::noFileDescriptorsAvailable;
@@ -217,6 +221,7 @@ inline managarm::posix::Errors operator|(Error e, ToPosixProtoError) {
 		case Error::noChildProcesses: return managarm::posix::Errors::NO_CHILD_PROCESSES;
 		case Error::alreadyConnected: return managarm::posix::Errors::ALREADY_CONNECTED;
 		case Error::unsupportedSocketType: return managarm::posix::Errors::UNSUPPORTED_SOCKET_TYPE;
+		case Error::addressFamilyNotSupported: return managarm::posix::Errors::ADDRESS_FAMILY_NOT_SUPPORTED;
 		case Error::interrupted: return managarm::posix::Errors::INTERRUPTED;
 		case Error::noSuchProcess: return managarm::posix::Errors::NO_SUCH_RESOURCE;
 		case Error::noFileDescriptorsAvailable: return managarm::posix::Errors::NO_FILE_DESCRIPTORS_AVAILABLE;
@@ -265,6 +270,7 @@ inline Error operator|(protocols::fs::Error e, ToPosixError) {
 		case protocols::fs::Error::noSuchProcess: return Error::noSuchProcess;
 		case protocols::fs::Error::notSupported: return Error::notSupported;
 		case protocols::fs::Error::ioError: return Error::ioError;
+		case protocols::fs::Error::afNotSupported: return Error::addressFamilyNotSupported;
 		default:
 			std::cout << std::format("posix: unmapped protocols::fs::Error {}", static_cast<int>(e)) << std::endl;
 			return Error::ioError;
@@ -297,6 +303,7 @@ inline Error operator|(managarm::fs::Errors e, ToPosixError) {
 		case managarm::fs::Errors::INTERRUPTED: return Error::interrupted;
 		case managarm::fs::Errors::NOT_SUPPORTED: return Error::notSupported;
 		case managarm::fs::Errors::IO_ERROR: return Error::ioError;
+		case managarm::fs::Errors::AF_NOT_SUPPORTED: return Error::addressFamilyNotSupported;
 		default:
 			std::println("posix: unmapped managarm::fs::Errors Error {}", static_cast<int>(e));
 			return Error::ioError;
