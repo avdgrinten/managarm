@@ -27,6 +27,7 @@
 #include "observations.hpp"
 #include "ostrace.hpp"
 #include "swap.hpp"
+#include "vsock.hpp"
 
 #include <bragi/helpers-std.hpp>
 #include <kerncfg.bragi.hpp>
@@ -224,6 +225,7 @@ async::detached runInit() {
 	co_await devserver::enumerate();
 	async::detach(enumeratePm());
 	async::detach(net::enumerateNetserver());
+	async::detach(vsock::enumerateServer());
 	co_await populateRootView();
 	co_await Process::init("usr/bin/posix-init");
 }

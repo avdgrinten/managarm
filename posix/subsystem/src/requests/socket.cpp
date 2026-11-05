@@ -3,6 +3,7 @@
 #include "../extern_socket.hpp"
 #include "../un-socket.hpp"
 #include "../netlink/nl-socket.hpp"
+#include "../vsock.hpp"
 #include <sys/socket.h>
 #include <linux/netlink.h>
 
@@ -156,6 +157,32 @@ HandleRequest::operator()(managarm::posix::SocketRequest &&req,
 	} else if (req.domain() == AF_INET || req.domain() == AF_PACKET) {
 		auto ext = co_await extern_socket::createSocket(
 			co_await net::getNetLane(),
+			req.domain(),
+			req.socktype(), req.protocol(),
+			req.flags() & SOCK_NONBLOCK);
+		if(!ext) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, ext.error() | toPosixProtoError);
+			co_return {};
+		}
+		file = std::move(ext.value());
+	}else if(req.domain() == AF_VSOCK) {
+		if(req.socktype() != SOCK_STREAM) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, managarm::posix::Errors::UNSUPPORTED_SOCKET_TYPE);
+			co_return {};
+		}
+		if(req.protocol() && req.protocol() != PF_VSOCK) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, managarm::posix::Errors::PROTOCOL_NOT_SUPPORTED);
+			co_return {};
+		}
+
+		auto lane = vsock::getLane();
+		if(!lane) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, managarm::posix::Errors::ADDRESS_FAMILY_NOT_SUPPORTED);
+			co_return {};
+		}
+
+		auto ext = co_await extern_socket::createSocket(
+			*lane,
 			req.domain(),
 			req.socktype(), req.protocol(),
 			req.flags() & SOCK_NONBLOCK);

@@ -59,6 +59,7 @@ src = [
 	'src/un-socket.cpp',
 	'src/util.cpp',
 	'src/vfs.cpp',
+	'src/vsock.cpp',
 	posix_bragi,
 	devserver_bragi
 ]
