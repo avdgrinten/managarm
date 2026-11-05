@@ -8,7 +8,7 @@ use managarm::kerncfg::{KernelDeviceResource, KernelDeviceResourceKind};
 use super::{
     BarType, Capability, ExtendedCapability, IrqIndex, MsixTable,
     PCI_BRIDGE_EXPANSION_ROM_BASE_ADDRESS, PCI_REGULAR_BAR0,
-    PCI_REGULAR_EXPANSION_ROM_BASE_ADDRESS, PciBridge, PciBus, PciBusResource, PciDevice,
+    PCI_REGULAR_EXPANSION_ROM_BASE_ADDRESS, PciBar, PciBridge, PciBus, PciBusResource, PciDevice,
     PciEntity, PciError, PciExpansionRom, name_of_capability, name_of_extended_capability,
 };
 
@@ -58,37 +58,72 @@ fn range_contains(base: u64, size: u64, resource: &KernelDeviceResource) -> bool
     base <= resource.base && resource_end <= end
 }
 
-fn read_entity_bars(entity: &'static PciEntity, n_bars: usize) -> Result<(), PciError> {
+// Sizing a BAR temporarily invalidates its address; disable I/O and memory decode
+// around the probe so the device does not respond to stray accesses.
+async fn probe_without_decoding<R>(entity: &PciEntity, probe: impl FnOnce() -> R) -> R {
     let bus = entity.parent_bus;
     let slot = entity.slot;
     let function = entity.function;
 
-    let mut bars = entity.bars.lock().expect(EXPECT_LOCK);
+    let command = bus.command(slot, function);
+    if command & 0x03 == 0 {
+        return probe();
+    }
+
+    bus.set_command(slot, function, command & !0x03);
+    let result = probe();
+    bus.set_command(slot, function, command);
+    result
+}
+
+async fn read_entity_bars(entity: &'static PciEntity, n_bars: usize) -> Result<(), PciError> {
+    // The BAR table is written back at the end; the probes await, hence the mutex
+    // must not be held across them.
+    let mut bars = entity.bars.lock().expect(EXPECT_LOCK).clone();
+
+    // The BARs that were sized before a malformed one are kept, as are their kernel devices.
+    let result = size_entity_bars(entity, n_bars, &mut bars).await;
+
+    // thor reports CPU physical addresses, hence match against the host side of the BARs.
+    for &device in kernel_device::all() {
+        let contained = bars.iter().position(|bar| {
+            bar.allocated
+                && device.resources.iter().any(|resource| {
+                    bar.host_type == bar_type_of(resource.kind)
+                        && range_contains(bar.host_address, bar.length, resource)
+                })
+        });
+        if let Some(i) = contained {
+            println!("sif:     BAR #{i} contains {}", device.describe());
+            device.attribute_to(entity);
+        }
+    }
+
+    *entity.bars.lock().expect(EXPECT_LOCK) = bars;
+
+    result
+}
+
+async fn size_entity_bars(
+    entity: &'static PciEntity,
+    n_bars: usize,
+    bars: &mut [PciBar],
+) -> Result<(), PciError> {
+    let bus = entity.parent_bus;
+    let slot = entity.slot;
+    let function = entity.function;
 
     // The caller passes the number of BARs of the header type of the entity, hence all
     // offsets that we compute below address BARs.
-    //
-    // Sizing a BAR temporarily invalidates its address; disable I/O and memory
-    // decode around the probe so the device does not respond to stray accesses.
-    let size_bar = |offset: u16, restore: u32| -> u32 {
-        let command = bus.command(slot, function);
-        if command & 0x03 != 0 {
-            bus.set_command(slot, function, command & !0x03);
-        }
-
-        let mask = unsafe {
+    let size_bar = async |offset: u16, restore: u32| -> u32 {
+        probe_without_decoding(entity, || unsafe {
             bus.set_bar(slot, function, offset, 0xFFFFFFFF);
             let mask = bus.bar(slot, function, offset);
             bus.set_bar(slot, function, offset, restore);
 
             mask
-        };
-
-        if command & 0x03 != 0 {
-            bus.set_command(slot, function, command);
-        }
-
-        mask
+        })
+        .await
     };
 
     let mut i = 0;
@@ -98,7 +133,7 @@ fn read_entity_bars(entity: &'static PciEntity, n_bars: usize) -> Result<(), Pci
 
         if bar & 1 != 0 {
             let address = (bar & 0xFFFFFFFC) as u64;
-            let mask = size_bar(offset, bar) & 0xFFFFFFFC;
+            let mask = size_bar(offset, bar).await & 0xFFFFFFFC;
 
             // The device does not decode any address bits from this BAR.
             if mask == 0 {
@@ -145,7 +180,7 @@ fn read_entity_bars(entity: &'static PciEntity, n_bars: usize) -> Result<(), Pci
             i += 1;
         } else if (bar >> 1) & 3 == 0 {
             let address = (bar & 0xFFFFFFF0) as u64;
-            let mask = size_bar(offset, bar) & 0xFFFFFFF0;
+            let mask = size_bar(offset, bar).await & 0xFFFFFFF0;
 
             // The device does not decode any address bits from this BAR.
             if mask == 0 {
@@ -186,12 +221,7 @@ fn read_entity_bars(entity: &'static PciEntity, n_bars: usize) -> Result<(), Pci
             let high = unsafe { bus.bar(slot, function, offset + 4) };
             let address = ((high as u64) << 32) | (bar & 0xFFFFFFF0) as u64;
 
-            let command = bus.command(slot, function);
-            if command & 0x03 != 0 {
-                bus.set_command(slot, function, command & !0x03);
-            }
-
-            let mask = unsafe {
+            let mask = probe_without_decoding(entity, || unsafe {
                 bus.set_bar(slot, function, offset, 0xFFFFFFFF);
                 bus.set_bar(slot, function, offset + 4, 0xFFFFFFFF);
                 let mask = ((bus.bar(slot, function, offset + 4) as u64) << 32)
@@ -200,11 +230,8 @@ fn read_entity_bars(entity: &'static PciEntity, n_bars: usize) -> Result<(), Pci
                 bus.set_bar(slot, function, offset + 4, high);
 
                 mask
-            };
-
-            if command & 0x03 != 0 {
-                bus.set_command(slot, function, command);
-            }
+            })
+            .await;
 
             // The device does not decode any address bits from this BAR.
             if mask == 0 {
@@ -240,21 +267,6 @@ fn read_entity_bars(entity: &'static PciEntity, n_bars: usize) -> Result<(), Pci
             i += 2;
         } else {
             return Err(PciError::ReservedBarType { index: i });
-        }
-    }
-
-    // thor reports CPU physical addresses, hence match against the host side of the BARs.
-    for &device in kernel_device::all() {
-        let contained = bars.iter().position(|bar| {
-            bar.allocated
-                && device.resources.iter().any(|resource| {
-                    bar.host_type == bar_type_of(resource.kind)
-                        && range_contains(bar.host_address, bar.length, resource)
-                })
-        });
-        if let Some(i) = contained {
-            println!("sif:     BAR #{i} contains {}", device.describe());
-            device.attribute_to(entity);
         }
     }
 
@@ -489,7 +501,7 @@ fn setup_msis(device: &'static PciDevice) -> Result<(), PciError> {
     Ok(())
 }
 
-fn check_pci_function(
+async fn check_pci_function(
     bus: &'static PciBus,
     slot: u8,
     function: u8,
@@ -579,7 +591,7 @@ fn check_pci_function(
             }
         }
 
-        read_entity_bars(&device.entity, 6)?;
+        read_entity_bars(&device.entity, 6).await?;
         parse_expansion_rom(&device.entity, PCI_REGULAR_EXPANSION_ROM_BASE_ADDRESS);
 
         if let Some(irq_index) = IrqIndex::from_pin(bus.interrupt_pin(slot, function)) {
@@ -608,7 +620,7 @@ fn check_pci_function(
 
         find_pci_caps(&bridge.entity)?;
 
-        read_entity_bars(&bridge.entity, 2)?;
+        read_entity_bars(&bridge.entity, 2).await?;
         parse_expansion_rom(&bridge.entity, PCI_BRIDGE_EXPANSION_ROM_BASE_ADDRESS);
 
         let downstream_id = unsafe { bus.secondary_bus(slot, function) };
@@ -637,7 +649,7 @@ fn check_pci_function(
     Ok(())
 }
 
-fn check_pci_device(
+async fn check_pci_device(
     bus: &'static PciBus,
     slot: u8,
     enumerate_downstream: &mut dyn FnMut(&'static PciBus) -> Result<(), PciError>,
@@ -655,7 +667,7 @@ fn check_pci_device(
     let header_type = bus.header_type(slot, 0);
     let functions = if header_type & 0x80 != 0 { 0..8 } else { 0..1 };
     for function in functions {
-        if let Err(err) = check_pci_function(bus, slot, function, enumerate_downstream) {
+        if let Err(err) = check_pci_function(bus, slot, function, enumerate_downstream).await {
             println!(
                 "sif: Ignoring PCI function {:04x}:{:02x}:{:02x}.{function}: {err}",
                 bus.seg_id, bus.bus_id, slot
@@ -678,7 +690,7 @@ fn quiesce_function(bus: &'static PciBus, slot: u8, function: u8) {
     }
 }
 
-fn check_pci_bus(
+async fn check_pci_bus(
     bus: &'static PciBus,
     enumerate_downstream: &mut dyn FnMut(&'static PciBus) -> Result<(), PciError>,
 ) {
@@ -696,8 +708,58 @@ fn check_pci_bus(
     }
 
     for slot in 0..n_slots {
-        check_pci_device(bus, slot, enumerate_downstream);
+        check_pci_device(bus, slot, enumerate_downstream).await;
     }
+}
+
+/// The (address, size) of each window that a bridge forwards downstream, as programmed
+/// into its base/limit registers. A disabled window (limit below base) wraps around.
+struct BridgeWindows {
+    io: (u64, u64),
+    mem: (u64, u64),
+    pref_mem: (u64, u64),
+}
+
+fn read_bridge_windows(bridge: &PciBridge) -> BridgeWindows {
+    let parent_bus = bridge.entity.parent_bus;
+    let slot = bridge.entity.slot;
+    let function = bridge.entity.function;
+
+    let io = {
+        // The low nibble of the I/O base/limit encodes capabilities, not address bits.
+        let base = (unsafe { parent_bus.io_base(slot, function) } & 0xF0) as u64;
+        let limit = (unsafe { parent_bus.io_limit(slot, function) } & 0xF0) as u64;
+
+        let addr = base << 8;
+        let size = (limit << 8).wrapping_add(0x100).wrapping_sub(addr);
+        (addr, size)
+    };
+
+    let mem = {
+        let base = unsafe { parent_bus.mem_base(slot, function) } as u64;
+        let limit = unsafe { parent_bus.mem_limit(slot, function) } as u64;
+
+        let addr = base << 16;
+        let size = (limit << 16).wrapping_add(0x100000).wrapping_sub(addr);
+        (addr, size)
+    };
+
+    let pref_mem = {
+        // The low nibble of the prefetch base/limit encodes 64-bit support, not address bits.
+        let base = (unsafe { parent_bus.prefetch_mem_base(slot, function) } & 0xFFF0) as u64;
+        let limit = (unsafe { parent_bus.prefetch_mem_limit(slot, function) } & 0xFFF0) as u64;
+
+        let base_upper = unsafe { parent_bus.prefetch_mem_base_upper(slot, function) } as u64;
+        let limit_upper = unsafe { parent_bus.prefetch_mem_limit_upper(slot, function) } as u64;
+
+        let addr = (base << 16) | (base_upper << 32);
+        let size = ((limit << 16) | (limit_upper << 32))
+            .wrapping_add(0x100000)
+            .wrapping_sub(addr);
+        (addr, size)
+    };
+
+    BridgeWindows { io, mem, pref_mem }
 }
 
 fn check_for_bridge_resources(bridge: &'static PciBridge) {
@@ -709,13 +771,10 @@ fn check_for_bridge_resources(bridge: &'static PciBridge) {
         .get()
         .expect("bridge has no associated bus");
 
-    {
-        // The low nibble of the I/O base/limit encodes capabilities, not address bits.
-        let base = (unsafe { parent_bus.io_base(slot, function) } & 0xF0) as u64;
-        let limit = (unsafe { parent_bus.io_limit(slot, function) } & 0xF0) as u64;
+    let windows = read_bridge_windows(bridge);
 
-        let addr = base << 8;
-        let size = (limit << 8).wrapping_add(0x100).wrapping_sub(addr);
+    {
+        let (addr, size) = windows.io;
 
         // Try to look up the host base address in our parent's resources.
         let mut host_base = 0;
@@ -756,11 +815,7 @@ fn check_for_bridge_resources(bridge: &'static PciBridge) {
     }
 
     {
-        let base = unsafe { parent_bus.mem_base(slot, function) } as u64;
-        let limit = unsafe { parent_bus.mem_limit(slot, function) } as u64;
-
-        let addr = base << 16;
-        let size = (limit << 16).wrapping_add(0x100000).wrapping_sub(addr);
+        let (addr, size) = windows.mem;
 
         // Try to look up the host base address in our parent's resources.
         let mut host_base = 0;
@@ -799,17 +854,7 @@ fn check_for_bridge_resources(bridge: &'static PciBridge) {
     }
 
     {
-        // The low nibble of the prefetch base/limit encodes 64-bit support, not address bits.
-        let base = (unsafe { parent_bus.prefetch_mem_base(slot, function) } & 0xFFF0) as u64;
-        let limit = (unsafe { parent_bus.prefetch_mem_limit(slot, function) } & 0xFFF0) as u64;
-
-        let base_upper = unsafe { parent_bus.prefetch_mem_base_upper(slot, function) } as u64;
-        let limit_upper = unsafe { parent_bus.prefetch_mem_limit_upper(slot, function) } as u64;
-
-        let addr = (base << 16) | (base_upper << 32);
-        let size = ((limit << 16) | (limit_upper << 32))
-            .wrapping_add(0x100000)
-            .wrapping_sub(addr);
+        let (addr, size) = windows.pref_mem;
 
         // Try to look up the host base address in our parent's resources.
         let mut host_base = 0;
@@ -848,7 +893,7 @@ fn check_for_bridge_resources(bridge: &'static PciBridge) {
     }
 }
 
-fn configure_bridges(bus: &'static PciBus, highest_id: &mut u8) {
+async fn configure_bridges(bus: &'static PciBus, highest_id: &mut u8) {
     let mut i = 0;
     while let Some(bridge) = {
         let bridges = bus.child_bridges.lock().expect(EXPECT_LOCK);
@@ -936,7 +981,8 @@ fn configure_bridges(bus: &'static PciBus, highest_id: &mut u8) {
             );
             check_pci_bus(downstream_bus, &mut |_| {
                 Err(PciError::ConfiguredBridgeBelowUnconfigured)
-            });
+            })
+            .await;
         }
 
         let downstream_bus = bridge
@@ -947,7 +993,7 @@ fn configure_bridges(bus: &'static PciBus, highest_id: &mut u8) {
         // Look for any existing bridge resources.
         check_for_bridge_resources(bridge);
 
-        configure_bridges(downstream_bus, highest_id);
+        Box::pin(configure_bridges(downstream_bus, highest_id)).await;
 
         i += 1;
     }
@@ -1388,7 +1434,7 @@ fn find_highest_id(bus: &'static PciBus) -> u8 {
     id
 }
 
-pub fn enumerate_all() {
+pub async fn enumerate_all() {
     // Downstream buses are appended as we go, hence this also covers buses behind bridges.
     let mut queue = all_root_buses();
     let mut i = 0;
@@ -1397,7 +1443,8 @@ pub fn enumerate_all() {
         check_pci_bus(bus, &mut |downstream| {
             queue.push(downstream);
             Ok(())
-        });
+        })
+        .await;
         i += 1;
     }
 
@@ -1406,7 +1453,7 @@ pub fn enumerate_all() {
 
     for root_bus in all_root_buses() {
         let mut highest_id = find_highest_id(root_bus);
-        configure_bridges(root_bus, &mut highest_id);
+        configure_bridges(root_bus, &mut highest_id).await;
         allocate_bars(root_bus);
     }
 
