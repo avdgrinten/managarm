@@ -7,6 +7,7 @@ mod irq;
 // Only x86 has an ISA bus (and hence ISA IRQs).
 #[cfg(target_arch = "x86_64")]
 mod isa;
+mod kernel_device;
 mod pci;
 mod pio;
 mod uacpi;
@@ -31,6 +32,9 @@ fn main() -> Result<()> {
     hel::block_on(async {
         let cmdline = managarm::kerncfg::get_cmdline().await?;
         println!("sif: enabled");
+
+        // Enumeration must know which hardware the kernel touches before it reconfigures anything.
+        kernel_device::init().await?;
 
         let rsdp = managarm::kerncfg::get_acpi_rsdp().await?;
         let (dt_address, dt_size) = managarm::kerncfg::get_device_tree().await?;
@@ -64,6 +68,11 @@ fn main() -> Result<()> {
         runtime::forbid_run_blocking();
 
         println!("sif: published PCI devices");
+
+        degrade(
+            "Freestanding framebuffer publishing",
+            kernel_device::publish_freestanding_framebuffers().await,
+        );
 
         if acpi::has_rsdp() {
             degrade("PS/2 publishing", acpi::ps2::publish().await);

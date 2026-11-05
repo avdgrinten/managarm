@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use anyhow::{Result, bail};
 use managarm::hw::Error as HwError;
 use managarm::hw::pci::IoType;
-use managarm::hw::server::{BarDescriptor, CapDescriptor, serve_pci_device};
+use managarm::hw::server::{BarDescriptor, CapDescriptor, FbInfo, serve_pci_device};
 use managarm::mbus::{EntityManager, Properties, create_entity};
 
 use super::discover::{all_devices, all_root_buses};
@@ -14,6 +14,7 @@ use super::{BarType, PciBridge, PciBus, PciDevice, PciEntity, iommu, msi_control
 
 use crate::acpi::{PAGE_MASK, PAGE_SIZE};
 use crate::entity::{decimal, hex, serve_entity_lanes, string};
+use crate::kernel_device;
 use crate::{EXPECT_LOCK, leak};
 
 #[derive(Clone, Copy)]
@@ -323,6 +324,32 @@ impl managarm::hw::server::PciDevice for ServedEntity {
             .dma_coherent
             .ok_or(managarm::hw::Error::PropertyNotFound)
     }
+
+    // The driver takes over the hardware, hence the kernel has to stop driving it.
+    async fn claim_device(&self) -> managarm::hw::Result<()> {
+        let devices = self
+            .entity()
+            .kernel_devices
+            .lock()
+            .expect(EXPECT_LOCK)
+            .clone();
+        for device in devices {
+            device.claim().await;
+        }
+        Ok(())
+    }
+
+    fn fb_info(&self) -> managarm::hw::Result<FbInfo> {
+        kernel_device::framebuffer_of(self.entity())
+            .and_then(|device| device.fb_info())
+            .ok_or(HwError::IllegalArguments)
+    }
+
+    fn access_fb_memory(&self) -> managarm::hw::Result<hel::Handle> {
+        kernel_device::framebuffer_of(self.entity())
+            .ok_or(HwError::IllegalArguments)?
+            .access_fb_memory()
+    }
 }
 
 async fn serve_entity(manager: &'static EntityManager, served: ServedEntity) {
@@ -373,6 +400,9 @@ async fn publish_entity(served: ServedEntity, pci_type: &str) -> Result<()> {
     }
 
     let mut props = entity_properties(entity, pci_type);
+    if kernel_device::framebuffer_of(entity).is_some() {
+        props.insert("class".into(), string("framebuffer"));
+    }
     if let ServedEntity::Device(device) = served {
         props.insert(
             "pci-subsystem-vendor".into(),

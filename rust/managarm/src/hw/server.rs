@@ -35,6 +35,16 @@ pub struct CapDescriptor {
     pub length: u64,
 }
 
+/// Geometry of a framebuffer, as reported by GetFbInfo.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FbInfo {
+    pub pitch: u32,
+    pub width: u32,
+    pub height: u32,
+    pub bpp: u32,
+    pub fb_type: u32,
+}
+
 pub trait PciDevice {
     fn bars(&self) -> [BarDescriptor; 6];
     fn capabilities(&self) -> Vec<CapDescriptor>;
@@ -79,9 +89,24 @@ pub trait PciDevice {
     }
     /// Whether DMA by the device snoops the CPU caches.
     fn dma_coherent(&self) -> super::Result<bool>;
-    fn claim_device(&self) -> super::Result<()> {
+    async fn claim_device(&self) -> super::Result<()> {
         Ok(())
     }
+
+    /// The framebuffer that the device scans out, if the kernel handed one over.
+    fn fb_info(&self) -> super::Result<FbInfo> {
+        Err(super::Error::IllegalArguments)
+    }
+    fn access_fb_memory(&self) -> super::Result<Handle> {
+        Err(super::Error::IllegalArguments)
+    }
+}
+
+/// A framebuffer that is not attributed to a PCI device (or any other bus device).
+pub trait Framebuffer {
+    fn fb_info(&self) -> FbInfo;
+    fn access_fb_memory(&self) -> super::Result<Handle>;
+    async fn claim_device(&self) -> super::Result<()>;
 }
 
 fn encode_io_type(t: IoType) -> bindings::IoType {
@@ -179,6 +204,40 @@ fn error_response(error: Errors) -> bindings::SvrResponse {
     let mut resp = bindings::SvrResponse::default();
     resp.set_error(error);
     resp
+}
+
+async fn send_fb_info(lane: &Handle, info: super::Result<FbInfo>) -> hel::Result<()> {
+    let info = match info {
+        Ok(info) => info,
+        Err(err) => return send_response(lane, &error_response(encode_hw_error(&err))).await,
+    };
+    let mut resp = bindings::SvrResponse::default();
+    resp.set_error(Errors::Success);
+    resp.set_fb_pitch(info.pitch);
+    resp.set_fb_width(info.width);
+    resp.set_fb_height(info.height);
+    resp.set_fb_bpp(info.bpp);
+    resp.set_fb_type(info.fb_type);
+    send_response(lane, &resp).await
+}
+
+async fn send_fb_memory(lane: &Handle, memory: super::Result<Handle>) -> hel::Result<()> {
+    match memory {
+        Ok(handle) => {
+            send_response_with_push(
+                lane,
+                &error_response(Errors::Success),
+                &handle,
+                hel_sys::kHelRightRead
+                    | hel_sys::kHelRightWrite
+                    | hel_sys::kHelRightAssign
+                    | hel_sys::kHelRightProvision
+                    | hel_sys::kHelRightPin,
+            )
+            .await
+        }
+        Err(err) => send_response(lane, &error_response(encode_hw_error(&err))).await,
+    }
 }
 
 async fn handle_one<D: PciDevice>(lane: &Handle, request: &[u8], device: &D) -> hel::Result<()> {
@@ -359,12 +418,49 @@ async fn handle_one<D: PciDevice>(lane: &Handle, request: &[u8], device: &D) -> 
             }
         }
         bindings::ClaimDeviceRequest::MESSAGE_ID => {
-            send_response(lane, &error_response(result_code(device.claim_device()))).await?;
+            let result = device.claim_device().await;
+            send_response(lane, &error_response(result_code(result))).await?;
+        }
+        bindings::GetFbInfoRequest::MESSAGE_ID => {
+            send_fb_info(lane, device.fb_info()).await?;
+        }
+        bindings::AccessFbMemoryRequest::MESSAGE_ID => {
+            send_fb_memory(lane, device.access_fb_memory()).await?;
         }
         _ => send_response(lane, &error_response(Errors::DeviceError)).await?,
     }
 
     Ok(())
+}
+
+async fn handle_one_fb<D: Framebuffer>(lane: &Handle, request: &[u8], fb: &D) -> hel::Result<()> {
+    let preamble = match bragi::preamble_from_bytes(request) {
+        Ok(p) => p,
+        Err(_) => return Ok(()),
+    };
+
+    match preamble.id() {
+        bindings::ClaimDeviceRequest::MESSAGE_ID => {
+            let result = fb.claim_device().await;
+            send_response(lane, &error_response(result_code(result))).await?;
+        }
+        bindings::GetFbInfoRequest::MESSAGE_ID => {
+            send_fb_info(lane, Ok(fb.fb_info())).await?;
+        }
+        bindings::AccessFbMemoryRequest::MESSAGE_ID => {
+            send_fb_memory(lane, fb.access_fb_memory()).await?;
+        }
+        _ => send_response(lane, &error_response(Errors::DeviceError)).await?,
+    }
+
+    Ok(())
+}
+
+pub async fn serve_framebuffer<D: Framebuffer + 'static>(lane: Handle, fb: Arc<D>) {
+    serve_requests(lane, async |conversation: &Handle, request: &[u8]| {
+        handle_one_fb(conversation, request, fb.as_ref()).await
+    })
+    .await
 }
 
 async fn serve_requests(lane: Handle, handler: impl AsyncFn(&Handle, &[u8]) -> hel::Result<()>) {

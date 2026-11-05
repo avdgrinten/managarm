@@ -3,6 +3,8 @@ use std::sync::atomic::Ordering;
 
 use managarm::svrctl::hardware_access_handle;
 
+use managarm::kerncfg::{KernelDeviceResource, KernelDeviceResourceKind};
+
 use super::{
     BarType, Capability, ExtendedCapability, IrqIndex, MsixTable,
     PCI_BRIDGE_EXPANSION_ROM_BASE_ADDRESS, PCI_REGULAR_BAR0,
@@ -12,6 +14,7 @@ use super::{
 
 use crate::EXPECT_LOCK;
 use crate::acpi::PAGE_MASK;
+use crate::kernel_device;
 
 // Capability lists are walked with a bound since a device can make them loop; Linux uses the
 // same bounds.
@@ -38,7 +41,24 @@ fn compute_bar_length(mask: u64) -> u64 {
     1u64 << mask.trailing_zeros()
 }
 
-fn read_entity_bars(entity: &PciEntity, n_bars: usize) -> Result<(), PciError> {
+fn bar_type_of(kind: KernelDeviceResourceKind) -> BarType {
+    match kind {
+        KernelDeviceResourceKind::Io => BarType::Io,
+        KernelDeviceResourceKind::Mmio => BarType::Memory,
+    }
+}
+
+fn range_contains(base: u64, size: u64, resource: &KernelDeviceResource) -> bool {
+    let Some(end) = base.checked_add(size) else {
+        return false;
+    };
+    let Some(resource_end) = resource.base.checked_add(resource.length) else {
+        return false;
+    };
+    base <= resource.base && resource_end <= end
+}
+
+fn read_entity_bars(entity: &'static PciEntity, n_bars: usize) -> Result<(), PciError> {
     let bus = entity.parent_bus;
     let slot = entity.slot;
     let function = entity.function;
@@ -220,6 +240,21 @@ fn read_entity_bars(entity: &PciEntity, n_bars: usize) -> Result<(), PciError> {
             i += 2;
         } else {
             return Err(PciError::ReservedBarType { index: i });
+        }
+    }
+
+    // thor reports CPU physical addresses, hence match against the host side of the BARs.
+    for &device in kernel_device::all() {
+        let contained = bars.iter().position(|bar| {
+            bar.allocated
+                && device.resources.iter().any(|resource| {
+                    bar.host_type == bar_type_of(resource.kind)
+                        && range_contains(bar.host_address, bar.length, resource)
+                })
+        });
+        if let Some(i) = contained {
+            println!("sif:     BAR #{i} contains {}", device.describe());
+            device.attribute_to(entity);
         }
     }
 

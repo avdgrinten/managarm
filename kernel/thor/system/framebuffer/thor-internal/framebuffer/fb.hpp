@@ -13,8 +13,6 @@ struct FbInfo {
 	uint64_t height;
 	uint64_t bpp;
 	uint64_t type;
-
-	smarter::shared_ptr<MemoryView> memory;
 };
 
 extern ManagarmElfNote<EirFramebuffer> framebufferNote;

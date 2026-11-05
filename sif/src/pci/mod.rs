@@ -17,6 +17,7 @@ use config::PciConfigIo;
 pub use error::PciError;
 
 pub(crate) use crate::irq::{IrqPin, system_irq};
+use crate::kernel_device::KernelDevice;
 use crate::{EXPECT_LOCK, leak};
 
 // thor only implements MSI allocation on x86-64 (LAPIC MSIs); mirror that here
@@ -774,6 +775,9 @@ pub struct PciEntity {
     pub dma_domain: OnceLock<&'static iommu::DmaDomain>,
     // Stands in for the domain if no IOMMU translates the entity.
     pub noop_dma_space: OnceLock<hel::Handle>,
+
+    // Kernel devices that live in one of the BARs, see kernel_device::KernelDevice.
+    pub kernel_devices: Mutex<Vec<&'static KernelDevice>>,
 }
 
 impl PciEntity {
@@ -812,6 +816,7 @@ impl PciEntity {
             associated_iommu: OnceLock::new(),
             dma_domain: OnceLock::new(),
             noop_dma_space: OnceLock::new(),
+            kernel_devices: Mutex::new(Vec::new()),
         }
     }
 
