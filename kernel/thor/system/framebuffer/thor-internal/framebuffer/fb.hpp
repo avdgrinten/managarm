@@ -3,6 +3,7 @@
 #include <eir/interface.hpp>
 #include <thor-internal/address-space.hpp>
 #include <thor-internal/elf-notes.hpp>
+#include <thor-internal/kernel-device.hpp>
 
 namespace thor {
 
@@ -15,6 +16,9 @@ struct FbInfo {
 	uint64_t type;
 
 	smarter::shared_ptr<MemoryView> memory;
+
+	// Registered kernel device that the boot screen drives; null without a framebuffer.
+	KernelDevice *device = nullptr;
 };
 
 extern ManagarmElfNote<EirFramebuffer> framebufferNote;

@@ -57,6 +57,7 @@ src = files(
 	'generic/kasan.cpp',
 	'generic/kerncfg.cpp',
 	'generic/kernlet.cpp',
+	'generic/kernel-device.cpp',
 	'generic/kernel-heap.cpp',
 	'generic/kernel-io.cpp',
 	'generic/kernel-log.cpp',

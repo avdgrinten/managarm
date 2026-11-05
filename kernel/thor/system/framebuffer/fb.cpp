@@ -4,6 +4,7 @@
 #include <thor-internal/fiber.hpp>
 #include <thor-internal/io.hpp>
 #include <thor-internal/kernel-heap.hpp>
+#include <thor-internal/kernel-log.hpp>
 #include <thor-internal/mbus.hpp>
 
 #include <thor-internal/framebuffer/fb.hpp>
@@ -18,7 +19,7 @@ namespace thor {
 
 THOR_DEFINE_ELF_NOTE(framebufferNote){elf_note_type::framebuffer, {}};
 
-void publishFreestandingFb(FbInfo *associatedFrameBuffer, BootScreen *associatedScreen);
+void publishFreestandingFb(FbInfo *associatedFrameBuffer);
 
 // ------------------------------------------------------------------------
 // window handling
@@ -98,6 +99,18 @@ namespace {
 	frg::manual_box<FbInfo> bootInfo;
 	frg::manual_box<FbDisplay> bootDisplay;
 	frg::manual_box<BootScreen> bootScreen;
+
+	struct BootFbDevice final : KernelDevice {
+		BootFbDevice()
+		: KernelDevice{"boot-framebuffer"} { }
+
+	private:
+		void claim() override {
+			disableLogHandler(bootScreen.get());
+		}
+	};
+
+	frg::manual_box<BootFbDevice> bootFbDevice;
 }
 
 void initializeBootFb(uint64_t address, uint64_t pitch, uint64_t width,
@@ -147,14 +160,23 @@ void transitionBootFb() {
 		panicLogger() << "thor: Failed to create hardware memory" << frg::endlog;
 	bootInfo->memory = std::move(*memoryOutcome);
 
-	publishFreestandingFb(bootInfo.get(), bootScreen.get());
+	// The device is registered only here since its resources live on the kernel heap.
+	bootFbDevice.initialize();
+	bootFbDevice->addResource({KernelDeviceResourceKind::mmio,
+			bootInfo->address, bootInfo->height * bootInfo->pitch});
+	bootFbDevice->setFramebuffer({bootInfo->pitch, bootInfo->width,
+			bootInfo->height, bootInfo->bpp, bootInfo->type});
+	registerKernelDevice(bootFbDevice.get());
+	bootInfo->device = bootFbDevice.get();
+
+	publishFreestandingFb(bootInfo.get());
 }
 
 namespace {
 
 struct FbMbusNode final : private KernelBusObject {
-	FbMbusNode(FbInfo *associatedFrameBuffer, BootScreen *associatedScreen)
-	: associatedFrameBuffer{associatedFrameBuffer}, associatedScreen{associatedScreen} { }
+	FbMbusNode(FbInfo *associatedFrameBuffer)
+	: associatedFrameBuffer{associatedFrameBuffer} { }
 
 	void run(enable_detached_coroutine) {
 		Properties properties;
@@ -211,8 +233,7 @@ struct FbMbusNode final : private KernelBusObject {
 				co_return Error::protocolViolation;
 			}
 
-			infoLogger() << "thor: Disabling screen associated with freestanding framebuffer device" << frg::endlog;
-			disableLogHandler(associatedScreen);
+			claimKernelDevice(associatedFrameBuffer->device);
 
 			managarm::hw::SvrResponse<KernelAlloc> resp{*kernelAlloc};
 			resp.set_error(managarm::hw::Errors::SUCCESS);
@@ -257,15 +278,13 @@ struct FbMbusNode final : private KernelBusObject {
 	}
 
 	FbInfo *associatedFrameBuffer;
-	BootScreen *associatedScreen;
 };
 
 } // namespace anonymous
 
-void publishFreestandingFb(FbInfo *associatedFrameBuffer, BootScreen *associatedScreen) {
+void publishFreestandingFb(FbInfo *associatedFrameBuffer) {
 	infoLogger() << "thor: Publishing freestanding mbus node for framebuffer" << frg::endlog;
-	auto node = frg::construct<FbMbusNode>(*kernelAlloc,
-			associatedFrameBuffer, associatedScreen);
+	auto node = frg::construct<FbMbusNode>(*kernelAlloc, associatedFrameBuffer);
 	node->run(enable_detached_coroutine{WorkQueue::generalQueue().lock()});
 }
 
