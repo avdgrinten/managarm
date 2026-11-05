@@ -167,3 +167,15 @@ message ClaimKernelDeviceRequest 18 {
 head(128):
 	uint64 id;
 }
+
+// Keeps the kernel off the device until the matching ResumeKernelDeviceRequest.
+// The response is sent once no kernel access to the device is in flight anymore.
+message SuspendKernelDeviceRequest 19 {
+head(128):
+	uint64 id;
+}
+
+message ResumeKernelDeviceRequest 20 {
+head(128):
+	uint64 id;
+}

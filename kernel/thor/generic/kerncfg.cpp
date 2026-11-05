@@ -192,6 +192,31 @@ private:
 			auto respTailError = co_await sendBuffer(lane, std::move(respTailBuffer));
 			if(respTailError != Error::success)
 				co_return respTailError;
+		}else if(preamble.id() == bragi::message_id<managarm::kerncfg::SuspendKernelDeviceRequest>) {
+			auto req = bragi::parse_head_only<managarm::kerncfg::SuspendKernelDeviceRequest>(reqBuffer, *kernelAlloc);
+
+			if (!req)
+				co_return Error::protocolViolation;
+
+			auto error = managarm::kerncfg::Error::NO_SUCH_DEVICE;
+			if (auto device = findKernelDevice(req->id())) {
+				co_await suspendKernelDevice(device);
+				error = managarm::kerncfg::Error::SUCCESS;
+			}
+			FRG_CO_TRY(co_await sendSvrResponse(lane, error));
+		}else if(preamble.id() == bragi::message_id<managarm::kerncfg::ResumeKernelDeviceRequest>) {
+			auto req = bragi::parse_head_only<managarm::kerncfg::ResumeKernelDeviceRequest>(reqBuffer, *kernelAlloc);
+
+			if (!req)
+				co_return Error::protocolViolation;
+
+			auto error = managarm::kerncfg::Error::NO_SUCH_DEVICE;
+			if (auto device = findKernelDevice(req->id())) {
+				error = resumeKernelDevice(device)
+						? managarm::kerncfg::Error::SUCCESS
+						: managarm::kerncfg::Error::ILLEGAL_REQUEST;
+			}
+			FRG_CO_TRY(co_await sendSvrResponse(lane, error));
 		}else if(preamble.id() == bragi::message_id<managarm::kerncfg::ClaimKernelDeviceRequest>) {
 			auto req = bragi::parse_head_only<managarm::kerncfg::ClaimKernelDeviceRequest>(reqBuffer, *kernelAlloc);
 
