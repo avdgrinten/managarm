@@ -5,6 +5,7 @@
 #include <thor-internal/fiber.hpp>
 #include <thor-internal/kerncfg.hpp>
 #include <thor-internal/hierarchy.hpp>
+#include <thor-internal/kernel-device.hpp>
 #include <thor-internal/ostrace.hpp>
 #include <thor-internal/kernel-log.hpp>
 #include <thor-internal/main.hpp>
@@ -36,6 +37,19 @@ extern ManagarmElfNote<DtData> dtDataNote;
 // ------------------------------------------------------------------------
 
 namespace {
+
+coroutine<frg::expected<Error>> sendSvrResponse(
+		smarter::shared_ptr<Stream, LanePolicy> &lane, managarm::kerncfg::Error error) {
+	managarm::kerncfg::SvrResponse<KernelAlloc> resp(*kernelAlloc);
+	resp.set_error(error);
+
+	frg::unique_memory<KernelAlloc> respBuffer{*kernelAlloc, resp.size_of_head()};
+	bragi::write_head_only(resp, respBuffer);
+	auto respError = co_await sendBuffer(lane, std::move(respBuffer));
+	if(respError != Error::success)
+		co_return respError;
+	co_return frg::success;
+}
 
 struct KerncfgBusObject : private KernelBusObject {
 	coroutine<void> run() {
@@ -131,6 +145,65 @@ private:
 			auto respError = co_await sendBuffer(lane, std::move(respBuffer));
 			if(respError != Error::success)
 				co_return respError;
+		}else if(preamble.id() == bragi::message_id<managarm::kerncfg::ListKernelDevicesRequest>) {
+			auto req = bragi::parse_head_only<managarm::kerncfg::ListKernelDevicesRequest>(reqBuffer, *kernelAlloc);
+
+			if (!req)
+				co_return Error::protocolViolation;
+
+			managarm::kerncfg::ListKernelDevicesResponse<KernelAlloc> resp(*kernelAlloc);
+			resp.set_error(managarm::kerncfg::Error::SUCCESS);
+
+			for (auto device : allKernelDevices()) {
+				managarm::kerncfg::KernelDevice<KernelAlloc> msg{*kernelAlloc};
+				msg.set_id(device->id());
+				msg.set_name(frg::string<KernelAlloc>{*kernelAlloc, device->name()});
+				resp.add_devices(std::move(msg));
+
+				for (auto &resource : device->resources()) {
+					managarm::kerncfg::KernelDeviceResource<KernelAlloc> msg{*kernelAlloc};
+					msg.set_device(device->id());
+					msg.set_kind(resource.kind == KernelDeviceResourceKind::io
+							? managarm::kerncfg::KernelDeviceResourceKind::IO
+							: managarm::kerncfg::KernelDeviceResourceKind::MMIO);
+					msg.set_base(resource.base);
+					msg.set_length(resource.length);
+					resp.add_resources(std::move(msg));
+				}
+
+				if (auto &fb = device->framebuffer()) {
+					managarm::kerncfg::KernelFramebuffer<KernelAlloc> msg{*kernelAlloc};
+					msg.set_device(device->id());
+					msg.set_pitch(fb->pitch);
+					msg.set_width(fb->width);
+					msg.set_height(fb->height);
+					msg.set_bpp(fb->bpp);
+					msg.set_fb_type(fb->type);
+					resp.add_framebuffers(std::move(msg));
+				}
+			}
+
+			frg::unique_memory<KernelAlloc> respHeadBuffer{*kernelAlloc, resp.size_of_head()};
+			frg::unique_memory<KernelAlloc> respTailBuffer{*kernelAlloc, resp.size_of_tail()};
+			bragi::write_head_tail(resp, respHeadBuffer, respTailBuffer);
+			auto respHeadError = co_await sendBuffer(lane, std::move(respHeadBuffer));
+			if(respHeadError != Error::success)
+				co_return respHeadError;
+			auto respTailError = co_await sendBuffer(lane, std::move(respTailBuffer));
+			if(respTailError != Error::success)
+				co_return respTailError;
+		}else if(preamble.id() == bragi::message_id<managarm::kerncfg::ClaimKernelDeviceRequest>) {
+			auto req = bragi::parse_head_only<managarm::kerncfg::ClaimKernelDeviceRequest>(reqBuffer, *kernelAlloc);
+
+			if (!req)
+				co_return Error::protocolViolation;
+
+			auto error = managarm::kerncfg::Error::NO_SUCH_DEVICE;
+			if (auto device = findKernelDevice(req->id())) {
+				claimKernelDevice(device);
+				error = managarm::kerncfg::Error::SUCCESS;
+			}
+			FRG_CO_TRY(co_await sendSvrResponse(lane, error));
 		}else if(preamble.id() == bragi::message_id<managarm::kerncfg::GetDeviceTreeRequest>) {
 			auto req = bragi::parse_head_only<managarm::kerncfg::GetDeviceTreeRequest>(reqBuffer, *kernelAlloc);
 

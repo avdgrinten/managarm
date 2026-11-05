@@ -3,7 +3,8 @@ namespace "managarm::kerncfg";
 enum Error {
 	SUCCESS = 0,
 	ILLEGAL_REQUEST = 1,
-	WOULD_BLOCK = 2
+	WOULD_BLOCK = 2,
+	NO_SUCH_DEVICE = 3
 }
 
 message GetCmdlineRequest 1 {
@@ -116,4 +117,53 @@ head(128):
 message ProvideIoChannelResponse 15 {
 head(128):
 	Error error;
+}
+
+enum KernelDeviceResourceKind {
+	MMIO = 0,
+	IO = 1
+}
+
+// A device that the kernel drives itself (e.g., the boot framebuffer or UART).
+// The resources are the physical address and I/O port ranges that the kernel accesses.
+struct KernelDevice {
+	uint64 id;
+	string name;
+}
+
+struct KernelDeviceResource {
+	uint64 device;
+	KernelDeviceResourceKind kind;
+	uint64 base;
+	uint64 length;
+}
+
+struct KernelFramebuffer {
+	uint64 device;
+	uint32 pitch;
+	uint32 width;
+	uint32 height;
+	uint32 bpp;
+	uint32 fb_type;
+}
+
+message ListKernelDevicesRequest 16 {
+head(128):
+}
+
+message ListKernelDevicesResponse 17 {
+head(128):
+	Error error;
+tail:
+	tags {
+		tag(1) KernelDevice[] devices;
+		tag(2) KernelDeviceResource[] resources;
+		tag(3) KernelFramebuffer[] framebuffers;
+	}
+}
+
+// Makes the kernel give up the device for good.
+message ClaimKernelDeviceRequest 18 {
+head(128):
+	uint64 id;
 }
