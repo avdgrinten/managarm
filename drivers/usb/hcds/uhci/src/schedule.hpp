@@ -23,16 +23,42 @@ namespace proto = protocols::usb;
 // ----------------------------------------------------------------
 
 struct Controller final : std::enable_shared_from_this<Controller>, proto::BaseController {
+	friend struct DeviceState;
 	friend struct ConfigurationState;
 
 	struct RootHub final : proto::Hub {
 		RootHub(Controller *controller)
-		: Hub{nullptr, 0}, _controller{controller} { }
+		: Hub{nullptr}, _controller{controller} { }
 
 		size_t numPorts() override;
-		async::result<proto::PortState> pollState(int port) override;
+		async::result<frg::expected<proto::UsbError, void>> pollUntilState(int port, uint32_t desired) override;
 		async::result<frg::expected<proto::UsbError, void>> issueReset(int port) override;
 		async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> querySpeed(int port) override;
+
+		// TODO(qookie): Implement this
+		async::result<frg::expected<proto::UsbError, void>> setPortPower(int port, bool state) override {
+			(void)port;
+			(void)state;
+			std::cout << "uhci: setPortPower is unimplemented for UHCI root hubs!" << std::endl;
+			co_return frg::success;
+		}
+
+		// TODO(qookie): Implement this
+		async::result<frg::expected<proto::UsbError, bool>> getPortPower(int port) override {
+			(void)port;
+			std::cout << "uhci: getPortPower is unimplemented for UHCI root hubs!" << std::endl;
+			co_return true;
+		}
+
+		async::detached run() override { co_return; }
+
+		proto::DeviceSpeed hubSpeed() override {
+			return proto::DeviceSpeed::fullSpeed;
+		}
+
+		mbus_ng::EntityId mbusEntityId() override {
+			return _controller->_entity.id();
+		}
 
 	private:
 		Controller *_controller;
@@ -46,8 +72,9 @@ struct Controller final : std::enable_shared_from_this<Controller>, proto::BaseC
 	async::detached _handleIrqs();
 	async::detached _refreshFrame();
 
-	async::result<frg::expected<proto::UsbError>>
-	enumerateDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) override;
+	std::shared_ptr<proto::DeviceServerData>
+	createDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) override;
+
 
 private:
 	protocols::hw::Device _hwDevice;
@@ -234,8 +261,9 @@ private:
 // DeviceState
 // ----------------------------------------------------------------------------
 
-struct DeviceState final : proto::DeviceData {
-	explicit DeviceState(std::shared_ptr<Controller> controller, int device);
+struct DeviceState final : proto::DeviceServerData {
+	explicit DeviceState(std::shared_ptr<Controller> controller, int device,
+			std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed);
 
 	arch::dma_pool *setupPool() override;
 	arch::dma_pool *bufferPool() override;
@@ -244,6 +272,22 @@ struct DeviceState final : proto::DeviceData {
 	async::result<frg::expected<proto::UsbError, std::string>> configurationDescriptor(uint8_t configuration) override;
 	async::result<frg::expected<proto::UsbError, proto::Configuration>> useConfiguration(uint8_t index, uint8_t value) override;
 	async::result<frg::expected<proto::UsbError, size_t>> transfer(proto::ControlTransfer info) override;
+
+	async::result<frg::expected<proto::UsbError>>
+	initialize() override;
+
+	async::result<frg::expected<proto::UsbError>>
+	updateEp0MaxPacketSize(size_t maxPacketSize) override;
+
+	async::result<frg::expected<proto::UsbError>>
+	configureAsHub(std::shared_ptr<proto::Hub> hub) override {
+		(void)hub;
+		co_return frg::success;
+	}
+
+	int address() override {
+		return _device;
+	}
 
 private:
 	std::shared_ptr<Controller> _controller;

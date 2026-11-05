@@ -35,8 +35,9 @@ std::vector<std::shared_ptr<Controller>> globalControllers;
 // DeviceState
 // ----------------------------------------------------------------
 
-DeviceState::DeviceState(std::shared_ptr<Controller> controller, int device)
-: _controller{std::move(controller)}, _device(device) { }
+DeviceState::DeviceState(std::shared_ptr<Controller> controller, int device,
+		std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed)
+: proto::DeviceServerData{speed, hub, port}, _controller{std::move(controller)}, _device(device) { }
 
 arch::dma_pool *DeviceState::setupPool() {
 	return _controller->memoryPool();
@@ -47,21 +48,80 @@ arch::dma_pool *DeviceState::bufferPool() {
 }
 
 async::result<frg::expected<proto::UsbError, std::string>> DeviceState::deviceDescriptor() {
+	assert(_device != -1);
 	return _controller->deviceDescriptor(_device);
 }
 
 async::result<frg::expected<proto::UsbError, std::string>> DeviceState::configurationDescriptor(uint8_t configuration) {
+	assert(_device != -1);
 	return _controller->configurationDescriptor(_device, configuration);
 }
 
 async::result<frg::expected<proto::UsbError, proto::Configuration>> DeviceState::useConfiguration(uint8_t index, uint8_t value) {
+	assert(_device != -1);
 	FRG_CO_TRY(co_await _controller->useConfiguration(_device, value));
 	co_return proto::Configuration{std::make_shared<ConfigurationState>(_controller,
 				_device, index, value)};
 }
 
 async::result<frg::expected<proto::UsbError, size_t>> DeviceState::transfer(proto::ControlTransfer info) {
+	assert(_device != -1);
 	return _controller->transfer(_device, 0, info);
+}
+
+
+async::result<frg::expected<proto::UsbError>> DeviceState::initialize() {
+	using proto::DeviceSpeed;
+	assert(speed() == DeviceSpeed::lowSpeed || speed() == DeviceSpeed::fullSpeed);
+	bool lowSpeed = speed() == DeviceSpeed::lowSpeed;
+
+	// This queue will become the default control pipe of our new device.
+	auto queue = new Controller::QueueEntity{arch::dma_object<QueueHead>{_controller->memoryPool()}};
+	co_await queue->initialize(_controller->dmaSpace_);
+	_controller->_linkAsync(queue);
+
+	// Allocate an address for the device.
+	assert(!_controller->_addressStack.empty());
+	auto address = _controller->_addressStack.front();
+	_controller->_addressStack.pop();
+
+	_device = address;
+
+	arch::dma_object<proto::SetupPacket> setAddress{setupPool()};
+	setAddress->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
+			| proto::setup_type::toDevice;
+	setAddress->request = proto::request_type::setAddress;
+	setAddress->value = address;
+	setAddress->index = 0;
+	setAddress->length = 0;
+
+	(co_await _controller->_directTransfer(0, 0, proto::ControlTransfer{proto::kXferToDevice,
+			setAddress, arch::dma_buffer_view{}}, queue, lowSpeed, 8)).unwrap();
+
+	// Initial guess at the EP0 max packet size
+	size_t packetSize = 0;
+	switch (speed()) {
+		using enum proto::DeviceSpeed;
+
+		case lowSpeed:
+		case fullSpeed: packetSize = 8; break;
+		default:
+			std::cout << "uhci: Unexpected device speed " << (int)speed() << std::endl;
+			co_return proto::UsbError::other;
+	}
+
+	_controller->_activeDevices[address].lowSpeed = lowSpeed;
+	_controller->_activeDevices[address].controlStates[0].queueEntity = queue;
+	_controller->_activeDevices[address].controlStates[0].maxPacketSize = packetSize;
+
+	co_return frg::success;
+}
+
+async::result<frg::expected<proto::UsbError>>
+DeviceState::updateEp0MaxPacketSize(size_t maxPacketSize) {
+	_controller->_activeDevices[_device].controlStates[0].maxPacketSize = maxPacketSize;
+
+	co_return frg::success;
 }
 
 // ----------------------------------------------------------------------------
@@ -288,19 +348,17 @@ void Controller::_updateFrame() {
 //					<< static_cast<uint16_t>(sc) << std::endl;
 
 			// Extract the status bits.
-			_portState[port].status = 0;
+			_portState[port] = 0;
 			if(sc & port_status_ctrl::connectStatus)
-				_portState[port].status |= proto::HubStatus::connect;
+				_portState[port] |= proto::HubStatus::connect;
 			if(sc & port_status_ctrl::enableStatus)
-				_portState[port].status |= proto::HubStatus::enable;
+				_portState[port] |= proto::HubStatus::enable;
 
 			// Extract the change bits.
 			if(sc & port_status_ctrl::connectChange) {
-				_portState[port].changes |= proto::HubStatus::connect;
 				_portDoorbell.raise();
 			}
 			if(sc & port_status_ctrl::enableChange) {
-				_portState[port].changes |= proto::HubStatus::enable;
 				_portDoorbell.raise();
 			}
 
@@ -330,12 +388,13 @@ size_t Controller::RootHub::numPorts() {
 	return 2;
 }
 
-async::result<proto::PortState> Controller::RootHub::pollState(int port) {
-	while(true) {
-		auto state = _controller->_portState[port - 1];
-		if(state.changes) {
-			_controller->_portState[port - 1].changes = 0;
-			co_return state;
+async::result<frg::expected<proto::UsbError, void>>
+Controller::RootHub::pollUntilState(int port, uint32_t desired) {
+	auto &state = _controller->_portState[port - 1];
+	while (true) {
+		// TODO(qookie): Handle disconnect and errors.
+		if ((state & desired) == desired) {
+			co_return frg::success;
 		}
 
 		co_await _controller->_portDoorbell.async_wait();
@@ -380,8 +439,7 @@ Controller::RootHub::issueReset(int port) {
 	}
 
 	// Similar to USB standard hubs we do not reset the enable-change bit.
-	_controller->_portState[port - 1].status |= proto::HubStatus::enable;
-	_controller->_portState[port - 1].changes |= proto::HubStatus::reset;
+	_controller->_portState[port - 1] |= proto::HubStatus::enable;
 	_controller->_portDoorbell.raise();
 
 	co_return frg::success;
@@ -402,145 +460,10 @@ Controller::RootHub::querySpeed(int port) {
 	co_return speed;
 }
 
-async::result<frg::expected<proto::UsbError>>
-Controller::enumerateDevice(std::shared_ptr<proto::Hub> parentHub, int port, proto::DeviceSpeed speed) {
-	using proto::DeviceSpeed;
 
-	assert(speed == DeviceSpeed::lowSpeed || speed == DeviceSpeed::fullSpeed);
-	bool low_speed = speed == DeviceSpeed::lowSpeed;
-
-	// This queue will become the default control pipe of our new device.
-	auto queue = new QueueEntity{arch::dma_object<QueueHead>{memoryPool()}};
-	co_await queue->initialize(dmaSpace_);
-	_linkAsync(queue);
-
-	// Allocate an address for the device.
-	assert(!_addressStack.empty());
-	auto address = _addressStack.front();
-	_addressStack.pop();
-
-	arch::dma_object<proto::SetupPacket> set_address{memoryPool()};
-	set_address->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
-			| proto::setup_type::toDevice;
-	set_address->request = proto::request_type::setAddress;
-	set_address->value = address;
-	set_address->index = 0;
-	set_address->length = 0;
-
-	(co_await _directTransfer(0, 0, proto::ControlTransfer{proto::kXferToDevice,
-			set_address, arch::dma_buffer_view{}}, queue, low_speed, 8)).unwrap();
-
-	// Enquire the maximum packet size of the default control pipe.
-	arch::dma_object<proto::SetupPacket> get_header{memoryPool()};
-	get_header->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
-			| proto::setup_type::toHost;
-	get_header->request = proto::request_type::getDescriptor;
-	get_header->value = proto::descriptor_type::device << 8;
-	get_header->index = 0;
-	get_header->length = 8;
-
-	arch::dma_object<proto::DeviceDescriptor> descriptor{memoryPool()};
-	(co_await _directTransfer(address, 0, proto::ControlTransfer{proto::kXferToHost,
-			get_header, descriptor.view_buffer().subview(0, 8)}, queue, low_speed, 8)).unwrap();
-
-	_activeDevices[address].lowSpeed = low_speed;
-	_activeDevices[address].controlStates[0].queueEntity = queue;
-	_activeDevices[address].controlStates[0].maxPacketSize = descriptor->maxPacketSize;
-
-	// Read the rest of the device descriptor.
-	arch::dma_object<proto::SetupPacket> get_descriptor{memoryPool()};
-	get_descriptor->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
-			| proto::setup_type::toHost;
-	get_descriptor->request = proto::request_type::getDescriptor;
-	get_descriptor->value = proto::descriptor_type::device << 8;
-	get_descriptor->index = 0;
-	get_descriptor->length = sizeof(proto::DeviceDescriptor);
-
-	(co_await transfer(address, 0, proto::ControlTransfer{proto::kXferToHost,
-			get_descriptor, descriptor.view_buffer()})).unwrap();
-	assert(descriptor->length == sizeof(proto::DeviceDescriptor));
-
-	// Read the configuration descriptor
-	arch::dma_object<proto::SetupPacket> getConfigDescriptor{memoryPool()};
-	arch::dma_object<proto::ConfigDescriptor> configDescriptor{memoryPool()};
-
-	getConfigDescriptor->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
-			| proto::setup_type::toHost;
-	getConfigDescriptor->request = proto::request_type::getDescriptor;
-	getConfigDescriptor->value = proto::descriptor_type::configuration << 8;
-	getConfigDescriptor->index = 0;
-	getConfigDescriptor->length = sizeof(proto::ConfigDescriptor);
-
-	(co_await transfer(address, 0, proto::ControlTransfer{proto::kXferToHost,
-			getConfigDescriptor, configDescriptor.view_buffer()})).unwrap();
-	assert(configDescriptor->length == sizeof(proto::ConfigDescriptor));
-
-	// Select the first configuration in order to exit the addressing state
-	arch::dma_object<proto::SetupPacket> setConfig{memoryPool()};
-	setConfig->type = proto::setup_type::targetDevice | proto::setup_type::byStandard
-			| proto::setup_type::toDevice;
-	setConfig->request = proto::request_type::setConfig;
-	setConfig->value = configDescriptor->configValue;
-	setConfig->index = 0;
-	setConfig->length = 0;
-	(co_await transfer(address, 0, proto::ControlTransfer{proto::kXferToDevice,
-			setConfig, {}})).unwrap();
-
-	char class_code[3], sub_class[3], protocol[3];
-	char vendor[5], product[5], release[5];
-	snprintf(class_code, 3, "%.2x", descriptor->deviceClass);
-	snprintf(sub_class, 3, "%.2x", descriptor->deviceSubclass);
-	snprintf(protocol, 3, "%.2x", descriptor->deviceProtocol);
-	snprintf(vendor, 5, "%.4x", descriptor->idVendor);
-	snprintf(product, 5, "%.4x", descriptor->idProduct);
-	snprintf(release, 5, "%.4x", descriptor->bcdDevice);
-
-	std::cout << "uhci: Enumerating device of class: 0x" << class_code
-			<< ", sub class: 0x" << sub_class << ", protocol: 0x" << protocol << std::endl;
-
-	if(descriptor->deviceClass == 0x09 && descriptor->deviceSubclass == 0
-			&& descriptor->deviceProtocol == 0) {
-		auto state = std::make_shared<DeviceState>(shared_from_this(), address);
-		auto hub = (co_await createHubFromDevice(parentHub, proto::Device{std::move(state)}, port)).unwrap();
-		_enumerator.observeHub(std::move(hub));
-	}
-
-	char name[3];
-	snprintf(name, 3, "%.2x", address);
-
-	std::string mbps = protocols::usb::getSpeedMbps(speed);
-
-	mbus_ng::Properties mbusDescriptor {
-		{ "usb.type", mbus_ng::StringItem{"device"}},
-		{ "usb.vendor", mbus_ng::StringItem{vendor}},
-		{ "usb.product", mbus_ng::StringItem{product}},
-		{ "usb.class", mbus_ng::StringItem{class_code}},
-		{ "usb.subclass", mbus_ng::StringItem{sub_class}},
-		{ "usb.protocol", mbus_ng::StringItem{protocol}},
-		{ "usb.release", mbus_ng::StringItem{release}},
-		{ "usb.hub_port", mbus_ng::StringItem{name}},
-		{ "usb.bus", mbus_ng::StringItem{std::to_string(_entity.id())}},
-		{ "usb.speed", mbus_ng::StringItem{mbps}},
-		{ "unix.subsystem", mbus_ng::StringItem{"usb"}},
-	};
-
-
-	auto usbEntity = (co_await mbus_ng::Instance::global().createEntity(
-				"usb-uhci-dev-" + std::string{name}, mbusDescriptor)).unwrap();
-
-	[] (auto self, auto address, mbus_ng::EntityManager entity) -> async::detached {
-		while (true) {
-			auto [localLane, remoteLane] = helix::createStream();
-
-			// If this fails, too bad!
-			(void)(co_await entity.serveRemoteLane(std::move(remoteLane)));
-
-			auto state = std::make_shared<DeviceState>(self->shared_from_this(), address);
-			proto::serve(proto::Device{std::move(state)}, std::move(localLane));
-		}
-	}(this, address, std::move(usbEntity));
-
-	co_return frg::success;
+std::shared_ptr<proto::DeviceServerData>
+Controller::createDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) {
+	return std::make_shared<DeviceState>(shared_from_this(), -1, hub, port, speed);
 }
 
 // ------------------------------------------------------------------------

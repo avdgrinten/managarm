@@ -320,98 +320,9 @@ void Controller::ringDoorbell(uint8_t doorbell, uint8_t target, uint16_t stream_
 }
 
 
-async::result<frg::expected<proto::UsbError>>
-Controller::enumerateDevice(std::shared_ptr<proto::Hub> parentHub, int port, proto::DeviceSpeed speed) {
-	uint32_t route = 0;
-
-	std::shared_ptr<proto::Hub> curHub = parentHub;
-	int curPort = port;
-	while (curHub->parent()) {
-		route <<= 4;
-		route |= curPort > 15 ? 15 : curPort;
-
-		curPort = curHub->port();
-		curHub = curHub->parent();
-	}
-
-	SupportedProtocol *proto = std::static_pointer_cast<RootHub>(curHub)->protocol();
-
-	auto rootPort = curPort + proto->compatiblePortStart - 1;
-
-	auto device = std::make_shared<Device>(this);
-	FRG_CO_TRY(co_await device->enumerate(rootPort, port, route, parentHub, speed, proto->slotType));
-	_devices[device->slot()] = device;
-
-	// If this is full speed, our guess for MPS might be wrong,
-	// get the first 8 bytes of the device descriptor to check.
-	if (speed == proto::DeviceSpeed::fullSpeed) {
-		arch::dma_object<proto::DeviceDescriptor> descriptor{&_memoryPool};
-		FRG_CO_TRY(co_await device->readDescriptor(descriptor.view_buffer().subview(0, 8), 0x0100));
-
-		std::println("{} Full-speed device on port {} has bMaxPacketSize0 = {}",
-				this, port, int{descriptor->maxPacketSize});
-
-		FRG_CO_TRY(co_await device->updateEp0PacketSize(descriptor->maxPacketSize));
-	}
-
-	arch::dma_object<proto::DeviceDescriptor> descriptor{&_memoryPool};
-	FRG_CO_TRY(co_await device->readDescriptor(descriptor.view_buffer(), 0x0100));
-
-	arch::dma_object<proto::ConfigDescriptor> configDescriptor{&_memoryPool};
-	FRG_CO_TRY(co_await device->readDescriptor(configDescriptor.view_buffer(), 0x0200));
-	FRG_CO_TRY(co_await device->useConfiguration(0, configDescriptor->configValue));
-
-	// Advertise the USB device on mbus.
-	auto classCode = std::format("{:02x}", descriptor->deviceClass);
-	auto subClass = std::format("{:02x}", descriptor->deviceSubclass);
-	auto protocol = std::format("{:02x}", descriptor->deviceProtocol);
-	auto vendor = std::format("{:04x}", descriptor->idVendor);
-	auto product = std::format("{:04x}", descriptor->idProduct);
-	auto release = std::format("{:04x}", descriptor->bcdDevice);
-
-	if (descriptor->deviceClass == 0x09 && descriptor->deviceSubclass == 0) {
-		auto hub = FRG_CO_TRY(co_await createHubFromDevice(parentHub, proto::Device{device}, port));
-
-		FRG_CO_TRY(co_await device->configureHub(hub, speed));
-
-		_enumerator.observeHub(std::move(hub));
-	}
-
-	auto name = std::format("{:02x}", device->slot());
-
-	std::string mbps = protocols::usb::getSpeedMbps(speed);
-
-	auto entity_id = std::static_pointer_cast<RootHub>(curHub)->entityId();
-
-	mbus_ng::Properties mbusDescriptor{
-		{"usb.type", mbus_ng::StringItem{"device"}},
-		{"usb.vendor", mbus_ng::StringItem{vendor}},
-		{"usb.product", mbus_ng::StringItem{product}},
-		{"usb.class", mbus_ng::StringItem{classCode}},
-		{"usb.subclass", mbus_ng::StringItem{subClass}},
-		{"usb.protocol", mbus_ng::StringItem{protocol}},
-		{"usb.release", mbus_ng::StringItem{release}},
-		{"usb.hub_port", mbus_ng::StringItem{name}},
-		{"usb.bus", mbus_ng::StringItem{std::to_string(entity_id)}},
-		{"usb.speed", mbus_ng::StringItem{mbps}},
-		{"unix.subsystem", mbus_ng::StringItem{"usb"}},
-	};
-
-	auto usbEntity = (co_await mbus_ng::Instance::global().createEntity(
-				"usb-xhci-dev-" + std::string{name}, mbusDescriptor)).unwrap();
-
-	[] (auto device, mbus_ng::EntityManager entity) -> async::detached {
-		while (true) {
-			auto [localLane, remoteLane] = helix::createStream();
-
-			// If this fails, too bad!
-			(void)(co_await entity.serveRemoteLane(std::move(remoteLane)));
-
-			proto::serve(proto::Device{device}, std::move(localLane));
-		}
-	}(device, std::move(usbEntity));
-
-	co_return frg::success;
+std::shared_ptr<proto::DeviceServerData>
+Controller::createDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) {
+	return std::make_shared<Device>(this, speed, hub, port);
 }
 
 void Controller::processEvent(Event ev) {
@@ -445,7 +356,7 @@ void Controller::processEvent(Event ev) {
 			}
 
 			if (_ports[ev.portId - 1])
-				_ports[ev.portId - 1]->_doorbell.raise();
+				_ports[ev.portId - 1]->updateStatus();
 			break;
 
 		default:
@@ -603,62 +514,27 @@ void Interrupter::_clearPending() {
 }
 
 // ------------------------------------------------------------------------
-// Controller::Port
+// Port
 // ------------------------------------------------------------------------
 
-Controller::Port::Port(int id, arch::mem_space space, Controller *controller, SupportedProtocol *proto)
-: _id{id}, _controller{controller}, _proto{proto}, _space{space} {
+Port::Port(int id, arch::mem_space space, Controller *controller)
+: _id{id}, _controller{controller}, _space{space} {
 }
 
-void Controller::Port::reset() {
-	std::println("{} Resetting port {}", _controller, _id);
-	_space.store(port::portsc, portsc::portPower(true) | portsc::portReset(true));
+uint8_t Port::getLinkStatus() {
+	return _space.load(port::portsc) & portsc::portLinkStatus;
 }
 
-void Controller::Port::disable() {
-	_space.store(port::portsc, portsc::portPower(true) | portsc::portEnable(true));
+uint8_t Port::getSpeed() {
+	return _space.load(port::portsc) & portsc::portSpeed;
 }
 
-void Controller::Port::resetChangeBits() {
-	_space.store(port::portsc, portsc::portPower(true)
-			| portsc::connectStatusChange(true)
-			| portsc::portResetChange(true)
-			| portsc::portEnableChange(true)
-			| portsc::warmPortResetChange(true)
-			| portsc::overCurrentChange(true)
-			| portsc::portLinkStatusChange(true)
-			| portsc::portConfigErrorChange(true));
-}
-
-bool Controller::Port::isConnected() {
-	auto portsc = _space.load(port::portsc);
-	return portsc & portsc::connectStatus;
-}
-
-bool Controller::Port::isPowered() {
+bool Port::isPowered() {
 	auto portsc = _space.load(port::portsc);
 	return portsc & portsc::portPower;
 }
 
-bool Controller::Port::isEnabled() {
-	return _space.load(port::portsc) & portsc::portEnable;
-}
-
-uint8_t Controller::Port::getLinkStatus() {
-	return _space.load(port::portsc) & portsc::portLinkStatus;
-}
-
-uint8_t Controller::Port::getSpeed() {
-	return _space.load(port::portsc) & portsc::portSpeed;
-}
-
-void Controller::Port::transitionToLinkStatus(uint8_t status) {
-	_space.store(port::portsc, portsc::portPower(true)
-			| portsc::portLinkStatus(status)
-			| portsc::portLinkStatusStrobe(true));
-}
-
-async::result<void> Controller::Port::setPower(bool on) {
+async::result<void> Port::setPower(bool on) {
 	_space.store(port::portsc, portsc::portPower(on));
 
 	// From the XHCI spec: "After modifying PP, software shall read PP
@@ -667,68 +543,27 @@ async::result<void> Controller::Port::setPower(bool on) {
 		co_await helix_ng::sleepFor(1'000'000);
 }
 
-async::detached Controller::Port::initPort() {
-	// Power good delay of Linux' xHCI root hubs (bPwrOn2PwrGood: 20 ms for USB 2, 100 ms for USB 3).
-	uint64_t powerGoodDelay = _proto->major == 3 ? 100'000'000 : 20'000'000;
+async::result<frg::expected<proto::UsbError, void>> Port::pollUntilState(uint32_t desired) {
+	while (true) {
+		// TODO(qookie): Handle disconnect and errors.
+		if ((_state & desired) == desired) {
+			co_return frg::success;
+		}
 
-	if (powerCyclePorts) {
-		std::println("xhci: Power cycling port during initialization");
-		co_await setPower(false);
-		// Like Linux, keep the port off for twice the power good delay.
-		co_await helix_ng::sleepFor(2 * powerGoodDelay);
+		co_await _pollEv.async_wait();
 	}
-
-	co_await setPower(true);
-	co_await helix_ng::sleepFor(powerGoodDelay);
-
-	// Wait for something to connect to the port
-	co_await awaitFlag(portsc::connectStatus, true);
-
-	// Notify the enumerator
-	_state.changes |= proto::HubStatus::connect;
-	_state.status |= proto::HubStatus::connect;
-	_pollEv.raise();
 }
 
-async::result<proto::PortState> Controller::Port::pollState() {
-	_pollSeq = co_await _pollEv.async_wait(_pollSeq);
-	co_return _state;
-}
+async::result<frg::expected<proto::UsbError, void>> Port::issueReset() {
+	// Preemptively clear enable status bit to avoid racing `observationCycle_()`.
+	_state &= ~proto::HubStatus::enable;
 
-async::result<frg::expected<proto::UsbError, void>> Controller::Port::issueReset() {
-	// We know something is connected if we're here (CCS=1)
-
-	// Reset the port only for USB 2 devices.
-	// "A USB3 protocol port attempts to automatically advance to
-	//  the Enabled state as part of the attach process."
-	// "A USB2 protocol port requires software to reset the port
-	//  to advance the port to the Enabled state [...]"
-	if (_proto->major == 2) {
-		reset();
-	}
-
-	// Wait for the port to enable.
-	co_await awaitFlag(portsc::portEnable, true);
-
-	auto linkStatus = getLinkStatus();
-
-	std::println("{} Port {} link status is {:d}", _controller, _id, linkStatus);
-
-	if (linkStatus >= 1 && linkStatus <= 3) {
-		transitionToLinkStatus(0);
-	} else {
-		assert(linkStatus == 0); // U0
-	}
-
-	// Notify the enumerator.
-	_state.changes |= proto::HubStatus::enable;
-	_state.status |= proto::HubStatus::enable;
-	_pollEv.raise();
-
+	std::println("{} Resetting port {}", _controller, _id);
+	_space.store(port::portsc, portsc::portPower(true) | portsc::portReset(true));
 	co_return frg::success;
 }
 
-async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> Controller::Port::querySpeed() {
+async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> Port::querySpeed() {
 	uint8_t speedId = getSpeed();
 
 	std::optional<proto::DeviceSpeed> speed;
@@ -761,46 +596,89 @@ async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> Controller::Po
 	}
 }
 
+void Port::updateStatus() {
+	_state = 0;
+
+	// Include power bit in the mask to keep it enabled.
+	auto portsc = _space.load(port::portsc);
+	const auto rw1cBitMask =
+		static_cast<uint32_t>(
+			portsc::portPower(true)
+			| portsc::connectStatusChange(true)
+			| portsc::portResetChange(true)
+			| portsc::portEnableChange(true)
+			| portsc::warmPortResetChange(true)
+			| portsc::overCurrentChange(true)
+			| portsc::portLinkStatusChange(true)
+			| portsc::portConfigErrorChange(true));
+
+	std::println("{} Updating status of port {}, PORTSC = {:08x}",
+			_controller, _id, static_cast<uint32_t>(portsc));
+
+	if (portsc & portsc::connectStatus)
+		_state |= proto::HubStatus::connect;
+	if (portsc & portsc::portReset)
+		_state |= proto::HubStatus::reset;
+	if (portsc & portsc::portEnable)
+		_state |= proto::HubStatus::enable;
+
+	// Clear all change bits in PORTSC
+	_space.store(port::portsc, portsc & arch::bit_mask{rw1cBitMask});
+
+	_pollEv.raise();
+}
+
 // ------------------------------------------------------------------------
-// Controller::RootHub
+// RootHub
 // ------------------------------------------------------------------------
 
-Controller::RootHub::RootHub(Controller *controller, SupportedProtocol &proto, arch::mem_space portSpace, mbus_ng::EntityManager entity)
-: Hub{nullptr, 0}, _controller{controller}, _proto{&proto}, _entity{std::move(entity)} {
+RootHub::RootHub(Controller *controller, SupportedProtocol &proto, arch::mem_space portSpace, mbus_ng::EntityManager entity)
+: Hub{nullptr}, _controller{controller}, _proto{&proto}, _entity{std::move(entity)} {
 	for (size_t i = 0; i < proto.compatiblePortCount; i++) {
 		_ports.push_back(std::make_unique<Port>(
 					i + proto.compatiblePortStart,
 					port::spaceForIndex(portSpace, i),
-					controller, &proto));
-		_ports.back()->initPort();
-		_controller->_ports[(i + proto.compatiblePortStart - 1)] =
-				_ports.back().get();
+					controller));
+		// Kick initial status update without an event
+		_ports.back()->updateStatus();
+		_controller->addRootPort(_ports.back().get());
 	}
 }
 
-size_t Controller::RootHub::numPorts() {
+size_t RootHub::numPorts() {
 	return _proto->compatiblePortCount;
 }
 
-async::result<proto::PortState> Controller::RootHub::pollState(int port) {
-	co_return co_await _ports[port - 1]->pollState();
+async::result<frg::expected<proto::UsbError, void>> RootHub::pollUntilState(int port, uint32_t desired) {
+	FRG_CO_TRY(co_await _ports[port - 1]->pollUntilState(desired));
+	co_return frg::success;
 }
 
-async::result<frg::expected<proto::UsbError, void>> Controller::RootHub::issueReset(int port) {
+async::result<frg::expected<proto::UsbError, void>> RootHub::issueReset(int port) {
         FRG_CO_TRY(co_await _ports[port - 1]->issueReset());
 	co_return frg::success;
 }
 
-async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> Controller::RootHub::querySpeed(int port) {
+async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> RootHub::querySpeed(int port) {
 	co_return FRG_CO_TRY(co_await _ports[port - 1]->querySpeed());
 }
+
+async::result<frg::expected<proto::UsbError, void>> RootHub::setPortPower(int port, bool state) {
+	co_await _ports[port - 1]->setPower(state);
+	co_return frg::success;
+}
+
+async::result<frg::expected<proto::UsbError, bool>> RootHub::getPortPower(int port) {
+	co_return _ports[port - 1]->isPowered();
+}
+
 
 // ------------------------------------------------------------------------
 // Device
 // ------------------------------------------------------------------------
 
-Device::Device(Controller *controller)
-: _slotId{-1}, _controller{controller} {
+Device::Device(Controller *controller, proto::DeviceSpeed speed, std::shared_ptr<proto::Hub> parent, int port)
+: proto::DeviceServerData{speed, parent, port}, _slotId{-1}, _controller{controller} {
 }
 
 arch::dma_pool *Device::setupPool() {
@@ -936,10 +814,16 @@ static inline uint8_t getHcdSpeedId(proto::DeviceSpeed speed) {
 }
 
 async::result<frg::expected<proto::UsbError>>
-Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<proto::Hub> hub, proto::DeviceSpeed speed, int slotType) {
-	_slotId = FRG_CO_TRY(co_await _controller->enableSlot(slotType));
+Device::initialize() {
+	auto [route, rootHub, rootHubPort] = routeString();
 
-	std::println("{} Slot {} allocated for port {} (route {:x})", _controller, _slotId, port, route);
+	SupportedProtocol *proto = std::static_pointer_cast<RootHub>(rootHub)->protocol();
+
+	auto rootPort = rootHubPort + proto->compatiblePortStart - 1;
+
+	_slotId = FRG_CO_TRY(co_await _controller->enableSlot(proto->slotType));
+
+	std::println("{} Slot {} allocated for port {} (route {:x})", _controller, _slotId, port(), route);
 
 	// Initialize slot context
 
@@ -954,44 +838,27 @@ Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<
 
 	slotCtx |= SlotFields::routeString(route);
 	slotCtx |= SlotFields::ctxEntries(1);
-	slotCtx |= SlotFields::speed(getHcdSpeedId(speed));
+	slotCtx |= SlotFields::speed(getHcdSpeedId(speed()));
 
-	// For LS/FS devices not on the root hub ...
-	if ((speed == proto::DeviceSpeed::lowSpeed || speed == proto::DeviceSpeed::fullSpeed) && hub->parent()) {
-		// ... look for a hub with a TT.
+	// For LS/FS devices, look for a TT in the path, and fill out the appropriate fields if one exists.
+	// TODO(qookie): These fields should also be filled out for USB 3 hubs, when a device is plugged
+	// into a higher rank hub, e.g. Gen1x1 device in a Gen1x2 hub or Gen1x2 device in Gen2x2 hub.
+	auto [ttHub, ttPort] = nearestTTHub();
+	if (ttHub) {
+		assert(ttPort != -1);
+		auto hubDevice = std::static_pointer_cast<Device>(ttHub->state());
 
-		// TODO(qookie): This could probably be tracked by the generic hub code.
-		auto curHub = hub;
-		while (curHub->parent()) {
-			auto hubDevice = std::static_pointer_cast<Device>(
-				curHub->associatedDevice()->state());
+		assert(hubDevice->speed() == proto::DeviceSpeed::highSpeed);
 
-			if (hubDevice->_speed == proto::DeviceSpeed::highSpeed)
-				break;
-
-			assert(hubDevice->_speed == proto::DeviceSpeed::lowSpeed
-					|| hubDevice->_speed == proto::DeviceSpeed::fullSpeed);
-
-			curHub = curHub->parent();
-		}
-
-		// Non-root high speed hub found in the path.
-		if (curHub->parent()) {
-			auto hubDevice = std::static_pointer_cast<Device>(
-				curHub->associatedDevice()->state());
-
-			assert(hubDevice->_speed == proto::DeviceSpeed::highSpeed);
-
-			// We need to fill these fields out for split transactions.
-			slotCtx |= SlotFields::parentHubPort(curHub->port());
-			slotCtx |= SlotFields::parentHubSlot(hubDevice->_slotId);
-		}
+		// We need to fill these fields out for split transactions.
+		slotCtx |= SlotFields::parentHubPort(ttPort);
+		slotCtx |= SlotFields::parentHubSlot(hubDevice->slot());
 	}
 
 	slotCtx |= SlotFields::rootHubPort(rootPort);
 
 	size_t packetSize = 0;
-	switch (speed) {
+	switch (speed()) {
 		using enum proto::DeviceSpeed;
 
 		case lowSpeed:
@@ -999,7 +866,6 @@ Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<
 		case highSpeed: packetSize = 64; break;
 		case superSpeed: packetSize = 512; break;
 	}
-	_speed = speed;
 
 	co_await _initEpCtx(inputCtx, 0, proto::PipeType::control, packetSize, proto::EndpointType::control, 0);
 
@@ -1007,21 +873,9 @@ Device::enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<
 
 	FRG_CO_TRY(co_await _controller->addressDevice(_slotId, inputCtx));
 
+	_controller->linkDevice(shared_from_this());
+
 	std::println("{} Device successfully addressed", _controller);
-
-	co_return frg::success;
-}
-
-async::result<frg::expected<proto::UsbError>>
-Device::readDescriptor(arch::dma_buffer_view dest, uint16_t desc) {
-	arch::dma_object<proto::SetupPacket> getDesc{setupPool()};
-	getDesc->type = proto::setup_type::targetDevice | proto::setup_type::byStandard | proto::setup_type::toHost;
-	getDesc->request = proto::request_type::getDescriptor;
-	getDesc->value = desc;
-	getDesc->index = 0;
-	getDesc->length = dest.size();
-
-	FRG_CO_TRY(co_await transfer({protocols::usb::kXferToHost, getDesc, dest}));
 
 	co_return frg::success;
 }
@@ -1077,7 +931,7 @@ Device::setupEndpoint(int endpoint, proto::PipeType dir, size_t maxPacketSize, p
 }
 
 async::result<frg::expected<proto::UsbError>>
-Device::configureHub(std::shared_ptr<proto::Hub> hub, proto::DeviceSpeed speed) {
+Device::configureAsHub(std::shared_ptr<proto::Hub> hub) {
 	InputContext inputCtx{_controller->largeCtx(), _controller->memoryPool()};
 
 	inputCtx.get(inputCtxCtrl) |= InputControlFields::add(0); // Slot Context
@@ -1088,9 +942,9 @@ Device::configureHub(std::shared_ptr<proto::Hub> hub, proto::DeviceSpeed speed) 
 	inputCtx.get(inputCtxSlot) |= SlotFields::hub(true);
 	inputCtx.get(inputCtxSlot) |= SlotFields::portCount(hub->numPorts());
 
-	if (speed == proto::DeviceSpeed::highSpeed)
+	if (speed() == proto::DeviceSpeed::highSpeed)
 		inputCtx.get(inputCtxSlot) |= SlotFields::ttThinkTime(
-				hub->getCharacteristics().unwrap().ttThinkTime / 8 - 1);
+				hub->getCharacteristics().ttThinkTime / 8 - 1);
 
 	FRG_CO_TRY(co_await _controller->evaluateContext(_slotId, inputCtx));
 
@@ -1132,7 +986,7 @@ async::result<void> Device::_initEpCtx(InputContext &ctx, int endpoint, proto::P
 }
 
 async::result<frg::expected<proto::UsbError>>
-Device::updateEp0PacketSize(size_t maxPacketSize) {
+Device::updateEp0MaxPacketSize(size_t maxPacketSize) {
 	InputContext inputCtx{_controller->largeCtx(), _controller->memoryPool()};
 	int endpointId = getEndpointIndex(0, proto::PipeType::control);
 
@@ -1426,4 +1280,3 @@ int main() {
 	observeControllers();
 	async::run_forever(helix::currentDispatcher);
 }
-

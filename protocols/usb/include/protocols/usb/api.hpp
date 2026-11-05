@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <print>
 
 #include <arch/dma_structs.hpp>
 #include <async/result.hpp>
@@ -9,6 +10,9 @@
 #include "usb.hpp"
 
 namespace protocols::usb {
+
+struct Hub;
+
 
 enum class UsbError {
 	none,
@@ -167,6 +171,69 @@ public:
 	virtual async::result<frg::expected<UsbError, std::string>> configurationDescriptor(uint8_t configuration) = 0;
 	virtual async::result<frg::expected<UsbError, Configuration>> useConfiguration(uint8_t index, uint8_t value) = 0;
 	virtual async::result<frg::expected<UsbError, size_t>> transfer(ControlTransfer info) = 0;
+
+	async::result<frg::expected<UsbError>>
+	readDescriptor(arch::dma_buffer_view dest, uint16_t desc) {
+		arch::dma_object<SetupPacket> getDesc{setupPool()};
+		getDesc->type = setup_type::targetDevice | setup_type::byStandard | setup_type::toHost;
+		getDesc->request = request_type::getDescriptor;
+		getDesc->value = desc;
+		getDesc->index = 0;
+		getDesc->length = dest.size();
+
+		FRG_CO_TRY(co_await transfer({kXferToHost, getDesc, dest}));
+
+		co_return frg::success;
+	}
+};
+
+struct DeviceServerData : DeviceData {
+protected:
+	~DeviceServerData() = default;
+	DeviceServerData(DeviceSpeed speed, std::shared_ptr<Hub> parent, int port)
+	: speed_{speed}, parent_{parent}, port_{port} { }
+
+public:
+	DeviceSpeed speed() const {
+		return speed_;
+	}
+
+	std::shared_ptr<Hub> parent() const {
+		return parent_;
+	}
+
+	int port() const {
+		return port_;
+	}
+
+	std::tuple<std::shared_ptr<Hub>, int> nearestTTHub() const;
+
+	std::tuple<uint32_t, std::shared_ptr<Hub>, int>
+	routeString() const;
+
+	virtual async::result<frg::expected<UsbError>>
+	initialize() = 0;
+
+	virtual async::result<frg::expected<UsbError>>
+	updateEp0MaxPacketSize(size_t maxPacketSize) {
+		(void)maxPacketSize;
+		std::println("protocols/usb: I don't support updating EP0 max packet size!");
+		co_return UsbError::unsupported;
+	}
+
+	virtual async::result<frg::expected<UsbError>>
+	configureAsHub(std::shared_ptr<Hub> hub) {
+		(void)hub;
+		std::println("protocols/usb: I don't support acting as a hub!");
+		co_return UsbError::unsupported;
+	}
+
+	virtual int address() = 0;
+
+private:
+	DeviceSpeed speed_;
+	std::shared_ptr<Hub> parent_;
+	int port_;
 };
 
 struct Device {
@@ -194,15 +261,13 @@ private:
 // BaseController.
 // ----------------------------------------------------------------
 
-struct Hub;
-
 struct BaseController {
 protected:
 	~BaseController() = default;
 
 public:
-	virtual async::result<frg::expected<UsbError>>
-	enumerateDevice(std::shared_ptr<Hub> hub, int port, DeviceSpeed speed) = 0;
+	virtual std::shared_ptr<DeviceServerData>
+	createDevice(std::shared_ptr<Hub> hub, int port, DeviceSpeed speed) = 0;
 };
 
 inline std::string getSpeedMbps(DeviceSpeed speed) {

@@ -103,8 +103,8 @@ inline int getEndpointIndex(int endpoint, proto::PipeType dir) {
 
 struct EndpointState;
 
-struct Device final : proto::DeviceData, std::enable_shared_from_this<Device> {
-	Device(Controller *controller);
+struct Device final : proto::DeviceServerData, std::enable_shared_from_this<Device> {
+	Device(Controller *controller, proto::DeviceSpeed speed, std::shared_ptr<proto::Hub> parent, int port);
 
 	// Public API inherited from DeviceData.
 	arch::dma_pool *setupPool() override;
@@ -126,19 +126,16 @@ struct Device final : proto::DeviceData, std::enable_shared_from_this<Device> {
 	void submit(int endpoint);
 
 	async::result<frg::expected<proto::UsbError>>
-	enumerate(size_t rootPort, size_t port, uint32_t route, std::shared_ptr<proto::Hub> hub, proto::DeviceSpeed speed, int slotType);
-
-	async::result<frg::expected<proto::UsbError>>
-	readDescriptor(arch::dma_buffer_view dest, uint16_t desc);
+	initialize() override;
 
 	async::result<frg::expected<proto::UsbError>>
 	setupEndpoint(int endpoint, proto::PipeType dir, size_t maxPacketSize, proto::EndpointType type, int interval);
 
 	async::result<frg::expected<proto::UsbError>>
-	configureHub(std::shared_ptr<proto::Hub> hub, proto::DeviceSpeed speed);
+	configureAsHub(std::shared_ptr<proto::Hub> hub) override;
 
 	async::result<frg::expected<proto::UsbError>>
-	updateEp0PacketSize(size_t maxPacketSize);
+	updateEp0MaxPacketSize(size_t maxPacketSize) override;
 
 
 	size_t slot() const {
@@ -149,12 +146,13 @@ struct Device final : proto::DeviceData, std::enable_shared_from_this<Device> {
 		return _controller;
 	}
 
-	proto::DeviceSpeed speed() const {
-		return _speed;
-	}
-
 	std::shared_ptr<EndpointState> endpoint(int endpointId) {
 		return _endpoints[endpointId - 1];
+	}
+
+	int address() override {
+		// TODO(qookie): This is wrong.
+		return _slotId;
 	}
 
 private:
@@ -167,8 +165,6 @@ private:
 	async::result<void> _initEpCtx(InputContext &ctx, int endpoint, proto::PipeType dir, size_t maxPacketSize, proto::EndpointType type, int interval);
 
 	std::array<std::shared_ptr<EndpointState>, 31> _endpoints;
-
-	proto::DeviceSpeed _speed{};
 };
 
 
@@ -237,6 +233,77 @@ private:
 };
 
 // ----------------------------------------------------------------
+// Port & RootHub
+// ----------------------------------------------------------------
+
+struct SupportedProtocol {
+	int minor;
+	int major;
+
+	size_t compatiblePortStart;
+	size_t compatiblePortCount;
+
+	size_t slotType;
+};
+
+struct Port {
+	Port(int id, arch::mem_space space, Controller *controller);
+	bool isPowered();
+	async::result<void> setPower(bool on);
+
+	void updateStatus();
+
+	async::result<frg::expected<proto::UsbError, void>> pollUntilState(uint32_t desired);
+	async::result<frg::expected<proto::UsbError, void>> issueReset();
+	async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> querySpeed();
+
+	size_t id() const {
+		return _id;
+	}
+
+private:
+	uint8_t getLinkStatus();
+	uint8_t getSpeed();
+	int _id;
+	Controller *_controller;
+	arch::mem_space _space;
+
+	async::recurring_event _pollEv;
+	proto::PortState _state{};
+};
+
+struct RootHub final : proto::Hub {
+	RootHub(Controller *controller, SupportedProtocol &proto, arch::mem_space portSpace, mbus_ng::EntityManager entity);
+
+	size_t numPorts() override;
+	async::result<frg::expected<proto::UsbError, void>> pollUntilState(int port, uint32_t desired) override;
+	async::result<frg::expected<proto::UsbError, void>> issueReset(int port) override;
+	async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> querySpeed(int port) override;
+	async::result<frg::expected<proto::UsbError, void>> setPortPower(int port, bool state) override;
+	async::result<frg::expected<proto::UsbError, bool>> getPortPower(int port) override;
+
+	async::detached run() override { co_return; }
+
+	proto::DeviceSpeed hubSpeed() override {
+		return _proto->major == 3 ? proto::DeviceSpeed::superSpeed : proto::DeviceSpeed::highSpeed;
+	}
+
+	SupportedProtocol *protocol() {
+		return _proto;
+	}
+
+	mbus_ng::EntityId mbusEntityId() override {
+		return _entity.id();
+	}
+
+private:
+	Controller *_controller;
+	SupportedProtocol *_proto;
+	std::vector<std::unique_ptr<Port>> _ports;
+	mbus_ng::EntityManager _entity;
+};
+
+// ----------------------------------------------------------------
 // Controller
 // ----------------------------------------------------------------
 
@@ -254,8 +321,8 @@ struct Controller final : proto::BaseController {
 
 	async::detached initialize();
 
-	async::result<frg::expected<proto::UsbError>>
-	enumerateDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) override;
+	std::shared_ptr<proto::DeviceServerData>
+	createDevice(std::shared_ptr<proto::Hub> hub, int port, proto::DeviceSpeed speed) override;
 
 	arch::contiguous_pool *memoryPool() {
 		return &_memoryPool;
@@ -283,6 +350,17 @@ struct Controller final : proto::BaseController {
 	void setDeviceContext(size_t slot, DeviceContext &ctx) {
 		_dcbaa[slot] = ctx.iova();
 		barrier.writeback(_dcbaa.view_buffer());
+	}
+
+	void linkDevice(std::shared_ptr<Device> device) {
+		assert(_devices[device->slot()] == nullptr);
+		_devices[device->slot()] = device;
+	}
+
+	void addRootPort(Port *port) {
+		assert(port->id() >= 1 && port->id() <= _ports.size());
+		assert(_ports[port->id() - 1] == nullptr);
+		_ports[port->id() - 1] = port;
 	}
 
 	std::string_view name() const {
@@ -320,88 +398,6 @@ struct Controller final : proto::BaseController {
 	setTransferRingDequeue(uint32_t slotId, uint32_t endpointId, ProducerRing &ring, RingPointer pointer);
 
 private:
-	struct SupportedProtocol;
-
-	struct Port {
-		Port(int id, arch::mem_space space, Controller *controller, SupportedProtocol *port);
-		void reset();
-		void disable();
-		void resetChangeBits();
-		bool isConnected();
-		bool isEnabled();
-		bool isPowered();
-		void transitionToLinkStatus(uint8_t status);
-		async::result<void> setPower(bool on);
-		async::detached initPort();
-
-		template <typename T>
-		async::result<void> awaitFlag(arch::field<uint32_t, T> field, T value) {
-			while (true) {
-				resetChangeBits();
-				if ((_space.load(port::portsc) & field) == value)
-					co_return;
-
-				async::cancellation_event ev;
-				helix::TimeoutCancellation tc{1'000'000'000, ev};
-
-				co_await _doorbell.async_wait(ev);
-				co_await tc.retire();
-			}
-		}
-
-		async::recurring_event _doorbell;
-
-		async::result<proto::PortState> pollState();
-		async::result<frg::expected<proto::UsbError, void>> issueReset();
-		async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> querySpeed();
-
-	private:
-		uint8_t getLinkStatus();
-		uint8_t getSpeed();
-		int _id;
-		Controller *_controller;
-		std::shared_ptr<Device> _device;
-		SupportedProtocol *_proto;
-		arch::mem_space _space;
-
-		async::sequenced_event _pollEv;
-		uint64_t _pollSeq = 0;
-		proto::PortState _state{};
-	};
-
-	struct RootHub final : proto::Hub {
-		RootHub(Controller *controller, SupportedProtocol &proto, arch::mem_space portSpace, mbus_ng::EntityManager entity);
-
-		size_t numPorts() override;
-		async::result<proto::PortState> pollState(int port) override;
-		async::result<frg::expected<proto::UsbError, void>> issueReset(int port) override;
-		async::result<frg::expected<proto::UsbError, proto::DeviceSpeed>> querySpeed(int port) override;
-
-		SupportedProtocol *protocol() {
-			return _proto;
-		}
-
-		auto entityId() {
-			return _entity.id();
-		}
-
-	private:
-		Controller *_controller;
-		SupportedProtocol *_proto;
-		std::vector<std::unique_ptr<Port>> _ports;
-		mbus_ng::EntityManager _entity;
-	};
-
-	struct SupportedProtocol {
-		int minor;
-		int major;
-
-		size_t compatiblePortStart;
-		size_t compatiblePortCount;
-
-		size_t slotType;
-	};
-
 	std::vector<SupportedProtocol> _supportedProtocols;
 
 	protocols::hw::Device _hw_device;

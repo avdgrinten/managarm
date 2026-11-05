@@ -11,7 +11,7 @@ headers = [
 ]
 
 if not provide_deps
-	deps = [ core_dep, libarch, helix_dep, frigg, libasync_dep ]
+	deps = [ core_dep, libarch, helix_dep, frigg, libasync_dep, mbus_proto_dep ]
 
 	libusb = shared_library('usb_protocol', src,
 		dependencies : deps,
