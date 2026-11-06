@@ -1,9 +1,10 @@
 //! The devices that the kernel drives itself (the boot framebuffer and UART), as published
 //! by thor's KernelDevice registry.
 //!
-//! sif never touches these devices, but a driver that claims the PCI entity containing one
-//! takes it over. thor does not know how its devices are attached, hence sif matches the
-//! kernel's resources against BARs and claims the kernel device when the entity is claimed.
+//! sif never touches these devices, but it reconfigures the buses they sit on:
+//! sizing a BAR disables the entity's decoding, and a driver that claims the entity takes it over.
+//! thor does not know how its devices are attached, hence sif matches the kernel's resources
+//! against BARs and bridge windows and suspends, resumes or claims the kernel device.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -49,6 +50,18 @@ impl KernelDevice {
 
     // Failures are logged only: proceeding without the kernel's cooperation is no worse
     // than the state before the registry existed.
+    pub async fn suspend(&self) {
+        if let Err(err) = kerncfg::suspend_kernel_device(self.id).await {
+            println!("sif: Failed to suspend {}: {err}", self.describe());
+        }
+    }
+
+    pub async fn resume(&self) {
+        if let Err(err) = kerncfg::resume_kernel_device(self.id).await {
+            println!("sif: Failed to resume {}: {err}", self.describe());
+        }
+    }
+
     pub async fn claim(&self) {
         if let Err(err) = kerncfg::claim_kernel_device(self.id).await {
             println!("sif: Failed to claim {}: {err}", self.describe());

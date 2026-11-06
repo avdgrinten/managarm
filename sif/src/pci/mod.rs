@@ -1089,7 +1089,7 @@ pub async fn publish_devices() {
         dtb::discover_root_buses().await;
     }
 
-    discover::enumerate_all();
+    discover::enumerate_all().await;
     // Every requester has to be bound before a device is published: a driver must not see a
     // translated DMA space before the IOMMU translates.
     iommu::configure().await;

@@ -292,6 +292,16 @@ async fn kernel_device_request<M: bragi::Message>(request: &M) -> anyhow::Result
     Ok(())
 }
 
+/// Keeps the kernel driver off the device until [`resume_kernel_device`]; returns once no
+/// access of the driver is in flight anymore. Suspensions nest.
+pub async fn suspend_kernel_device(id: u64) -> anyhow::Result<()> {
+    kernel_device_request(&bindings::SuspendKernelDeviceRequest::new(id)).await
+}
+
+pub async fn resume_kernel_device(id: u64) -> anyhow::Result<()> {
+    kernel_device_request(&bindings::ResumeKernelDeviceRequest::new(id)).await
+}
+
 /// Makes the kernel give up the device for good, e.g., before a driver takes it over.
 pub async fn claim_kernel_device(id: u64) -> anyhow::Result<()> {
     kernel_device_request(&bindings::ClaimKernelDeviceRequest::new(id)).await

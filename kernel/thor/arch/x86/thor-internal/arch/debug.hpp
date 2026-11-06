@@ -1,6 +1,7 @@
 #pragma once
 
 #include <thor-internal/debug.hpp>
+#include <thor-internal/kernel-device.hpp>
 
 namespace _debug {
 
@@ -51,9 +52,9 @@ void breakOnWrite(const T *p) {
 
 namespace thor {
 
-struct PIOLogHandler final : public LogHandler {
+struct PIOLogHandler final : LogHandler, KernelDevice {
 	constexpr PIOLogHandler()
-	: serialBufferIndex{0}, serialBuffer{0} {
+	: KernelDevice{"boot-serial"}, serialBufferIndex{0}, serialBuffer{0} {
 		takesUrgentLogs = true;
 	}
 

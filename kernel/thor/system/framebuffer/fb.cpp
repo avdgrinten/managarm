@@ -21,8 +21,8 @@ constexpr size_t fontHeight = 16;
 constexpr size_t fontWidth = 8;
 
 struct FbDisplay final : TextDisplay {
-	FbDisplay(void *ptr, unsigned int width, unsigned int height, size_t pitch)
-	: _width{width}, _height{height}, _pitch{pitch / sizeof(uint32_t)} {
+	FbDisplay(KernelDevice *device, void *ptr, unsigned int width, unsigned int height, size_t pitch)
+	: _device{device}, _width{width}, _height{height}, _pitch{pitch / sizeof(uint32_t)} {
 		assert(!(pitch % sizeof(uint32_t)));
 		setWindow(ptr);
 		_clearScreen(defaultBg);
@@ -42,6 +42,7 @@ struct FbDisplay final : TextDisplay {
 private:
 	void _clearScreen(uint32_t rgb_color);
 
+	KernelDevice *_device;
 	volatile uint32_t *_window;
 	unsigned int _width;
 	unsigned int _height;
@@ -58,12 +59,16 @@ size_t FbDisplay::getHeight() {
 
 void FbDisplay::setChars(unsigned int x, unsigned int y,
 		const char *c, int count, int fg, int bg) {
+	if(_device->isSuspended())
+		return;
 	renderChars((void *)_window, _pitch, x, y, c, count, fg, bg,
 			std::integral_constant<int, fontWidth>{},
 			std::integral_constant<int, fontHeight>{});
 }
 
 void FbDisplay::setBlanks(unsigned int x, unsigned int y, int count, int bg) {
+	if(_device->isSuspended())
+		return;
 	auto bg_rgb = (bg < 0) ? defaultBg : rgbColor[bg];
 
 	auto dest_line = _window + y * fontHeight * _pitch + x * fontWidth;
@@ -78,6 +83,8 @@ void FbDisplay::setBlanks(unsigned int x, unsigned int y, int count, int bg) {
 }
 
 void FbDisplay::_clearScreen(uint32_t rgb_color) {
+	if(_device->isSuspended())
+		return;
 	auto dest_line = _window;
 	for(size_t i = 0; i < _height; i++) {
 		auto dest = dest_line;
@@ -97,6 +104,11 @@ namespace {
 		: KernelDevice{"boot-framebuffer"} { }
 
 	private:
+		// The screen renders from the log ring, hence nothing is lost while it is suspended.
+		void resume() override {
+			flushLogHandler(bootScreen.get());
+		}
+
 		void claim() override {
 			disableLogHandler(bootScreen.get());
 		}
@@ -120,8 +132,10 @@ void initializeBootFb(uint64_t address, uint64_t pitch, uint64_t width,
 	if(!address)
 		return;
 
+	bootFbDevice.initialize();
+
 	// Initialize the framebuffer with a lower-half window.
-	bootDisplay.initialize(early_window,
+	bootDisplay.initialize(bootFbDevice.get(), early_window,
 			fb_info->width, fb_info->height, fb_info->pitch);
 	bootScreen.initialize(bootDisplay.get());
 
@@ -144,7 +158,6 @@ void transitionBootFb() {
 	bootDisplay->setWindow(window);
 
 	// The device is registered only here since its resources live on the kernel heap.
-	bootFbDevice.initialize();
 	bootFbDevice->addResource({KernelDeviceResourceKind::mmio,
 			bootInfo->address, bootInfo->height * bootInfo->pitch});
 	bootFbDevice->setFramebuffer({bootInfo->pitch, bootInfo->width,
