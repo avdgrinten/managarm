@@ -136,6 +136,8 @@ void DirectoryFile::handleClose() {
 }
 
 async::result<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>> DirectoryFile::readEntries() {
+	std::lock_guard positionLock{_positionMutex};
+
 	if(auto entry = nextDotEntry(_dots, 0, 0); entry)
 		co_return *entry;
 

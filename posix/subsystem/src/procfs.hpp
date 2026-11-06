@@ -1,9 +1,11 @@
 #pragma once
 
+#include <mutex>
 #include <optional>
 #include <string>
 
 #include <async/cancellation.hpp>
+#include <async/mutex.hpp>
 #include <protocols/fs/server.hpp>
 
 #include "vfs.hpp"
@@ -60,8 +62,13 @@ private:
 	helix::UniqueLane _passthrough;
 	async::cancellation_event _cancelServe;
 
+	// Held across show().
+	async::mutex _mutex;
+	// Protected by _mutex.
 	bool _cached;
+	// Protected by _mutex.
 	std::string _buffer;
+	// Protected by _mutex.
 	size_t _offset;
 };
 
@@ -83,9 +90,12 @@ private:
 	helix::UniqueLane _passthrough;
 	async::cancellation_event _cancelServe;
 
+	std::mutex _positionMutex;
+	// Protected by _positionMutex.
 	DotEntriesPhase _dots = DotEntriesPhase::dot;
-	// Name of the last entry that readEntries() returned.
+	// Protected by _positionMutex. Name of the last entry that readEntries() returned.
 	std::optional<std::string> _lastName;
+	// Protected by _positionMutex.
 	size_t _numEntries = 0;
 };
 
@@ -383,8 +393,11 @@ private:
 	helix::UniqueLane _passthrough;
 	async::cancellation_event _cancelServe;
 
+	std::mutex _positionMutex;
+	// Protected by _positionMutex.
 	DotEntriesPhase _dots = DotEntriesPhase::dot;
 	std::unordered_map<int, FileDescriptor> _fileTable;
+	// Protected by _positionMutex.
 	std::unordered_map<int, FileDescriptor>::const_iterator _iter;
 };
 
@@ -484,8 +497,11 @@ private:
 	helix::UniqueLane _passthrough;
 	async::cancellation_event _cancelServe;
 
+	std::mutex _positionMutex;
+	// Protected by _positionMutex.
 	DotEntriesPhase _dots = DotEntriesPhase::dot;
 	std::unordered_map<int, FileDescriptor> _fileTable;
+	// Protected by _positionMutex.
 	std::unordered_map<int, FileDescriptor>::const_iterator _iter;
 };
 

@@ -7,6 +7,8 @@
 #include <sstream>
 #include <iomanip>
 
+#include <frg/mutex.hpp>
+#include <helix/dispatcher-pool.hpp>
 #include <core/clock.hpp>
 #include "common.hpp"
 #include "procfs.hpp"
@@ -60,7 +62,7 @@ void RegularFile::serve(smarter::shared_ptr<RegularFile> file) {
 
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 
@@ -73,6 +75,9 @@ void RegularFile::handleClose() {
 }
 
 async::result<frg::expected<Error, off_t>> RegularFile::seek(off_t offset, VfsSeek whence) {
+	co_await _mutex.async_lock();
+	frg::unique_lock lock{frg::adopt_lock, _mutex};
+
 	if(whence == VfsSeek::relative)
 		_offset = _offset + offset;
 	else if(whence == VfsSeek::absolute)
@@ -89,12 +94,17 @@ async::result<frg::expected<Error, off_t>> RegularFile::seek(off_t offset, VfsSe
 }
 
 async::result<frg::expected<Error, off_t>> RegularFile::getPosition() {
+	co_await _mutex.async_lock();
+	frg::unique_lock lock{frg::adopt_lock, _mutex};
 	co_return _offset;
 }
 
 async::result<std::expected<size_t, Error>>
 RegularFile::readSome(Process *process, void *data, size_t max_length, async::cancellation_token) {
 	assert(max_length > 0);
+
+	co_await _mutex.async_lock();
+	frg::unique_lock lock{frg::adopt_lock, _mutex};
 
 	if(!_cached) {
 		assert(!_offset);
@@ -155,7 +165,7 @@ void DirectoryFile::serve(smarter::shared_ptr<DirectoryFile> file) {
 
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 
@@ -168,6 +178,8 @@ void DirectoryFile::handleClose() {
 }
 
 async::result<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>> DirectoryFile::readEntries() {
+	std::lock_guard positionLock{_positionMutex};
+
 	if(auto entry = nextDotEntry(_dots, 0, 0); entry)
 		co_return *entry;
 
@@ -1198,7 +1210,7 @@ async::result<frg::expected<Error, FileStats>> CgroupNode::getStats() {
 void FdDirectoryFile::serve(smarter::shared_ptr<FdDirectoryFile> file) {
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 
@@ -1211,6 +1223,8 @@ void FdDirectoryFile::handleClose() {
 }
 
 FutureMaybe<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>> FdDirectoryFile::readEntries() {
+	std::lock_guard positionLock{_positionMutex};
+
 	if(auto entry = nextDotEntry(_dots, 0, 0); entry)
 		co_return *entry;
 
@@ -1495,7 +1509,7 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> FdInfoD
 void FdInfoDirectoryFile::serve(smarter::shared_ptr<FdInfoDirectoryFile> file) {
 	helix::UniqueLane lane;
 	std::tie(lane, file->_passthrough) = helix::createStream();
-	async::detach(protocols::fs::servePassthrough(std::move(lane),
+	helix::DispatcherPool::global().detach(protocols::fs::servePassthrough(std::move(lane),
 			file, &File::fileOperations, file->_cancelServe));
 }
 
@@ -1508,6 +1522,8 @@ void FdInfoDirectoryFile::handleClose() {
 }
 
 FutureMaybe<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>> FdInfoDirectoryFile::readEntries() {
+	std::lock_guard positionLock{_positionMutex};
+
 	if(auto entry = nextDotEntry(_dots, 0, 0); entry)
 		co_return *entry;
 
