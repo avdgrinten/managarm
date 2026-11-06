@@ -317,11 +317,6 @@ HandleRequest::operator()(managarm::posix::EpollCallRequest &&req,
 	bool interrupted = false;
 
 	auto cancelEvent = self->cancelEventRegistry().event(self->credentials(), req.cancellation_id());
-	if (!cancelEvent) {
-		std::println("posix: possibly duplicate cancellation ID registered");
-		co_await sendErrorResponse<managarm::posix::EpollCallResponse>(conversation, managarm::posix::Errors::INTERNAL_ERROR);
-		co_return {};
-	}
 
 	if(timeout < 0) {
 		co_await async::race_and_cancel(

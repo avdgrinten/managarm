@@ -1,24 +1,24 @@
 #pragma once
 
 #include <async/cancellation.hpp>
-#include <expected>
 #include <helix/ipc.hpp>
 #include <map>
 #include <mutex>
+#include <optional>
 
+// Like thor's cancellation tags, IDs need not be unique: cancel() cancels all events with the ID.
 struct CancelEventRegistry {
-	struct Error {};
+	// TODO: unordered_multimap would be better, but std::pair is not hashable ...
+	using EventMap = std::multimap<std::pair<helix_ng::Credentials, uint64_t>, async::cancellation_event>;
 
 	struct CancelEventGuard {
 		friend CancelEventRegistry;
 
 		CancelEventGuard(CancelEventRegistry *r, helix_ng::Credentials creds, uint64_t id)
-		: r_{r}, creds_{creds}, id_{id} {
-			token_ = r_->registerEvent(creds_, id_);
-		}
+		: r_{r}, entry_{r->registerEvent(creds, id)},
+			token_{entry_ ? async::cancellation_token{(*entry_)->second} : r->closedToken()} { }
 
-		CancelEventGuard()
-		: r_{nullptr}, creds_{}, id_{0}, token_{} { }
+		CancelEventGuard() = default;
 
 		CancelEventGuard(const CancelEventGuard &) = delete;
 
@@ -32,50 +32,44 @@ struct CancelEventRegistry {
 		}
 
 		~CancelEventGuard() {
-			if (r_)
-				r_->removeEvent(creds_, id_);
+			if (r_ && entry_)
+				r_->removeEvent(*entry_);
 		}
 
 		friend void swap(CancelEventGuard &a, CancelEventGuard &b) {
 			using std::swap;
 			swap(a.r_, b.r_);
-			swap(a.creds_, b.creds_);
-			swap(a.id_, b.id_);
+			swap(a.entry_, b.entry_);
 			swap(a.token_, b.token_);
 		}
 
-		operator bool() const {
-			return token_.has_value();
-		}
-
-		operator async::cancellation_token() {
-			assert(token_.has_value());
-			return token_.value();
+		operator async::cancellation_token() const {
+			return token_;
 		}
 
 	private:
-		CancelEventRegistry *r_;
-		helix_ng::Credentials creds_;
-		uint64_t id_;
-		std::expected<async::cancellation_token, Error> token_;
+		CancelEventRegistry *r_ = nullptr;
+		std::optional<EventMap::iterator> entry_;
+		async::cancellation_token token_;
 	};
 
 	CancelEventGuard event(helix_ng::Credentials creds, uint64_t id) {
-		CancelEventGuard reg{this, creds, id};
-		return reg;
+		return CancelEventGuard{this, creds, id};
 	}
 
 	bool cancel(helix_ng::Credentials creds, uint64_t id) {
 		async::deferred_cancellation deferred;
+		bool found = false;
 		{
 			std::lock_guard lock{mutex_};
-			auto res = list_.find({creds, id});
-			if (res == list_.end())
-				return false;
-			res->second.cancel_deferred(deferred);
+			auto [begin, end] = list_.equal_range({creds, id});
+			for (auto it = begin; it != end; ++it) {
+				it->second.cancel_deferred(deferred);
+				found = true;
+			}
 		}
 		deferred.invoke();
-		return true;
+		return found;
 	}
 
 	// Cancels all events, including the ones that are registered afterwards.
@@ -97,26 +91,23 @@ struct CancelEventRegistry {
 	}
 
 protected:
-	std::expected<async::cancellation_token, Error> registerEvent(helix_ng::Credentials creds, uint64_t id) {
+	std::optional<EventMap::iterator> registerEvent(helix_ng::Credentials creds, uint64_t id) {
 		if (id == 0)
-			return {closedEvent_};
+			return std::nullopt;
 
 		std::lock_guard lock{mutex_};
-		auto emplaceResult = list_.emplace(std::piecewise_construct,
-			std::tuple{creds, id}, std::tuple{});
-		if (!emplaceResult.second)
-			return std::unexpected{Error{}};
+		auto it = list_.emplace(std::piecewise_construct, std::tuple{creds, id}, std::tuple{});
 
 		// The new event has no callbacks yet, hence cancelling it under the lock is fine.
 		if (closed_)
-			emplaceResult.first->second.cancel();
+			it->second.cancel();
 
-		return {emplaceResult.first->second};
+		return it;
 	}
 
-	void removeEvent(helix_ng::Credentials creds, uint64_t id) {
+	void removeEvent(EventMap::iterator it) {
 		std::lock_guard lock{mutex_};
-		list_.erase({creds, id});
+		list_.erase(it);
 	}
 
 private:
@@ -124,6 +115,5 @@ private:
 	bool closed_ = false;
 	async::cancellation_event closedEvent_;
 
-	// TODO: unordered_map would be better, but std::pair is not hashable ...
-	std::map<std::pair<helix_ng::Credentials, uint64_t>, async::cancellation_event> list_;
+	EventMap list_;
 };
