@@ -166,7 +166,7 @@ HandleRequest::operator()(managarm::posix::WaitRequest &&req,
 	auto [send_resp] = co_await helix_ng::exchangeMsgs(conversation,
 		helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
 	);
-	HEL_CHECK(send_resp.error());
+	FRG_CO_TRY(checkIpc(send_resp.error()));
 	logBragiReply(resp);
 
 	co_return {};
