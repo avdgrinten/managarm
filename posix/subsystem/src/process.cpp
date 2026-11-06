@@ -2033,6 +2033,8 @@ async::result<void> Process::terminate(bool *lastInGroup) {
 	HEL_CHECK(helKillThread(_threadDescriptor.getHandle()));
 	_currentGeneration->inTermination = true;
 	_currentGeneration->cancelServe.cancel();
+	// Requests that the killed thread was blocked on can no longer be cancelled by the thread itself.
+	cancelEventRegistry_.close();
 	co_await _currentGeneration->signalsDone.wait();
 	co_await _currentGeneration->requestsDone.wait();
 
