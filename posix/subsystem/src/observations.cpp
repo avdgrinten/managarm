@@ -205,6 +205,7 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 
 			HEL_CHECK(helResume(thread.getHandle()));
 			HEL_CHECK(helResume(new_thread));
+			child->startServe();
 		}else if(observe.observation() == kHelObserveSuperCall + posix::superClone) {
 			if(logRequests)
 				std::cout << "posix: clone supercall" << std::endl;
@@ -241,8 +242,10 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 			HEL_CHECK(helStoreRegisters(thread.getHandle(), kHelRegsGeneral, &gprs));
 
 			HEL_CHECK(helResume(thread.getHandle()));
-			if (newThread != kHelNullHandle)
+			if (newThread != kHelNullHandle) {
 				HEL_CHECK(helResume(newThread));
+				cloneResult.value()->startServe();
+			}
 		}else if(observe.observation() == kHelObserveSuperCall + posix::superExecve) {
 			if(logRequests)
 				std::cout << "posix: execve supercall" << std::endl;
