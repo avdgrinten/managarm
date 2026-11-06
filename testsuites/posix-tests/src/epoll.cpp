@@ -88,6 +88,56 @@ DEFINE_TEST(epoll_mod_active, ([] {
 	close(fd);
 }))
 
+DEFINE_TEST(epoll_oneshot_rearm_while_ready, ([] {
+	int e;
+	int pending;
+
+	int fd = eventfd(1, 0);
+	assert(fd >= 0);
+
+	int epfd = epoll_create1(0);
+	assert(epfd >= 0);
+
+	epoll_event evt;
+
+	memset(&evt, 0, sizeof(epoll_event));
+	evt.events = EPOLLIN | EPOLLONESHOT;
+	e = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &evt);
+	assert(!e);
+
+	memset(&evt, 0, sizeof(epoll_event));
+	pending = epoll_wait(epfd, &evt, 1, 0);
+	assert(pending == 1);
+	assert(evt.events & EPOLLIN);
+
+	// Re-arm without an epoll_wait() in between; the FD is still readable.
+	memset(&evt, 0, sizeof(epoll_event));
+	evt.events = EPOLLIN | EPOLLONESHOT;
+	e = epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &evt);
+	assert(!e);
+
+	memset(&evt, 0, sizeof(epoll_event));
+	pending = epoll_wait(epfd, &evt, 1, 0);
+	assert(pending == 1);
+	assert(evt.events & EPOLLIN);
+
+	// Switching to level-triggered mode also re-arms the item.
+	memset(&evt, 0, sizeof(epoll_event));
+	evt.events = EPOLLIN;
+	e = epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &evt);
+	assert(!e);
+
+	for(int i = 0; i < 2; i++) {
+		memset(&evt, 0, sizeof(epoll_event));
+		pending = epoll_wait(epfd, &evt, 1, 0);
+		assert(pending == 1);
+		assert(evt.events & EPOLLIN);
+	}
+
+	close(epfd);
+	close(fd);
+}))
+
 DEFINE_TEST(epoll_edge_triggered, ([] {
 	int e;
 	int pending;
