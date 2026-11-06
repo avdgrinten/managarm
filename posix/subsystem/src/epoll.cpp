@@ -258,9 +258,12 @@ public:
 			cancel = item->cancelPoll;
 			item->pollCancelled = true;
 
+			// A one-shot item that fired while still ready is pending but inactive; re-arm it too.
+			item->state |= stateActive;
+
 			// Mark the item as pending.
 			if(!(item->state & statePending)) {
-				item->state |= statePending | stateActive;
+				item->state |= statePending;
 
 				item.policy().increment();
 				_pendingQueue.push_back(item.get());
