@@ -1242,6 +1242,8 @@ namespace posix {
 					panicLogger() << "thor: Failed to resume server" << frg::endlog;
 			}else if(interrupt == kIntrSuperCall + ::posix::superExit) {
 				break;
+			}else if(interrupt == kIntrSuperCall + ::posix::superThreadExit) {
+				break;
 			}else if(interrupt == kIntrSuperCall + ::posix::superSigKill) {
 				urgentLogger() << "thor: Signal sent by server "
 						<< name().data() << frg::endlog;

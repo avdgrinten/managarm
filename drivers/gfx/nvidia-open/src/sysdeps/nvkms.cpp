@@ -269,7 +269,7 @@ NvBool nvkms_open_gpu(NvU32 gpuId) {
 void nvkms_close_gpu(NvU32 gpuId [[maybe_unused]]) STUBBED;
 NvU32 nvkms_enumerate_gpus(nv_gpu_info_t *gpu_info [[maybe_unused]]) STUBBED;
 
-NvBool nvkms_allow_write_combining(void) { return NV_FALSE; }
+NvBool nvkms_allow_write_combining(void) { return NV_TRUE; }
 
 NvBool nvkms_kernel_supports_syncpts(void) { return NV_FALSE; }
 

@@ -10,6 +10,81 @@ extern "C" {
 
 }
 
+namespace {
+
+struct FormatMapping {
+    uint32_t nvkms;
+    uint32_t drm;
+};
+
+const std::array nvkmsToDrmFormat = {
+	/* RGB formats */
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatA1R5G5B5), DRM_FORMAT_ARGB1555},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatX1R5G5B5), DRM_FORMAT_XRGB1555},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatR5G6B5), DRM_FORMAT_RGB565},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatA8R8G8B8), DRM_FORMAT_ARGB8888},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatX8R8G8B8), DRM_FORMAT_XRGB8888},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatX8B8G8R8), DRM_FORMAT_XBGR8888},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatA2B10G10R10), DRM_FORMAT_ABGR2101010},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatX2B10G10R10), DRM_FORMAT_XBGR2101010},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatA8B8G8R8), DRM_FORMAT_ABGR8888},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatRF16GF16BF16AF16), DRM_FORMAT_ABGR16161616F},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatRF16GF16BF16XF16), DRM_FORMAT_XBGR16161616F},
+
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8_U8__Y8_V8_N422), DRM_FORMAT_YUYV},
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatU8_Y8__V8_Y8_N422), DRM_FORMAT_UYVY},
+
+	/* YUV semi-planar formats
+	 *
+	 * NVKMS YUV semi-planar formats are MSB aligned. Yx__UxVx means
+	 * that the UV components are packed like UUUUUVVVVV (MSB to LSB)
+	 * and Yx_VxUx means VVVVVUUUUU (MSB to LSB).
+	 */
+
+	/*
+	 * 2 plane YCbCr
+	 * index 0 = Y plane, [7:0] Y
+	 * index 1 = Cr:Cb plane, [15:0] Cr:Cb little endian
+	 * or
+	 * index 1 = Cb:Cr plane, [15:0] Cb:Cr little endian
+	 */
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___V8U8_N444), DRM_FORMAT_NV24}, /* non-subsampled Cr:Cb plane */
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___U8V8_N444), DRM_FORMAT_NV42}, /* non-subsampled Cb:Cr plane */
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___V8U8_N422), DRM_FORMAT_NV16}, /* 2x1 subsampled Cr:Cb plane */
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___U8V8_N422), DRM_FORMAT_NV61}, /* 2x1 subsampled Cb:Cr plane */
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___V8U8_N420), DRM_FORMAT_NV12}, /* 2x2 subsampled Cr:Cb plane */
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___U8V8_N420), DRM_FORMAT_NV21}, /* 2x2 subsampled Cb:Cr plane */
+
+	/*
+	 * 2 plane YCbCr MSB aligned
+	 * index 0 = Y plane, [15:0] Y:x [10:6] little endian
+	 * index 1 = Cr:Cb plane, [31:0] Cr:x:Cb:x [10:6:10:6] little endian
+	 *
+	 * 2x1 subsampled Cr:Cb plane, 10 bit per channel
+	 */
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY10___V10U10_N422), DRM_FORMAT_P210},
+
+	/*
+	 * 2 plane YCbCr MSB aligned
+	 * index 0 = Y plane, [15:0] Y:x [10:6] little endian
+	 * index 1 = Cr:Cb plane, [31:0] Cr:x:Cb:x [10:6:10:6] little endian
+	 *
+	 * 2x2 subsampled Cr:Cb plane 10 bits per channel
+	 */
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY10___V10U10_N420), DRM_FORMAT_P010},
+
+	/*
+	 * 2 plane YCbCr MSB aligned
+	 * index 0 = Y plane, [15:0] Y:x [12:4] little endian
+	 * index 1 = Cr:Cb plane, [31:0] Cr:x:Cb:x [12:4:12:4] little endian
+	 *
+	 * 2x2 subsampled Cr:Cb plane 12 bits per channel
+	 */
+	FormatMapping{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY12___V12U12_N420), DRM_FORMAT_P012},
+};
+
+}
+
 extern const struct NvKmsKapiFunctionsTable *nvKms;
 
 std::unique_ptr<drm_core::Configuration> GfxDevice::createConfiguration() {
@@ -62,20 +137,9 @@ GfxDevice::createFrameBuffer(std::shared_ptr<drm_core::BufferObject> buff,
 	NvKmsKapiCreateSurfaceParams params = {};
 	auto bo = std::static_pointer_cast<BufferObject>(buff);
 
-	switch (fourcc) {
-		case DRM_FORMAT_ARGB8888:
-			params.format = NvKmsSurfaceMemoryFormatA8R8G8B8;
-			break;
-		case DRM_FORMAT_XRGB8888:
-			params.format = NvKmsSurfaceMemoryFormatX8R8G8B8;
-			break;
-		case DRM_FORMAT_XBGR8888:
-			params.format = NvKmsSurfaceMemoryFormatX8B8G8R8;
-			break;
-		default:
-			std::println("gfx/nvidia-open: unhandled DRM format 0x{:08x}", fourcc);
-			assert(!"unimplemented");
-	}
+	auto it = std::ranges::find(nvkmsToDrmFormat, fourcc, &FormatMapping::drm);
+    assert(it != nvkmsToDrmFormat.end());
+	params.format = NvKmsSurfaceMemoryFormat(it->nvkms);
 
 	params.planes[0].memory = bo->memHandle();
 	params.planes[0].offset = 0;
@@ -123,76 +187,6 @@ GfxDevice::Plane::Plane(GfxDevice *dev, PlaneType type, size_t layerIndex)
 	: drm_core::Plane { dev, dev->allocator.allocate(), type }, layerIndex_{layerIndex} {
 }
 
-namespace {
-
-const std::map<uint32_t, uint32_t> nvkmsToDrmFormat = {
-	/* RGB formats */
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatA1R5G5B5), DRM_FORMAT_ARGB1555},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatX1R5G5B5), DRM_FORMAT_XRGB1555},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatR5G6B5), DRM_FORMAT_RGB565},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatA8R8G8B8), DRM_FORMAT_ARGB8888},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatX8R8G8B8), DRM_FORMAT_XRGB8888},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatX8B8G8R8), DRM_FORMAT_XBGR8888},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatA2B10G10R10), DRM_FORMAT_ABGR2101010},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatX2B10G10R10), DRM_FORMAT_XBGR2101010},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatA8B8G8R8), DRM_FORMAT_ABGR8888},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatRF16GF16BF16AF16), DRM_FORMAT_ABGR16161616F},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatRF16GF16BF16XF16), DRM_FORMAT_XBGR16161616F},
-
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8_U8__Y8_V8_N422), DRM_FORMAT_YUYV},
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatU8_Y8__V8_Y8_N422), DRM_FORMAT_UYVY},
-
-	/* YUV semi-planar formats
-	 *
-	 * NVKMS YUV semi-planar formats are MSB aligned. Yx__UxVx means
-	 * that the UV components are packed like UUUUUVVVVV (MSB to LSB)
-	 * and Yx_VxUx means VVVVVUUUUU (MSB to LSB).
-	 */
-
-	/*
-	 * 2 plane YCbCr
-	 * index 0 = Y plane, [7:0] Y
-	 * index 1 = Cr:Cb plane, [15:0] Cr:Cb little endian
-	 * or
-	 * index 1 = Cb:Cr plane, [15:0] Cb:Cr little endian
-	 */
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___V8U8_N444), DRM_FORMAT_NV24}, /* non-subsampled Cr:Cb plane */
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___U8V8_N444), DRM_FORMAT_NV42}, /* non-subsampled Cb:Cr plane */
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___V8U8_N422), DRM_FORMAT_NV16}, /* 2x1 subsampled Cr:Cb plane */
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___U8V8_N422), DRM_FORMAT_NV61}, /* 2x1 subsampled Cb:Cr plane */
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___V8U8_N420), DRM_FORMAT_NV12}, /* 2x2 subsampled Cr:Cb plane */
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY8___U8V8_N420), DRM_FORMAT_NV21}, /* 2x2 subsampled Cb:Cr plane */
-
-	/*
-	 * 2 plane YCbCr MSB aligned
-	 * index 0 = Y plane, [15:0] Y:x [10:6] little endian
-	 * index 1 = Cr:Cb plane, [31:0] Cr:x:Cb:x [10:6:10:6] little endian
-	 *
-	 * 2x1 subsampled Cr:Cb plane, 10 bit per channel
-	 */
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY10___V10U10_N422), DRM_FORMAT_P210},
-
-	/*
-	 * 2 plane YCbCr MSB aligned
-	 * index 0 = Y plane, [15:0] Y:x [10:6] little endian
-	 * index 1 = Cr:Cb plane, [31:0] Cr:x:Cb:x [10:6:10:6] little endian
-	 *
-	 * 2x2 subsampled Cr:Cb plane 10 bits per channel
-	 */
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY10___V10U10_N420), DRM_FORMAT_P010},
-
-	/*
-	 * 2 plane YCbCr MSB aligned
-	 * index 0 = Y plane, [15:0] Y:x [12:4] little endian
-	 * index 1 = Cr:Cb plane, [31:0] Cr:x:Cb:x [12:4:12:4] little endian
-	 *
-	 * 2x2 subsampled Cr:Cb plane 12 bits per channel
-	 */
-	{static_cast<uint32_t>(NvKmsSurfaceMemoryFormatY12___V12U12_N420), DRM_FORMAT_P012},
-};
-
-}
-
 std::vector<uint32_t> GfxDevice::Plane::getDrmFormats(uint64_t mask) {
 	std::vector<uint32_t> formats;
 
@@ -200,10 +194,9 @@ std::vector<uint32_t> GfxDevice::Plane::getDrmFormats(uint64_t mask) {
 		if ((mask & (1 << bit)) == 0)
 			continue;
 
-		if (!nvkmsToDrmFormat.contains(bit))
-			continue;
-
-		formats.push_back(nvkmsToDrmFormat.at(bit));
+		auto f = std::ranges::find(nvkmsToDrmFormat, bit, &FormatMapping::nvkms);
+		if (f != nvkmsToDrmFormat.end())
+			formats.push_back(f->drm);
 	}
 
 	return formats;

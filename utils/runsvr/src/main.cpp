@@ -98,15 +98,16 @@ async::result<helix::UniqueLane> runServer(const managarm::svrctl::Description &
 	managarm::svrctl::RunServerRequest req;
 	req.set_description(desc);
 
-	auto [offer, send_req, recv_resp, pull_server] = co_await helix_ng::exchangeMsgs(
+	auto [offer, send_req, send_tail, recv_resp, pull_server] = co_await helix_ng::exchangeMsgs(
 		svrctlLane,
 		helix_ng::offer(
-			helix_ng::sendBragiHeadOnly(req, frg::stl_allocator{}),
+			helix_ng::sendBragiHeadTail(req, frg::stl_allocator{}),
 			helix_ng::recvInline(),
 			helix_ng::pullDescriptor(kHelRightInvoke))
 	);
 	HEL_CHECK(offer.error());
 	HEL_CHECK(send_req.error());
+	HEL_CHECK(send_tail.error());
 	HEL_CHECK(recv_resp.error());
 	HEL_CHECK(pull_server.error());
 
@@ -123,14 +124,15 @@ async::result<void> uploadFile(const char *name) {
 	req.set_name(name);
 	req.set_with_data(false); // Avoid reading file data at first
 
-	auto [offer, send_req, recv_resp] = co_await helix_ng::exchangeMsgs(
+	auto [offer, send_req, send_tail, recv_resp] = co_await helix_ng::exchangeMsgs(
 		svrctlLane,
 		helix_ng::offer(
-			helix_ng::sendBragiHeadOnly(req, frg::stl_allocator{}),
+			helix_ng::sendBragiHeadTail(req, frg::stl_allocator{}),
 			helix_ng::recvInline())
 	);
 	HEL_CHECK(offer.error());
 	HEL_CHECK(send_req.error());
+	HEL_CHECK(send_tail.error());
 	HEL_CHECK(recv_resp.error());
 
 	auto resp = bragi::parse_head_only<managarm::svrctl::FileUploadResponse>(recv_resp);
@@ -142,15 +144,16 @@ async::result<void> uploadFile(const char *name) {
 		req.set_with_data(true);
 
 		auto buffer = readEntireFile(name);
-		auto [offer, send_req, send_data, recv_resp] = co_await helix_ng::exchangeMsgs(
+		auto [offer, send_req, send_tail, send_data, recv_resp] = co_await helix_ng::exchangeMsgs(
 			svrctlLane,
 			helix_ng::offer(
-				helix_ng::sendBragiHeadOnly(req, frg::stl_allocator{}),
+				helix_ng::sendBragiHeadTail(req, frg::stl_allocator{}),
 				helix_ng::sendBuffer(buffer.data(), buffer.size()),
 				helix_ng::recvInline())
 		);
 		HEL_CHECK(offer.error());
 		HEL_CHECK(send_req.error());
+		HEL_CHECK(send_tail.error());
 		HEL_CHECK(send_data.error());
 		HEL_CHECK(recv_resp.error());
 

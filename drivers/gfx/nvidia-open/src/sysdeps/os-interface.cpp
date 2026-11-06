@@ -653,7 +653,7 @@ NV_STATUS NV_API_CALL
 nv_alias_pages(nv_state_t *, NvU32, NvU64, NvU32, NvU32, NvU64, NvU64 *, NvBool, void **) STUBBED;
 
 NV_STATUS NV_API_CALL nv_alloc_pages(
-    nv_state_t *,
+    nv_state_t *nv,
     NvU32 page_count,
     NvU64 page_size [[maybe_unused]],
     NvBool contiguous,
@@ -665,6 +665,7 @@ NV_STATUS NV_API_CALL nv_alloc_pages(
     void **priv_data
 ) {
 	assert(node_id == -1);
+	auto gfx = static_cast<GfxDevice *>(nv->os_state);
 
 	HelHandle handle;
 	uint32_t flags = 0;
@@ -678,16 +679,25 @@ NV_STATUS NV_API_CALL nv_alloc_pages(
 			kHelSliceCacheWriteCombine, &handle));
 	}
 
-	auto info = new AllocInfo{handle, page_count, 0};
+	auto buf = gfx->dmaRealm().importMemory(helix::BorrowedDescriptor{handle}, 0, page_count << 12);
+	auto info = new AllocInfo{handle, std::move(buf), page_count, 0};
 	*reinterpret_cast<AllocInfo **>(priv_data) = info;
 
-	helix::Mapping map{helix::BorrowedDescriptor{handle}, 0, page_count << 12};
-	if (zeroed) {
-		memset(map.get(), 0, page_count << 12);
-	}
+	auto view = info->buf.view();
+	async::run(gfx->space().ensure_mapped(view), helix::currentDispatcher);
 
-	for (size_t i = 0; i < ((contiguous) ? 1 : page_count); i++) {
-		pte_array[i] = helix::addressToPhysical(uintptr_t(map.get()) + (i << 12));
+	if (zeroed)
+		memset(view.data(), 0, view.size());
+
+	if (!contiguous) {
+		for (size_t i = 0; i < page_count; i++) {
+			pte_array[i] = helix::addressToPhysical(
+			    reinterpret_cast<uintptr_t>(view.data()) + (i << 12)
+			);
+		}
+	} else {
+		pte_array[0] =
+		    helix::addressToPhysical(reinterpret_cast<uintptr_t>(view.data()));
 	}
 
 	return NV_OK;
@@ -700,8 +710,10 @@ NV_STATUS NV_API_CALL nv_free_pages(
 	(void)contiguous;
 	(void)cache_type;
 
-	if (page_count == info->page_count)
+	if (page_count == info->page_count) {
 		HEL_CHECK(helCloseDescriptor(kHelThisUniverse, info->handle));
+		delete info;
+	}
 
 	return NV_OK;
 }
@@ -723,8 +735,30 @@ void NV_API_CALL nv_unregister_phys_pages(nv_state_t *, void *) STUBBED;
 
 NV_STATUS NV_API_CALL nv_dma_map_sgt(nv_dma_device_t *, NvU64, NvU64 *, NvU32, void **) STUBBED;
 
-NV_STATUS NV_API_CALL nv_dma_map_alloc(nv_dma_device_t *, NvU64, NvU64 *, NvBool, void **) STUBBED;
-NV_STATUS NV_API_CALL nv_dma_unmap_alloc(nv_dma_device_t *, NvU64, NvU64 *, void **) STUBBED;
+NV_STATUS NV_API_CALL nv_dma_map_alloc(
+    nv_dma_device_t *dma_dev, NvU64 page_count, NvU64 *va_array, NvBool contig, void **priv
+) {
+	auto dev = reinterpret_cast<GfxDevice *>(dma_dev);
+	auto info = *reinterpret_cast<AllocInfo **>(priv);
+
+	if (contig) {
+		va_array[0] = dev->space().iova_of(info->buf.view());
+	} else {
+		for (NvU64 i = 0; i < page_count; i++) {
+			va_array[i] = dev->space().iova_of(info->buf.view().subview(i << 12, 0x1000));
+		}
+	}
+
+	return NV_OK;
+}
+
+NV_STATUS NV_API_CALL
+nv_dma_unmap_alloc(nv_dma_device_t *, NvU64 page_count, NvU64 *va_array, void **priv) {
+	auto info = reinterpret_cast<AllocInfo *>(priv);
+
+	auto e = helUnmapMemory(info->handle, reinterpret_cast<void *>(va_array[0]), page_count);
+	return e == kHelErrNone ? NV_OK : NV_ERR_INVALID_ARGUMENT;
+}
 
 NV_STATUS NV_API_CALL
 nv_dma_map_peer(nv_dma_device_t *, nv_dma_device_t *, NvU8, NvU64, NvU64 *) STUBBED;
@@ -810,7 +844,10 @@ NV_STATUS NV_API_CALL nv_log_error(nv_state_t *, NvU32, const char *, va_list) S
 
 NV_STATUS NV_API_CALL nv_set_primary_vga_status(nv_state_t *) STUBBED;
 
-NvBool NV_API_CALL nv_requires_dma_remap(nv_state_t *) { return NV_FALSE; }
+NvBool NV_API_CALL nv_requires_dma_remap(nv_state_t *nv) {
+	auto gfx = static_cast<GfxDevice *>(nv->os_state);
+	return gfx->iommuActive_ ? NV_TRUE : NV_FALSE;
+}
 
 NvBool NV_API_CALL nv_is_rm_firmware_active(nv_state_t *) STUBBED;
 

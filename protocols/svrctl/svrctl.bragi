@@ -31,8 +31,9 @@ struct Description {
 
 message FileUploadRequest 1 {
 head(128):
-	string name;
 	uint8 with_data;
+tail:
+	string name;
 }
 
 message FileUploadResponse 2 {
@@ -42,6 +43,7 @@ head(128):
 
 message RunServerRequest 3 {
 head(128):
+tail:
 	Description description;
 }
 

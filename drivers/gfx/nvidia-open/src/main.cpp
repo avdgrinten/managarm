@@ -147,8 +147,23 @@ void GfxDevice::pciWrite(uint32_t reg, uint8_t value) {
 	async::run(run(), helix::currentDispatcher);
 }
 
-GfxDevice::GfxDevice(protocols::hw::Device hw_device, uint32_t seg, uint32_t bus, uint32_t dev, uint32_t func)
-: hwDevice_{std::move(hw_device)}, segment_{seg}, bus_{bus}, slot_{dev}, function_{func} {
+GfxDevice::GfxDevice(
+    protocols::hw::Device hw_device,
+    uint32_t seg,
+    uint32_t bus,
+    uint32_t dev,
+    uint32_t func,
+    bool iommuActive,
+    helix::UniqueDescriptor dmaSpaceHandle
+)
+: hwDevice_{std::move(hw_device)},
+  iommuActive_{iommuActive},
+  segment_{seg},
+  bus_{bus},
+  slot_{dev},
+  function_{func},
+  dmaSpaceHandle_{std::move(dmaSpaceHandle)},
+  dmaSpace_{dmaRealm_.attachDmaSpace(dmaSpaceHandle_, iommuActive)} {
 	fb2ModifiersSupport = true;
 }
 
@@ -455,6 +470,7 @@ async::result<void> GfxDevice::initialize() {
 	nv_.subsystem_id = subsystemDevice_;
 	nv_.os_state = this;
 	nv_.handle = this;
+	nv_.dma_dev = reinterpret_cast<nv_dma_device_t *>(this);
 	nv_.cpu_numa_node_id = -1;
 	nv_.interrupt_line = 0;
 
@@ -481,9 +497,6 @@ async::result<void> GfxDevice::initialize() {
 
 	nv_.regs = &nv_.bars[NV_GPU_BAR_INDEX_REGS];
 	nv_.fb = &nv_.bars[NV_GPU_BAR_INDEX_FB];
-
-	co_await hwDevice_.enableBusmaster();
-	co_await hwDevice_.enableDma();
 
 	NV_STATUS status = rm_is_supported_device(nullptr, &nv_);
 	assert(status == NV_OK);
@@ -621,7 +634,17 @@ bindController(mbus_ng::Entity hwEntity, uint32_t seg, uint32_t bus, uint32_t de
 
 	auto id = hwEntity.id();
 	protocols::hw::Device hwDevice((co_await hwEntity.getRemoteLane()).unwrap());
-	auto gfxDevice = std::make_shared<GfxDevice>(std::move(hwDevice), seg, bus, dev, func);
+
+	co_await hwDevice.enableBusmaster();
+	co_await hwDevice.enableDma(false);
+	auto dmaSpaceInfo = co_await hwDevice.getDmaSpace();
+	if(!dmaSpaceInfo) {
+		std::println("gfx/nvidia-open: Failed to get DMA space");
+		co_return;
+	}
+	auto [iommuActive, dmaSpaceHandle, _] = std::move(*dmaSpaceInfo);
+
+	auto gfxDevice = std::make_shared<GfxDevice>(std::move(hwDevice), seg, bus, dev, func, iommuActive, std::move(dmaSpaceHandle));
 	baseDeviceMap.insert({id, gfxDevice});
 	co_await gfxDevice->initialize();
 
