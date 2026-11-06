@@ -1,3 +1,7 @@
+#include <type_traits>
+
+#include <async/algorithm.hpp>
+#include <async/cancellation.hpp>
 #include <bragi/helpers-std.hpp>
 #include <posix.bragi.hpp>
 
@@ -5,6 +9,60 @@
 
 #include "debug-options.hpp"
 #include "requests/common.hpp"
+
+namespace {
+
+// Requests that can still be pending when their thread terminates; their handlers tolerate
+// failed replies (see requests::checkReply()).
+template<typename Message>
+constexpr bool pendingAcrossTermination = std::is_same_v<Message, managarm::posix::EpollCallRequest>
+		|| std::is_same_v<Message, managarm::posix::EpollWaitRequest>
+		|| std::is_same_v<Message, managarm::posix::WaitRequest>;
+
+template<typename Message>
+uint64_t cancellationIdOf(const Message &req) {
+	if constexpr (requires { req.cancellation_id(); })
+		return req.cancellation_id();
+	return 0;
+}
+
+// Registers the cancellation ID of these requests and passes the token to their handlers.
+// Their conversations are shut down once the thread terminates, such that replies fail instead
+// of waiting for receives (e.g., of EPOLL_CALL's tail) that the thread never posts.
+struct HandleThreadRequest {
+	template<typename Message>
+	auto operator()(Message &&req, helix::BorrowedDescriptor conversation, bragi::preamble preamble,
+			std::shared_ptr<Process> self, std::shared_ptr<Generation> generation) {
+		if constexpr (pendingAcrossTermination<std::remove_cvref_t<Message>>) {
+			auto closed = self->cancelEventRegistry().closedToken();
+			// The lambdas run when the sender starts; req outlives it, the arguments do not.
+			return async::with_cancel_cb(
+				async::let(
+					[&req, self] {
+						return self->cancelEventRegistry().event(self->credentials(),
+								cancellationIdOf(req));
+					},
+					[this, &req, conversation, preamble, self, generation]
+							(CancelEventRegistry::CancelEventGuard &cancelEvent) {
+						return inner(std::move(req), conversation, preamble, self, generation,
+								cancelEvent);
+					}
+				),
+				[conversation] {
+					HEL_CHECK(helShutdownLane(conversation.getHandle()));
+				},
+				closed
+			);
+		} else {
+			return inner(std::move(req), conversation, preamble, std::move(self),
+					std::move(generation));
+		}
+	}
+
+	requests::HandleRequest inner;
+};
+
+} // namespace
 
 async::result<void> serveRequests(std::shared_ptr<Process> self,
 		std::shared_ptr<Generation> generation) {
@@ -125,7 +183,7 @@ async::result<void> serveRequests(std::shared_ptr<Process> self,
 			managarm::posix::TimerSetRequest,
 			managarm::posix::TimerGetRequest,
 			managarm::posix::TimerDeleteRequest
-		>(self->posixLane(), requests::HandleRequest{}, self, generation);
+		>(self->posixLane(), HandleThreadRequest{}, self, generation);
 
 		if(!res) {
 			if(res.error() == DispatchError::shutdown)
