@@ -102,7 +102,8 @@ HandleRequest::operator()(managarm::posix::WaitIdRequest &&req,
 async::result<std::expected<void, DispatchError>>
 HandleRequest::operator()(managarm::posix::WaitRequest &&req,
 		helix::BorrowedDescriptor conversation, bragi::preamble preamble,
-		std::shared_ptr<Process> self, std::shared_ptr<Generation>) {
+		std::shared_ptr<Process> self, std::shared_ptr<Generation>,
+		async::cancellation_token cancellation) {
 	id = preamble.id();
 	logBragiRequest(req);
 
@@ -125,12 +126,7 @@ HandleRequest::operator()(managarm::posix::WaitRequest &&req,
 
 	logRequest(logRequests, self, "WAIT", "pid={}", req.pid());
 
-	frg::expected<Error, Process::WaitResult> waitResult = Error::ioError;
-
-	{
-		auto cancelEvent = self->cancelEventRegistry().event(self->credentials(), req.cancellation_id());
-		waitResult = co_await self->wait(req.pid(), flags, cancelEvent);
-	}
+	auto waitResult = co_await self->wait(req.pid(), flags, cancellation);
 
 	managarm::posix::WaitResponse resp;
 	if(waitResult) {

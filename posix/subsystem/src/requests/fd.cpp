@@ -231,7 +231,8 @@ HandleRequest::operator()(managarm::posix::CloseRequest &&req,
 async::result<std::expected<void, DispatchError>>
 HandleRequest::operator()(managarm::posix::EpollCallRequest &&req,
 		helix::BorrowedDescriptor conversation, bragi::preamble preamble,
-		std::shared_ptr<Process> self, std::shared_ptr<Generation>) {
+		std::shared_ptr<Process> self, std::shared_ptr<Generation>,
+		async::cancellation_token cancellation) {
 	auto tailRes = co_await dispatchTail(req, conversation, preamble);
 	if(!tailRes) {
 		std::cout << "posix: Rejecting request due to decoding failure" << std::endl;
@@ -316,15 +317,13 @@ HandleRequest::operator()(managarm::posix::EpollCallRequest &&req,
 	size_t k = 0;
 	bool interrupted = false;
 
-	auto cancelEvent = self->cancelEventRegistry().event(self->credentials(), req.cancellation_id());
-
 	if(timeout < 0) {
 		co_await async::race_and_cancel(
 			async::lambda([&](auto c) -> async::result<void> {
-				co_await async::suspend_indefinitely(c, cancelEvent);
-				// if the cancelEvent was raised, we consider this wait to have been
+				co_await async::suspend_indefinitely(c, cancellation);
+				// if the cancellation was requested, we consider this wait to have been
 				// interrupted.
-				if (async::cancellation_token{cancelEvent}.is_cancellation_requested())
+				if (cancellation.is_cancellation_requested())
 					interrupted = true;
 			}),
 			async::lambda([&](auto c) -> async::result<void> {
@@ -355,10 +354,10 @@ HandleRequest::operator()(managarm::posix::EpollCallRequest &&req,
 				co_await helix::sleepFor(static_cast<uint64_t>(timeout), c);
 			}),
 			async::lambda([&](auto c) -> async::result<void> {
-				co_await async::suspend_indefinitely(c, cancelEvent);
-				// if the cancelEvent was raised, we consider this wait to have been
+				co_await async::suspend_indefinitely(c, cancellation);
+				// if the cancellation was requested, we consider this wait to have been
 				// interrupted.
-				if (async::cancellation_token{cancelEvent}.is_cancellation_requested())
+				if (cancellation.is_cancellation_requested())
 					interrupted = true;
 			}),
 			async::lambda([&](auto c) -> async::result<void> {
@@ -472,7 +471,8 @@ HandleRequest::operator()(managarm::posix::EpollCtlRequest &&req,
 async::result<std::expected<void, DispatchError>>
 HandleRequest::operator()(managarm::posix::EpollWaitRequest &&req,
 		helix::BorrowedDescriptor conversation, bragi::preamble preamble,
-		std::shared_ptr<Process> self, std::shared_ptr<Generation>) {
+		std::shared_ptr<Process> self, std::shared_ptr<Generation>,
+		async::cancellation_token cancellation) {
 	id = preamble.id();
 	logBragiRequest(req);
 	logRequest(logRequests, self, "EPOLL_WAIT", "epollfd={}", req.fd());
@@ -490,10 +490,10 @@ HandleRequest::operator()(managarm::posix::EpollWaitRequest &&req,
 	}
 
 	struct epoll_event events[16];
-	size_t k;
+	size_t k = 0;
 	if(req.timeout() < 0) {
 		k = co_await epoll::wait(epfile.get(), events,
-				std::min(req.size(), uint32_t(16)));
+				std::min(req.size(), uint32_t(16)), cancellation);
 	}else if(!req.timeout()) {
 		// Do not bother to set up a timer for zero timeouts.
 		async::cancellation_event cancel_wait;
@@ -502,10 +502,19 @@ HandleRequest::operator()(managarm::posix::EpollWaitRequest &&req,
 				std::min(req.size(), uint32_t(16)), cancel_wait);
 	}else{
 		assert(req.timeout() > 0);
-		async::cancellation_event cancel_wait;
-		helix::TimeoutCancellation timer{static_cast<uint64_t>(req.timeout()), cancel_wait};
-		k = co_await epoll::wait(epfile.get(), events, 16, cancel_wait);
-		co_await timer.retire();
+		co_await async::race_and_cancel(
+			[&](async::cancellation_token c) {
+				return async::transform(helix::sleepFor(static_cast<uint64_t>(req.timeout()), c),
+						[](bool) { });
+			},
+			[&](async::cancellation_token c) {
+				return async::suspend_indefinitely(c, cancellation);
+			},
+			[&](async::cancellation_token c) {
+				return async::transform(epoll::wait(epfile.get(), events, 16, c),
+						[&](size_t n) { k = n; });
+			}
+		);
 	}
 	if(req.sigmask_needed()) {
 		self->setSignalMask(former);

@@ -170,7 +170,7 @@ struct HandleRequest {
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::EpollCallRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
-			std::shared_ptr<Generation> generation);
+			std::shared_ptr<Generation> generation, async::cancellation_token cancellation);
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::EpollCtlRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
@@ -178,7 +178,7 @@ struct HandleRequest {
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::EpollWaitRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
-			std::shared_ptr<Generation> generation);
+			std::shared_ptr<Generation> generation, async::cancellation_token cancellation);
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::FdGetFlagsRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
@@ -452,7 +452,7 @@ struct HandleRequest {
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::WaitRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
-			std::shared_ptr<Generation> generation);
+			std::shared_ptr<Generation> generation, async::cancellation_token cancellation);
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::SetAffinityRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
