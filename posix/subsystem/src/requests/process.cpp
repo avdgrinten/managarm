@@ -129,12 +129,6 @@ HandleRequest::operator()(managarm::posix::WaitRequest &&req,
 
 	{
 		auto cancelEvent = self->cancelEventRegistry().event(self->credentials(), req.cancellation_id());
-		if (!cancelEvent) {
-			std::println("posix: possibly duplicate cancellation ID registered");
-			co_await sendErrorResponse<managarm::posix::WaitResponse>(conversation, managarm::posix::Errors::INTERNAL_ERROR);
-			co_return {};
-		}
-
 		waitResult = co_await self->wait(req.pid(), flags, cancelEvent);
 	}
 
