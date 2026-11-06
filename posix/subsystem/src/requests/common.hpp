@@ -1,5 +1,7 @@
 #pragma once
 
+#include <expected>
+#include <initializer_list>
 #include <memory>
 #include <span>
 #include <format>
@@ -34,6 +36,17 @@ inline void logRequest(bool cond, const std::shared_ptr<Process>& self, std::str
 		std::cout << "posix: [" << self->pid() << "] " << name << " "
 		          << std::format(fmt, std::forward<Args>(args)...) << std::endl;
 	}
+}
+
+// Checks the errors of sending a reply; a requester that terminated in the meantime is no error.
+inline std::expected<void, DispatchError> checkReply(std::initializer_list<HelError> errors) {
+	for(auto error : errors) {
+		if(error == kHelErrEndOfLane || error == kHelErrLaneShutdown)
+			return {};
+		if(error != kHelErrNone)
+			return std::unexpected{DispatchError::ipcError};
+	}
+	return {};
 }
 
 struct HandleRequest {

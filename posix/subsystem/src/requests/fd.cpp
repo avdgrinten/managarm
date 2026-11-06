@@ -417,8 +417,8 @@ HandleRequest::operator()(managarm::posix::EpollCallRequest &&req,
 	auto [send_resp, send_tail] = co_await helix_ng::exchangeMsgs(conversation,
 		helix_ng::sendBragiHeadTail(resp, frg::stl_allocator{})
 	);
-	HEL_CHECK(send_resp.error());
-	HEL_CHECK(send_tail.error());
+	if(auto replied = checkReply({send_resp.error(), send_tail.error()}); !replied)
+		co_return replied;
 	logBragiReply(resp);
 
 	co_return {};
@@ -523,7 +523,8 @@ HandleRequest::operator()(managarm::posix::EpollWaitRequest &&req,
 		helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{}),
 		helix_ng::sendBuffer(events, k * sizeof(struct epoll_event))
 	);
-	HEL_CHECK(send_resp.error());
+	if(auto replied = checkReply({send_resp.error(), send_data.error()}); !replied)
+		co_return replied;
 	logBragiReply(resp);
 
 	co_return {};
