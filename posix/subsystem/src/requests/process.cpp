@@ -102,7 +102,8 @@ HandleRequest::operator()(managarm::posix::WaitIdRequest &&req,
 async::result<std::expected<void, DispatchError>>
 HandleRequest::operator()(managarm::posix::WaitRequest &&req,
 		helix::BorrowedDescriptor conversation, bragi::preamble preamble,
-		std::shared_ptr<Process> self, std::shared_ptr<Generation>) {
+		std::shared_ptr<Process> self, std::shared_ptr<Generation>,
+		async::cancellation_token cancellation) {
 	id = preamble.id();
 	logBragiRequest(req);
 
@@ -125,18 +126,7 @@ HandleRequest::operator()(managarm::posix::WaitRequest &&req,
 
 	logRequest(logRequests, self, "WAIT", "pid={}", req.pid());
 
-	frg::expected<Error, Process::WaitResult> waitResult = Error::ioError;
-
-	{
-		auto cancelEvent = self->cancelEventRegistry().event(self->credentials(), req.cancellation_id());
-		if (!cancelEvent) {
-			std::println("posix: possibly duplicate cancellation ID registered");
-			co_await sendErrorResponse<managarm::posix::WaitResponse>(conversation, managarm::posix::Errors::INTERNAL_ERROR);
-			co_return {};
-		}
-
-		waitResult = co_await self->wait(req.pid(), flags, cancelEvent);
-	}
+	auto waitResult = co_await self->wait(req.pid(), flags, cancellation);
 
 	managarm::posix::WaitResponse resp;
 	if(waitResult) {
@@ -166,7 +156,7 @@ HandleRequest::operator()(managarm::posix::WaitRequest &&req,
 	auto [send_resp] = co_await helix_ng::exchangeMsgs(conversation,
 		helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
 	);
-	HEL_CHECK(send_resp.error());
+	FRG_CO_TRY(checkIpc(send_resp.error()));
 	logBragiReply(resp);
 
 	co_return {};

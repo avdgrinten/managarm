@@ -1,6 +1,8 @@
 #include <assert.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -62,3 +64,89 @@ DEFINE_TEST(pthread_join_on_exiting_thread, ([] {
 	assert(WIFEXITED(status));
 	assert(WEXITSTATUS(status) == 0);
 }));
+
+struct blocked_thread_data {
+	int efd;
+	int readFd;
+};
+
+static void *block_in_epoll_wait(void *arg) {
+	auto data = static_cast<blocked_thread_data *>(arg);
+
+	int epfd = epoll_create1(0);
+	assert(epfd >= 0);
+	epoll_event evt{};
+	evt.events = EPOLLIN;
+	int e = epoll_ctl(epfd, EPOLL_CTL_ADD, data->readFd, &evt);
+	assert(!e);
+
+	uint64_t val = 1;
+	ssize_t written = write(data->efd, &val, sizeof(val));
+	assert(written == sizeof(val));
+
+	epoll_wait(epfd, &evt, 1, -1);
+	assert(!"epoll_wait() returned");
+	return nullptr;
+}
+
+static void *block_in_poll(void *arg) {
+	auto data = static_cast<blocked_thread_data *>(arg);
+
+	uint64_t val = 1;
+	ssize_t written = write(data->efd, &val, sizeof(val));
+	assert(written == sizeof(val));
+
+	pollfd pfd{.fd = data->readFd, .events = POLLIN, .revents = 0};
+	poll(&pfd, 1, -1);
+	assert(!"poll() returned");
+	return nullptr;
+}
+
+// The process must exit even though its second thread still blocks in blocker().
+static void exit_with_blocked_thread(void *(*blocker)(void *)) {
+	int child = fork();
+	assert(child >= 0);
+
+	if (!child) {
+		int fds[2];
+		int e = pipe(fds);
+		assert(!e);
+
+		blocked_thread_data data;
+		data.efd = eventfd(0, 0);
+		assert(data.efd >= 0);
+		data.readFd = fds[0];
+
+		pthread_t thread;
+		int ret = pthread_create(&thread, nullptr, blocker, &data);
+		assert(ret == 0);
+
+		uint64_t val;
+		ssize_t read_len = read(data.efd, &val, sizeof(val));
+		assert(read_len == sizeof(val));
+		// Give the thread time to actually block.
+		usleep(50'000);
+		exit(0);
+	}
+
+	for (int i = 0; i < 500; i++) {
+		int status;
+		auto ret = waitpid(child, &status, WNOHANG);
+		assert(ret >= 0);
+		if (ret == child) {
+			assert(WIFEXITED(status));
+			assert(WEXITSTATUS(status) == 0);
+			return;
+		}
+		usleep(10'000);
+	}
+	assert(!"process did not exit within 5 s");
+}
+
+DEFINE_TEST(exit_with_thread_in_epoll_wait, ([] {
+	exit_with_blocked_thread(block_in_epoll_wait);
+}))
+
+DEFINE_TEST(exit_with_thread_in_poll, ([] {
+	exit_with_blocked_thread(block_in_poll);
+}))

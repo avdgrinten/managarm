@@ -1,11 +1,13 @@
 #pragma once
 
+#include <expected>
 #include <memory>
 #include <span>
 #include <format>
 #include <vector>
 
 #include <async/result.hpp>
+#include <frg/expected.hpp>
 #include <helix/ipc.hpp>
 #include <helix/memory.hpp>
 #include <bragi/helpers-std.hpp>
@@ -34,6 +36,13 @@ inline void logRequest(bool cond, const std::shared_ptr<Process>& self, std::str
 		std::cout << "posix: [" << self->pid() << "] " << name << " "
 		          << std::format(fmt, std::forward<Args>(args)...) << std::endl;
 	}
+}
+
+// Checks the error of an IPC operation; a requester that terminated in the meantime is no error.
+inline std::expected<void, DispatchError> checkIpc(HelError error) {
+	if(error == kHelErrNone || error == kHelErrEndOfLane || error == kHelErrLaneShutdown)
+		return {};
+	return std::unexpected{DispatchError::ipcError};
 }
 
 struct HandleRequest {
@@ -117,15 +126,18 @@ struct HandleRequest {
 				helix_ng::sendBragiHeadTail(resp, frg::stl_allocator{})
 			);
 
-			HEL_CHECK(send_resp.error());
-			HEL_CHECK(send_tail.error());
+			if(!checkIpc(send_resp.error()))
+				HEL_CHECK(send_resp.error());
+			if(!checkIpc(send_tail.error()))
+				HEL_CHECK(send_tail.error());
 		} else {
 			auto [send_resp] = co_await helix_ng::exchangeMsgs(
 				conversation,
 				helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
 			);
 
-			HEL_CHECK(send_resp.error());
+			if(!checkIpc(send_resp.error()))
+				HEL_CHECK(send_resp.error());
 		}
 		logBragiReply(resp);
 	}
@@ -158,7 +170,7 @@ struct HandleRequest {
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::EpollCallRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
-			std::shared_ptr<Generation> generation);
+			std::shared_ptr<Generation> generation, async::cancellation_token cancellation);
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::EpollCtlRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
@@ -166,7 +178,7 @@ struct HandleRequest {
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::EpollWaitRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
-			std::shared_ptr<Generation> generation);
+			std::shared_ptr<Generation> generation, async::cancellation_token cancellation);
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::FdGetFlagsRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
@@ -440,7 +452,7 @@ struct HandleRequest {
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::WaitRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,
-			std::shared_ptr<Generation> generation);
+			std::shared_ptr<Generation> generation, async::cancellation_token cancellation);
 	async::result<std::expected<void, DispatchError>>
 	operator()(managarm::posix::SetAffinityRequest &&req, helix::BorrowedDescriptor conversation,
 			bragi::preamble preamble, std::shared_ptr<Process> self,

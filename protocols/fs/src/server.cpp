@@ -1103,21 +1103,6 @@ struct HandleFileRequest {
 
 		{
 			auto cancelEvent = cancellationEvents->event(extract_creds.credentials(), req.cancellation_id());
-			if (!cancelEvent) {
-				std::println("protocols/fs: possibly duplicate cancellation ID registered");
-				managarm::fs::SvrResponse resp;
-				resp.set_error(managarm::fs::Errors::INTERNAL_ERROR);
-
-				auto ser = resp.SerializeAsString();
-				auto [send_resp] = co_await helix_ng::exchangeMsgs(
-					conversation,
-					helix_ng::sendBuffer(ser.data(), ser.size())
-				);
-				HEL_CHECK(send_resp.error());
-				logBragiSerializedReply(ser);
-				co_return {};
-			}
-
 			resultOrError = co_await file_ops->pollWait(file.get(),
 				req.sequence(), req.event_mask(), cancelEvent);
 		}
@@ -1240,21 +1225,6 @@ struct HandleFileRequest {
 
 		{
 			auto cancelEvent = cancellationEvents->event(extract_creds.credentials(), req.cancellation_id());
-			if (!cancelEvent) {
-				std::println("protocols/fs: possibly duplicate cancellation ID registered");
-				managarm::fs::SvrResponse resp;
-				resp.set_error(managarm::fs::Errors::INTERNAL_ERROR);
-
-				auto ser = resp.SerializeAsString();
-				auto [send_resp] = co_await helix_ng::exchangeMsgs(
-					conversation,
-					helix_ng::sendBuffer(ser.data(), ser.size())
-				);
-				HEL_CHECK(send_resp.error());
-				logBragiSerializedReply(ser);
-				co_return {};
-			}
-
 			res = co_await file_ops->read(
 				file.get(),
 				extract_creds.credentials(),
