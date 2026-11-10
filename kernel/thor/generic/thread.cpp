@@ -623,7 +623,7 @@ void Thread::invoke() {
 	AddressSpace::activate(_addressSpace);
 	_executorContext->active.store(true, std::memory_order_relaxed);
 	cpuData->executorContext = _executorContext;
-	cpuData->activeThread = self;
+	cpuData->activeThread = this;
 	restoreExecutor(&_executor);
 }
 
@@ -742,7 +742,7 @@ void Thread::_uninvoke() {
 	auto cpuData = getCpuData();
 	_executorContext->active.store(false, std::memory_order_relaxed);
 	cpuData->executorContext = nullptr;
-	cpuData->activeThread = {};
+	cpuData->activeThread = nullptr;
 }
 
 void Thread::AssociatedWorkQueue::wakeup() {

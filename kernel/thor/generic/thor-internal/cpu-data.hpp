@@ -108,7 +108,7 @@ struct CpuData : public PlatformCpuData {
 	int cpuIndex;
 
 	ExecutorContext *executorContext{nullptr};
-	smarter::borrowed_ptr<Thread> activeThread;
+	Thread *activeThread{nullptr};
 	KernelFiber *activeFiber{nullptr};
 	KernelFiber *criticalFiber{nullptr};
 	KernelFiber *memoryFiber{nullptr};
