@@ -64,7 +64,14 @@ src = [
 	devserver_bragi
 ]
 
+posix_args = []
+if kcov
+	src += files('src/devices/kcov.cpp')
+	posix_args += [ '-DPOSIX_HAS_KCOV' ]
+endif
+
 executable('posix-subsystem', src,
+	cpp_args : posix_args,
 	dependencies : [ mbus_proto_dep, fs_proto_dep, posix_extra_dep, clock_proto_dep, kerncfg_proto_dep, hw_proto_dep, ostrace_proto_dep, frigg, core_dep, swap_proto_dep ],
 	install : true
 )

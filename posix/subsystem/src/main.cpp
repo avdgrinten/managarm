@@ -14,6 +14,9 @@
 #include "netlink/nl-socket.hpp"
 #include "devices/full.hpp"
 #include "devices/helout.hpp"
+#ifdef POSIX_HAS_KCOV
+#include "devices/kcov.hpp"
+#endif
 #include "devices/kmsg.hpp"
 #include "devices/null.hpp"
 #include "devices/random.hpp"
@@ -249,6 +252,9 @@ int main() {
 	charRegistry.install(createUrandomDevice());
 	charRegistry.install(createZeroDevice());
 	charRegistry.install(createKmsgDevice());
+#ifdef POSIX_HAS_KCOV
+	charRegistry.install(createKcovDevice());
+#endif
 	charRegistry.install(createTtyDevice());
 	charRegistry.install(createTTY0Device());
 	for(int i = 1; i <= MAX_NR_CONSOLES; i++)
