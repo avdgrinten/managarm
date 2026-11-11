@@ -95,7 +95,7 @@ struct CpuData : public PlatformCpuData {
 
 	CpuData &operator= (const CpuData &) = delete;
 
-	std::atomic<Ipl> contextIpl{ipl::passive};
+	Ipl contextIpl{ipl::passive};
 	// CPUs boot with interrupts disabled, so we initialize to ipl::interrupt.
 	std::atomic<Ipl> currentIpl{ipl::interrupt};
 	std::atomic<uint32_t> iplDeferred{0};
