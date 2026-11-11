@@ -38,7 +38,8 @@ enum Errors {
 	NOT_SUPPORTED = 35,
 	BAD_FILE_DESCRIPTOR = 36,
 	IO_ERROR = 37,
-	BUSY = 38
+	BUSY = 38,
+	NO_MEMORY = 39
 }
 
 consts FileType int64 {

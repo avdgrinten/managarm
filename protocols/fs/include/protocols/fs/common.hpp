@@ -59,6 +59,7 @@ enum class Error {
 	badFileDescriptor = 36,
 	ioError = 37,
 	busy = 38,
+	noMemory = 39,
 };
 
 struct ToFsError {
@@ -107,6 +108,7 @@ inline managarm::fs::Errors operator|(Error e, ToFsError) {
 		case Error::badFileDescriptor: return managarm::fs::Errors::BAD_FILE_DESCRIPTOR;
 		case Error::ioError: return managarm::fs::Errors::IO_ERROR;
 		case Error::busy: return managarm::fs::Errors::BUSY;
+		case Error::noMemory: return managarm::fs::Errors::NO_MEMORY;
 	}
 }
 
@@ -156,6 +158,7 @@ inline Error operator|(managarm::fs::Errors e, ToFsProtoError) {
 		case managarm::fs::Errors::BAD_FILE_DESCRIPTOR: return Error::badFileDescriptor;
 		case managarm::fs::Errors::IO_ERROR: return Error::ioError;
 		case managarm::fs::Errors::BUSY: return Error::busy;
+		case managarm::fs::Errors::NO_MEMORY: return Error::noMemory;
 	}
 }
 
