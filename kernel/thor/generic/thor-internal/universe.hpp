@@ -39,6 +39,9 @@ struct OneshotEvent;
 struct BitsetEvent;
 struct SequencedEvent;
 struct Hierarchy;
+#ifdef THOR_HAS_KCOV
+struct KcovBuffer;
+#endif
 
 inline bool checkRights(uint32_t rights, uint32_t requiredRights) {
 	return (rights & requiredRights) == requiredRights;
@@ -183,6 +186,9 @@ enum class DescriptorType : uint8_t {
 	boundKernlet,
 	token,
 	hierarchy,
+#ifdef THOR_HAS_KCOV
+	kcovBuffer,
+#endif
 };
 
 // Maps a descriptor type to the object type and the smarter::shared_ptr refcount
@@ -330,6 +336,14 @@ struct DescriptorTraits<DescriptorType::hierarchy> {
 	using Object = Hierarchy;
 	using Policy = smarter::default_rc_policy;
 };
+
+#ifdef THOR_HAS_KCOV
+template<>
+struct DescriptorTraits<DescriptorType::kcovBuffer> {
+	using Object = KcovBuffer;
+	using Policy = smarter::default_rc_policy;
+};
+#endif
 
 // smarter::shared_ptr type that a descriptor of type K holds.
 template<DescriptorType K>

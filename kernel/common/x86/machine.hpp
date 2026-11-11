@@ -82,13 +82,15 @@ inline void xrstor(uint8_t *area, uint64_t rfbm) {
 	asm volatile("xrstor %0" : : "m"(*area), "a"(low), "d"(high) : "memory");
 }
 
-inline void wrmsr(uint32_t index, uint64_t value) {
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline void wrmsr(uint32_t index, uint64_t value) {
 	uint32_t low = value;
 	uint32_t high = value >> 32;
 	asm volatile("wrmsr" : : "c"(index), "a"(low), "d"(high) : "memory");
 }
 
-inline uint64_t rdmsr(uint32_t index) {
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline uint64_t rdmsr(uint32_t index) {
 	uint32_t low, high;
 	asm volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(index) : "memory");
 	return ((uint64_t)high << 32) | (uint64_t)low;

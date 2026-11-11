@@ -7,6 +7,7 @@
 #include <thor-internal/debug.hpp>
 #include <thor-internal/dtb/dtb.hpp>
 #include <thor-internal/fiber.hpp>
+#include <thor-internal/kcov.hpp>
 #include <thor-internal/load-balancing.hpp>
 #include <thor-internal/main.hpp>
 #include <thor-internal/physical.hpp>
@@ -77,7 +78,7 @@ void setUpTrampoline() {
 	new (trampolinePtr) TrampolineHeader{.satp = (smpPageSpace->rootTable() >> 12) | (mode << 60)};
 }
 
-void smpMain(StatusBlock *statusBlock) {
+THOR_KCOV_DISABLED void smpMain(StatusBlock *statusBlock) {
 	// Synchronize with the other HART.
 	__atomic_thread_fence(__ATOMIC_SEQ_CST);
 

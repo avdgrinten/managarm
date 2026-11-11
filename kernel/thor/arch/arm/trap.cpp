@@ -2,6 +2,7 @@
 #include <thor-internal/arch-generic/cpu.hpp>
 #include <thor-internal/arch-generic/ints.hpp>
 #include <thor-internal/ipl.hpp>
+#include <thor-internal/kcov.hpp>
 #include <thor-internal/arch/gic.hpp>
 #include <thor-internal/arch/gic_v2.hpp>
 #include <thor-internal/arch/gic_v3.hpp>
@@ -38,7 +39,7 @@ initgraph::Stage *getIrqControllerReadyStage() {
 	return &s;
 }
 
-void initializeIrqVectors() {
+THOR_KCOV_DISABLED void initializeIrqVectors() {
 	// The ISB ensures that an exception taken right afterwards already uses our vectors.
 	asm volatile("msr vbar_el1, %0; isb" ::"r"(&thorExcVectors) : "memory");
 }

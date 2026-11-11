@@ -57,3 +57,9 @@ option('kernel_frame_pointers',
     value : false,
     description : 'include frame pointers for stack traces'
 )
+
+option('kcov',
+    type : 'boolean',
+    value : false,
+    description : 'enable kernel code coverage collection (kcov) in thor and posix'
+)

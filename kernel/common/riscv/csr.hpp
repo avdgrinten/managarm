@@ -191,8 +191,9 @@ constexpr uint64_t sv57 = 10;
 // Since we do not want to add separate read/write functions for each CSR,
 // using a template is out best option to ensure that the CSR is statically known.
 
+// Always inline as this might be called from code that disables coverage
 template <Csr csr>
-uint64_t readCsr() {
+[[gnu::always_inline]] inline uint64_t readCsr() {
 	uint64_t u;
 	asm volatile("csrr %0, %1" : "=r"(u) : "i"(static_cast<uint16_t>(csr)) : "memory");
 	return u;
@@ -210,13 +211,15 @@ uint64_t readWriteCsr(uint64_t v) {
 	return u;
 }
 
+// Always inline as this might be called from code that disables coverage
 template <Csr csr>
-void setCsrBits(uint64_t v) {
+[[gnu::always_inline]] inline void setCsrBits(uint64_t v) {
 	asm volatile("csrs %1, %0" : : "r"(v), "i"(static_cast<uint16_t>(csr)) : "memory");
 }
 
+// Always inline as this might be called from code that disables coverage
 template <Csr csr>
-void clearCsrBits(uint64_t v) {
+[[gnu::always_inline]] inline void clearCsrBits(uint64_t v) {
 	asm volatile("csrc %1, %0" : : "r"(v), "i"(static_cast<uint16_t>(csr)) : "memory");
 }
 

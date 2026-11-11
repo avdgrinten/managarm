@@ -3,6 +3,9 @@
 
 #include <frg/container_of.hpp>
 
+#ifdef THOR_HAS_KCOV
+#include <thor-internal/kcov.hpp>
+#endif
 #include <thor-internal/arch-generic/ints.hpp>
 #include <thor-internal/credentials.hpp>
 #include <thor-internal/cpu-data.hpp>
@@ -288,6 +291,10 @@ void Thread::launchCurrent_() {
 
 void Thread::terminateCurrent_() {
 	auto thisThread = getCurrentThread();
+
+#ifdef THOR_HAS_KCOV
+	KcovBuffer::exitCurrent(thisThread.get());
+#endif
 
 	StatelessIrqLock irqLock;
 	auto lock = frg::guard(&thisThread->_mutex);

@@ -2,6 +2,7 @@
 #include <thor-internal/cpu-data.hpp>
 #include <thor-internal/int-call.hpp>
 #include <thor-internal/ipl.hpp>
+#include <thor-internal/kcov.hpp>
 #include <thor-internal/metrics.hpp>
 #include <thor-internal/profile.hpp>
 #include <thor-internal/rcu.hpp>
@@ -632,7 +633,7 @@ namespace {
 	}
 }
 
-extern "C" void onPlatformNmi(NmiImageAccessor image, uint64_t expectedGs) {
+extern "C" THOR_KCOV_DISABLED void onPlatformNmi(NmiImageAccessor image, uint64_t expectedGs) {
 	// If we interrupted user space or a kernel stub, we might need to update GS.
 	auto gs = common::x86::rdmsr(common::x86::kMsrIndexGsBase);
 	common::x86::wrmsr(common::x86::kMsrIndexGsBase, expectedGs);

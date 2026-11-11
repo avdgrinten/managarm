@@ -8,13 +8,18 @@ struct CpuData;
 
 void initializeIrqVectors();
 
-inline bool intsAreEnabled() {
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline bool intsAreEnabled() {
 	return riscv::readCsr<riscv::Csr::sstatus>() & riscv::sstatus::sieBit;
 }
 
-inline void enableInts() { return riscv::setCsrBits<riscv::Csr::sstatus>(riscv::sstatus::sieBit); }
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline void enableInts() {
+	return riscv::setCsrBits<riscv::Csr::sstatus>(riscv::sstatus::sieBit);
+}
 
-inline void disableInts() {
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline void disableInts() {
 	return riscv::clearCsrBits<riscv::Csr::sstatus>(riscv::sstatus::sieBit);
 }
 

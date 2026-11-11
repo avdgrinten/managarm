@@ -11,6 +11,7 @@
 #include <thor-internal/cpu-data.hpp>
 #include <thor-internal/cpu-state.hpp>
 #include <thor-internal/ipl.hpp>
+#include <thor-internal/kcov.hpp>
 #include <thor-internal/arch/pic.hpp>
 #include <frg/cmdline.hpp>
 #include <x86/machine.hpp>
@@ -243,7 +244,7 @@ void doForkExecutor(Executor *executor, void (*functor)(void *), void *context) 
 extern "C" [[ noreturn ]] void _restoreExecutorRegisters(void *pointer);
 extern "C" bool thorFredEnabled;
 
-[[ gnu::section(".text.stubs") ]] void restoreExecutor(Executor *executor) {
+[[ gnu::section(".text.stubs") ]] THOR_KCOV_DISABLED void restoreExecutor(Executor *executor) {
 	if(executor->_tss) {
 		activateTss(executor->_tss);
 	}else{
@@ -590,7 +591,7 @@ void doRunOnStack(void (*function) (void *, void *), void *sp, void *argument) {
 extern "C" void syscallStub();
 
 // Set up the kernel GS segment.
-void setupCpuContext(AssemblyCpuData *context) {
+THOR_KCOV_DISABLED void setupCpuContext(AssemblyCpuData *context) {
 	common::x86::wrmsr(common::x86::kMsrIndexGsBase,
 			reinterpret_cast<uint64_t>(context));
 }
@@ -873,7 +874,7 @@ struct StatusBlock {
 
 static_assert(sizeof(StatusBlock) == 48, "Bad sizeof(StatusBlock)");
 
-void secondaryMain(StatusBlock *statusBlock) {
+THOR_KCOV_DISABLED void secondaryMain(StatusBlock *statusBlock) {
 	auto cpuContext = statusBlock->cpuContext;
 
 	setupCpuContext(cpuContext);

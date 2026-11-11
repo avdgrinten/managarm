@@ -32,7 +32,10 @@ static_assert(offsetof(AssemblyCpuData, scratchSp) == THOR_TP_SCRATCH_SP);
 static_assert(offsetof(AssemblyCpuData, hscratchSp) == THOR_TP_HSCRATCH_SP);
 static_assert(offsetof(AssemblyCpuData, iseqPtr) == THOR_TP_ISEQ_PTR);
 
-inline void writeToTp(AssemblyCpuData *context) { asm volatile("mv tp, %0" : : "r"(context)); }
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline void writeToTp(AssemblyCpuData *context) {
+	asm volatile("mv tp, %0" : : "r"(context));
+}
 
 struct Thread;
 
@@ -66,7 +69,8 @@ struct PlatformCpuData : public AssemblyCpuData {
 };
 
 // Get a pointer to this CPU's PlatformCpuData instance.
-inline PlatformCpuData *getPlatformCpuData() {
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline PlatformCpuData *getPlatformCpuData() {
 	AssemblyCpuData *result;
 	asm volatile("mv %0, tp" : "=r"(result));
 	return static_cast<PlatformCpuData *>(result);

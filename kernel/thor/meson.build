@@ -156,6 +156,15 @@ if frame_pointers
 	args += [ '-fno-omit-frame-pointer', '-DTHOR_HAS_FRAME_POINTERS' ]
 endif
 
+if kcov
+	src += files('generic/kcov.cpp')
+	args += [
+		'-DTHOR_HAS_KCOV',
+		'-fsanitize-coverage=trace-pc,trace-cmp',
+		'-fno-optimize-sibling-calls'
+	]
+endif
+
 if arch == 'aarch64'
 	subdir('arch/arm')
 elif arch == 'riscv64'

@@ -106,6 +106,23 @@ extern inline __attribute__ (( always_inline )) HelError helAllocateMemory(
 	return error;
 };
 
+extern inline __attribute__ (( always_inline )) HelError helCreateKcovBuffer(size_t size,
+		HelHandle *handle) {
+	HelWord hel_handle;
+	HelError error = helSyscall1_1(kHelCallCreateKcovBuffer, (HelWord)size, &hel_handle);
+	*handle = (HelHandle)hel_handle;
+	return error;
+};
+
+extern inline __attribute__ (( always_inline )) HelError helEnableCoverage(HelHandle thread,
+		HelHandle buffer, uint32_t mode) {
+	return helSyscall3(kHelCallEnableCoverage, (HelWord)thread, (HelWord)buffer, (HelWord)mode);
+};
+
+extern inline __attribute__ (( always_inline )) HelError helDisableCoverage(HelHandle thread) {
+	return helSyscall1(kHelCallDisableCoverage, (HelWord)thread);
+};
+
 extern inline __attribute__ (( always_inline )) HelError helCreateManagedMemory(HelHandle hierarchy,
 		size_t size, uint32_t flags, HelHandle *backing_handle, HelHandle *frontal_handle) {
 	HelWord back_handle;

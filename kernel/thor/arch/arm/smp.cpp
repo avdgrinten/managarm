@@ -19,6 +19,7 @@
 #include <thor-internal/arch-generic/cpu.hpp>
 #include <thor-internal/arch-generic/paging.hpp>
 #include <thor-internal/fiber.hpp>
+#include <thor-internal/kcov.hpp>
 #include <thor-internal/load-balancing.hpp>
 #include <thor-internal/rcu.hpp>
 #include <uacpi/acpi.h>
@@ -170,7 +171,7 @@ namespace {
 		KernelVirtualMemory::global().deallocate(virtPtr, kPageSize);
 	}
 
-	void secondaryMain(StatusBlock *statusBlock) {
+	THOR_KCOV_DISABLED void secondaryMain(StatusBlock *statusBlock) {
 		initializeIrqVectors();
 
 		auto cpuContext = statusBlock->cpuContext;
