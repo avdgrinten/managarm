@@ -14,6 +14,14 @@ namespace {
 // A File can be used from several threads, but a std::atomic member would make it immovable.
 std::atomic<uint64_t> nextCancellationId{1};
 
+// The server may close the lane (exit, or close() racing a request); any other IPC error is a bug.
+std::expected<void, Error> checkServerIpc(HelError error) {
+	if(error == kHelErrEndOfLane)
+		return std::unexpected{Error::ioError};
+	HEL_CHECK(error);
+	return {};
+}
+
 } // anonymous namespace
 
 async::result<Error> synchronize(helix::BorrowedDescriptor lane, SynchronizeFlags flags) {
@@ -31,15 +39,15 @@ async::result<Error> synchronize(helix::BorrowedDescriptor lane, SynchronizeFlag
 		)
 	);
 	// A server that exited may have lost data, unlike one that dismisses the request.
-	if(offer.error() == kHelErrEndOfLane || sendReq.error() == kHelErrEndOfLane
-			|| recvResp.error() == kHelErrEndOfLane)
-		co_return Error::ioError;
-	HEL_CHECK(offer.error());
-	HEL_CHECK(sendReq.error());
+	if(auto e = checkServerIpc(offer.error()); !e)
+		co_return e.error();
+	if(auto e = checkServerIpc(sendReq.error()); !e)
+		co_return e.error();
 	// Servers that do not implement synchronization dismiss the request.
 	if(recvResp.error() == kHelErrDismissed)
 		co_return Error::notSupported;
-	HEL_CHECK(recvResp.error());
+	if(auto e = checkServerIpc(recvResp.error()); !e)
+		co_return e.error();
 
 	auto resp = *bragi::parse_head_only<managarm::fs::SynchronizeResponse>(recvResp);
 	co_return resp.error() | toFsProtoError;
@@ -138,6 +146,9 @@ File::readSome(void *data, size_t max_length, async::cancellation_token ct) {
 	managarm::fs::SvrResponse resp;
 	size_t actualLength = 0;
 
+	// Set if the server closed the lane (e.g., because the file was closed meanwhile).
+	bool lost = false;
+
 	co_await async::race_and_cancel(
 		async::lambda([&](auto) -> async::result<void> {
 			auto [offer, send_req, imbue_creds, recv_resp, recv_data] =
@@ -151,11 +162,12 @@ File::readSome(void *data, size_t max_length, async::cancellation_token ct) {
 					)
 				);
 
-			HEL_CHECK(offer.error());
-			HEL_CHECK(send_req.error());
-			HEL_CHECK(imbue_creds.error());
-			HEL_CHECK(recv_resp.error());
-			HEL_CHECK(recv_data.error());
+			if(!checkServerIpc(offer.error()) || !checkServerIpc(send_req.error())
+					|| !checkServerIpc(imbue_creds.error()) || !checkServerIpc(recv_resp.error())
+					|| !checkServerIpc(recv_data.error())) {
+				lost = true;
+				co_return;
+			}
 
 			resp.ParseFromArray(buffer, recv_resp.actualLength());
 			actualLength = recv_data.actualLength();
@@ -178,10 +190,14 @@ File::readSome(void *data, size_t max_length, async::cancellation_token ct) {
 				)
 			);
 
-			HEL_CHECK(offer.error());
-			HEL_CHECK(send_req.error());
+			// A server that closed the lane has no operation left to cancel.
+			if(!checkServerIpc(offer.error()) || !checkServerIpc(send_req.error()))
+				co_return;
 		})
 	);
+
+	if(lost)
+		co_return std::unexpected{Error::ioError};
 
 	if (resp.error() == managarm::fs::Errors::INTERRUPTED)
 		co_return std::unexpected{Error::interrupted};
@@ -234,6 +250,9 @@ async::result<frg::expected<Error, PollWaitResult>> File::pollWait(uint64_t sequ
 
 	managarm::fs::FilePollResponse resp;
 
+	// Set if the server closed the lane (e.g., because the file was closed meanwhile).
+	bool lost = false;
+
 	co_await async::race_and_cancel(
 		async::lambda([&](auto) -> async::result<void> {
 			auto [offer, send_req, imbue_creds, recv_resp] = co_await helix_ng::exchangeMsgs(
@@ -245,10 +264,11 @@ async::result<frg::expected<Error, PollWaitResult>> File::pollWait(uint64_t sequ
 				)
 			);
 
-			HEL_CHECK(offer.error());
-			HEL_CHECK(send_req.error());
-			HEL_CHECK(imbue_creds.error());
-			HEL_CHECK(recv_resp.error());
+			if(!checkServerIpc(offer.error()) || !checkServerIpc(send_req.error())
+					|| !checkServerIpc(imbue_creds.error()) || !checkServerIpc(recv_resp.error())) {
+				lost = true;
+				co_return;
+			}
 
 			resp.ParseFromArray(recv_resp.data(), recv_resp.size());
 		}),
@@ -270,11 +290,14 @@ async::result<frg::expected<Error, PollWaitResult>> File::pollWait(uint64_t sequ
 				)
 			);
 
-			HEL_CHECK(offer.error());
-			HEL_CHECK(send_req.error());
+			// A server that closed the lane has no operation left to cancel.
+			if(!checkServerIpc(offer.error()) || !checkServerIpc(send_req.error()))
+				co_return;
 		})
 	);
 
+	if(lost)
+		co_return Error::ioError;
 	if(resp.error() != managarm::fs::Errors::SUCCESS)
 		co_return static_cast<Error>(resp.error());
 	co_return PollWaitResult(resp.sequence(), resp.edges());
