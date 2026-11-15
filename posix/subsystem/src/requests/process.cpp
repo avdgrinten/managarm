@@ -39,6 +39,7 @@ HandleRequest::operator()(managarm::posix::WaitIdRequest &&req,
 		flags |= waitLeaveZombie;
 
 	int wait_pid = 0;
+	bool failIfWouldBlock = false;
     // TODO (geert): make this operation cancelable.
 	if(req.idtype() == P_PID) {
 		wait_pid = req.id();
@@ -52,8 +53,11 @@ HandleRequest::operator()(managarm::posix::WaitIdRequest &&req,
 		}
 		auto pidfd = smarter::static_pointer_cast<pidfd::OpenFile>(fd);
 		wait_pid = pidfd->pid();
-		if(pidfd->nonBlock())
+		if(pidfd->nonBlock()) {
 			flags |= waitNonBlocking;
+			// Like Linux, only WNOHANG reports a missing state change as success.
+			failIfWouldBlock = !(req.flags() & WNOHANG);
+		}
 	} else {
 		std::cout << "\e[31mposix: WAIT_ID idtype other than P_PID, P_PIDFD and P_ALL are not implemented\e[39m" << std::endl;
 		co_await sendErrorResponse<managarm::posix::WaitIdResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
@@ -84,6 +88,8 @@ HandleRequest::operator()(managarm::posix::WaitIdRequest &&req,
 			resp.set_code(0);
 			assert(std::holds_alternative<std::monostate>(proc_state.state));
 		}
+	} else if (wait_result.error() == Error::wouldBlock && failIfWouldBlock) {
+		resp.set_error(managarm::posix::Errors::WOULD_BLOCK);
 	} else if (wait_result.error() == Error::wouldBlock) {
 		// No child changed state; like Linux, report an all-zero siginfo.
 		resp.set_error(managarm::posix::Errors::SUCCESS);
