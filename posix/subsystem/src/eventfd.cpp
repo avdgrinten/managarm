@@ -149,9 +149,6 @@ struct OpenFile : FileWithDefaults {
 	}
 
 	async::result<void> setFileFlags(int flags) override {
-		// ignore O_{RDWR,WRONLY,RDONLY}
-		flags &= ~(O_RDWR | O_WRONLY | O_RDONLY);
-
 		if (flags & ~O_NONBLOCK) {
 			std::println("posix: setFileFlags on eventfd called with unknown flags {:#x}", flags & ~O_NONBLOCK);
 			co_return;
