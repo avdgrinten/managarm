@@ -1,6 +1,8 @@
 #include <async/recurring-event.hpp>
 #include <helix/dispatcher-pool.hpp>
 #include <helix/ipc.hpp>
+#include <fcntl.h>
+#include <print>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
@@ -72,6 +74,21 @@ async::result<std::string> OpenFile::getFdInfo() {
 	if(p->notifyType() == NotifyType::terminated)
 		pid = -1;
 	co_return std::format("Pid:\t{}\n", pid);
+}
+
+async::result<int> OpenFile::getFileFlags() {
+	int flags = O_RDWR;
+	if(nonBlock_)
+		flags |= O_NONBLOCK;
+	co_return flags;
+}
+
+async::result<void> OpenFile::setFileFlags(int flags) {
+	// Like Linux, apply O_NONBLOCK even if other flags cannot be changed.
+	if(flags & ~O_NONBLOCK)
+		std::println("posix: setFileFlags on pidfd ignores flags {:#x}", flags & ~O_NONBLOCK);
+	nonBlock_ = flags & O_NONBLOCK;
+	co_return;
 }
 
 void OpenFile::handleClose() {
