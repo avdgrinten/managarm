@@ -1,0 +1,4 @@
+name: vsockserver
+exec: /usr/bin/vsockserver
+files:
+  - /usr/bin/vsockserver

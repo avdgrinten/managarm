@@ -3,6 +3,7 @@
 #include "../extern_socket.hpp"
 #include "../un-socket.hpp"
 #include "../netlink/nl-socket.hpp"
+#include "../vsock.hpp"
 #include <sys/socket.h>
 #include <linux/netlink.h>
 
@@ -133,14 +134,19 @@ HandleRequest::operator()(managarm::posix::SocketRequest &&req,
 	}else if(req.domain() == AF_NETLINK) {
 		assert(req.socktype() == SOCK_RAW || req.socktype() == SOCK_DGRAM);
 		// NL_ROUTE gets handled by the netserver.
-		if(req.protocol() == NETLINK_ROUTE)
-			file = co_await extern_socket::createSocket(
+		if(req.protocol() == NETLINK_ROUTE) {
+			auto ext = co_await extern_socket::createSocket(
 				co_await net::getNetLane(),
 				req.domain(),
 				req.socktype(), req.protocol(),
 				req.flags() & SOCK_NONBLOCK
 			);
-		else if(netlink::nl_socket::protocol_supported(req.protocol()))
+			if(!ext) {
+				co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, ext.error() | toPosixProtoError);
+				co_return {};
+			}
+			file = std::move(ext.value());
+		}else if(netlink::nl_socket::protocol_supported(req.protocol()))
 			file = netlink::nl_socket::createSocketFile(req.protocol(), req.socktype(), req.flags() & SOCK_NONBLOCK);
 		else {
 			std::cout << std::format("posix: unhandled netlink protocol 0x{:X}",
@@ -149,11 +155,42 @@ HandleRequest::operator()(managarm::posix::SocketRequest &&req,
 			co_return {};
 		}
 	} else if (req.domain() == AF_INET || req.domain() == AF_PACKET) {
-		file = co_await extern_socket::createSocket(
+		auto ext = co_await extern_socket::createSocket(
 			co_await net::getNetLane(),
 			req.domain(),
 			req.socktype(), req.protocol(),
 			req.flags() & SOCK_NONBLOCK);
+		if(!ext) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, ext.error() | toPosixProtoError);
+			co_return {};
+		}
+		file = std::move(ext.value());
+	}else if(req.domain() == AF_VSOCK) {
+		if(req.socktype() != SOCK_STREAM) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, managarm::posix::Errors::UNSUPPORTED_SOCKET_TYPE);
+			co_return {};
+		}
+		if(req.protocol() && req.protocol() != PF_VSOCK) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, managarm::posix::Errors::PROTOCOL_NOT_SUPPORTED);
+			co_return {};
+		}
+
+		auto lane = vsock::getLane();
+		if(!lane) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, managarm::posix::Errors::ADDRESS_FAMILY_NOT_SUPPORTED);
+			co_return {};
+		}
+
+		auto ext = co_await extern_socket::createSocket(
+			*lane,
+			req.domain(),
+			req.socktype(), req.protocol(),
+			req.flags() & SOCK_NONBLOCK);
+		if(!ext) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, ext.error() | toPosixProtoError);
+			co_return {};
+		}
+		file = std::move(ext.value());
 	}else{
 		std::cout << "posix: SOCKET: Handle unknown protocols families, this is: " << req.domain() << std::endl;
 		co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
