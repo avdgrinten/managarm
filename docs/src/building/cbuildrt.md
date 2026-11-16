@@ -38,6 +38,8 @@ source and build directories. Here we use `~/managarm`, but it can be any direct
     ```
     > Note: If you choose to build `cbuildrt` from source, make sure to place the resulting binary either in `$PATH` or in `~/.xbstrap/bin`.
 
+    `cbuildrt` runs builds in a user namespace, which requires a range of subordinate user and group IDs for your user and the `newuidmap` and `newgidmap` programs (in the `uidmap` package on Debian and Ubuntu). Most distributions set up subordinate IDs when a user is created; if they are missing they can be added via `usermod`.
+
 1.  Download and unpack the latest Managarm `rootfs` somewhere:
     ```bash
     curl https://repos.managarm.org/buildenv/managarm-buildenv.tar.gz -o managarm-rootfs.tar.gz
@@ -100,38 +102,24 @@ source and build directories. Here we use `~/managarm`, but it can be any direct
 ### Creating Images
 After managarm's packages have been built, building a HDD image of the system is straightforward. 
 
-For all methods, the image creation and updation commands shown below require the following programs to be installed on the host:
-`rsync`, `losetup`, `sfdisk`, `mkfs.ext2`, `mkfs.vfat`. Refer to [image_create](https://github.com/qookei/image_create#requirements) for more details on this.
-
-1.  Decide what method you want to use to copy files to the image:
-	1. **Using libguestfs** (the default method). We recommend this when root access is not possible or desirable. However, it is much slower than method 2 and requires some setup on the host (see below).
-	1. **Using a classic loopback and mount** (requires root privileges). We recommend this when root access is acceptable because it is the fastest method and most guaranteed to work.
-	1. **Via Docker container** (only works with the Docker build method). This is handy in case the user is in the `docker` group since it does not require additional root authentication. We discourage this because it uses `docker run --privileged` (which is not safer than giving root access) and [currently has some bugs](https://github.com/managarm/bootstrap-managarm/issues/103).
-
-	Going with method 1 will require `libguestfs` to be installed on the host.
-	After installing `libguestfs`, if you encounter errors while making the image it might be necessary to run the following:
-	```bash
-	sudo install -d /usr/lib/guestfs
-	sudo update-libguestfs-appliance
-	```
-1.  Add the following to `build/bootstrap-site.yml`, depending on what mount method you have chosen:
-	```yaml
-	define_options:
-	  mount-using: 'loopback' # or guestfs/docker
-	```
 1.  Create the image:
 	```bash
 	xbstrap run initialize-empty-image
 	```
 1.  Copy the system onto it:
 	```bash
-	xbstrap run make-image
+	xbstrap run make-image # or: xbstrap run make-image-rootless
 	```
+    Either `make-image` or `make-image-rootless` works, with the following trade-offs:
+	* `make-image` mounts the image via a loopback device. It is the fastest method, but it asks for root privileges via `sudo` (or `doas` or `su`).
+	  It runs on the host instead of in the container, so the host needs `rsync`, `losetup`, `sfdisk`, `mkfs.vfat`, `mke2fs`, `e2fsck` and `debugfs`.
+	* `make-image-rootless` does not need root privileges on the host. It mounts the image via `fuse2fs` inside the `cbuildrt` container, which is slower.
+
 1.  Launch the image using QEMU:
 	```bash
 	xbstrap run qemu # Note that you can combine the last two operations: xbstrap run make-image qemu
 	```
 
 Alternatively, you can call the necessary scripts manually (check their help messages for more information):
-* `../src/managarm/tools/gen-initrd.py` and `../src/scripts/update-image.py` for copying the files onto the image (the mount method can be selected with the `--mount-using` argument)
+* `../src/scripts/update-image.py` for copying the files onto the image (the mount method can be selected with the `--mount-using` argument)
 * `../src/scripts/vm-util.py qemu` for launching QEMU
