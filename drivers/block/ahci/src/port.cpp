@@ -74,13 +74,6 @@ Port::Port(
   staggeredSpinUp_{staggeredSpinUp} {}
 
 async::result<bool> Port::init() {
-	// If PxSSTS.DET != 3, PxSSTS.IPM != 1 at this point, then ignore the device for now
-	auto status = regs_.load(regs::status);
-	auto ipm = (status >> 8) & 0xF;
-	auto det = status & 0xF;
-	if (ipm != 1 || det != 3)
-		co_return false;
-
 	// 10.1.2, part 3:
 	// Clear PxCMD.ST
 	auto cas = regs_.load(regs::commandAndStatus);
@@ -100,28 +93,26 @@ async::result<bool> Port::init() {
 			return !(regs_.load(regs::commandAndStatus) & flags::cmd::fisReceiveRunning); });
 	assert(success);
 
+	// With CAP.SSS, the HBA reset clears PxCMD.SUD, and the device stays offline until it is set.
 	if (staggeredSpinUp_) {
-		// Spin up device
-		auto cas = regs_.load(regs::commandAndStatus);
+		cas = regs_.load(regs::commandAndStatus);
 		regs_.store(regs::commandAndStatus, cas | flags::cmd::spinUpDevice);
-
-		// Wait up to 10ms for PxSSTS.DET = 1 or 3 (AHCI spec: 10.1.1, SATA 3.2 spec: 17.7.2)
-		auto success = co_await helix::kindaBusyWait(10'000'000, [&]() {
-			auto det = regs_.load(regs::status) & 0xF;
-			// return det == 1 || det == 3;
-			return det == 3;
-		});
-		if (!success) {
-			printf("block/ahci: Couldn't spin up port %d\n", portIndex_);
-			co_return false;
-		}
 	}
 
-	// TODO: If the port isn't available here, we may try a COMRESET (AHCI spec 10.4.2)
+	// The HBA reset drops the link; real PHYs take a while to renegotiate (QEMU does not).
+	// TODO: If the link does not come up, we may try a COMRESET (AHCI spec 10.4.2)
+	co_await helix::kindaBusyWait(1'000'000'000, [&]() {
+		return (regs_.load(regs::status) & 0xF) == 3;
+	});
 
-	status = regs_.load(regs::status);
-	ipm = (status >> 8) & 0xF;
-	det = status & 0xF;
+	auto status = regs_.load(regs::status);
+	auto ipm = (status >> 8) & 0xF;
+	auto det = status & 0xF;
+	if (ipm != 1 || det != 3) {
+		printf("block/ahci: No link on port %d, PxSSTS %#x\n", portIndex_, status);
+		co_return false;
+	}
+
 	printf("block/ahci: Discovered port %d, PxSSTS.IPM %#x, PxSSTS.DET %#x\n", portIndex_, ipm, det);
 
 	co_return true;
