@@ -238,7 +238,30 @@ bool canBlockForMemory();
 // Zero if the context cannot block (see canBlockForMemory()).
 size_t currentContextFloor();
 
-// Wakes the reclaimer since PhysicalChunkAllocator::pressureShortfall() may have become non-zero.
+// Pinnable pages that the reclaimer should work towards.
+struct ReclaimTarget {
+	size_t goal = 0;
+	// AllocationPolicy::floor of the allocations that the target is for.
+	// Only pages charged to hierarchies whose floor is at least this high may be evicted.
+	size_t floor = 0;
+};
+
+// Targets of the reclaimer. Only targets that are not met yet are set.
+struct ReclaimDemand {
+	// The first waiter can only be served once there are goal pinnable pages.
+	frg::optional<ReclaimTarget> waiter;
+	// Background reclaim: an allocation left less than reclaimResumeHeadroom_ above its floor.
+	frg::optional<ReclaimTarget> background;
+	// pinnablePages_() at the time the targets were checked; shortfalls are goal - pinnable.
+	size_t pinnable = 0;
+
+	explicit operator bool () const {
+		return waiter || background;
+	}
+};
+
+// Wakes the reclaimer since PhysicalChunkAllocator::reclaimDemand() may have changed
+// (other than by meeting its targets).
 // Implemented by the reclaimer. Callers must not hold the physical allocator's lock.
 void handleReclaimPressure();
 
@@ -412,9 +435,7 @@ public:
 		return _freePages.load(std::memory_order_relaxed);
 	}
 
-	// Pinnable pages that the reclaimer should free: an allocation left less than
-	// reclaimResumeHeadroom_ above its floor, and the resulting reclaim target is not met yet.
-	size_t pressureShortfall();
+	ReclaimDemand reclaimDemand();
 
 private:
 	void updateFloors_();
@@ -428,14 +449,22 @@ private:
 	size_t floorFor_(AllocationClass cls);
 
 	// Called for allocations of all classes (successful or not).
-	// Raises reclaimTarget_ if the allocation left less than reclaimResumeHeadroom_ above its floor.
+	// Sets backgroundFloor_ if the allocation left less than reclaimResumeHeadroom_ above its floor,
+	// unless a lower or equal floor is pending.
 	// Sets kickReclaim to true if handleReclaimPressure() needs to be called after dropping _mutex (and doesn't modify it otherwise).
 	// Callers must hold _mutex.
 	void noteAllocation_(AllocationPolicy policy, bool &kickReclaim);
 
-	// Clears reclaimTarget_ if it is met, such that noteAllocation_() can raise a new target.
+	// Clears backgroundFloor_ if its target is met, such that noteAllocation_() can raise a new target.
 	// Callers must hold _mutex.
 	void updateReclaimTarget_();
+
+	// Pinnable pages that background reclaim works towards for the given AllocationPolicy::floor.
+	// Callers must hold _mutex.
+	size_t reclaimTargetOf_(size_t floor);
+
+	// Callers must hold _mutex.
+	ReclaimDemand demand_();
 
 	// Floor that an allocation with the given floor must respect.
 	// Allocations must not overtake a waiter with an equal or lower floor, so they get no
@@ -471,8 +500,9 @@ private:
 
 	// Completes waiting allocations in the order of waitTree_ until the first node
 	// cannot be served.
+	// Sets kickReclaim to true if another node becomes the first node (and doesn't modify it otherwise).
 	// Callers must hold _mutex.
-	void serveWaiters_(WaitList &served);
+	void serveWaiters_(WaitList &served, bool &kickReclaim);
 
 	// Must be called without holding _mutex.
 	static void completeServed_(WaitList &served);
@@ -544,13 +574,10 @@ private:
 	// starts and stops; see noteAllocation_(). Set by updateFloors_().
 	size_t reclaimResumeHeadroom_ = 0;
 	size_t reclaimSuspendHeadroom_ = 0;
-	// Allocations whose AllocationPolicy::floor exceeds this do not raise the reclaim target.
-	// Set by updateFloors_().
-	size_t maxAssistedFloor_ = 0;
 
-	// Pinnable pages that the reclaimer works towards, or zero if there is no target.
-	// Protected by _mutex.
-	size_t reclaimTarget_ = 0;
+	// Lowest AllocationPolicy::floor of the allocations that left less than reclaimResumeHeadroom_
+	// above their floor; see noteAllocation_(). Protected by _mutex.
+	frg::optional<size_t> backgroundFloor_;
 
 	// Waiting allocations, served in the order of WaitNodeLess. Protected by _mutex.
 	WaitTree waitTree_;

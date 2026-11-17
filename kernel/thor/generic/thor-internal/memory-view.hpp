@@ -99,6 +99,10 @@ struct CacheBundle {
 	virtual void markDirty(CachePage *page) = 0;
 
 private:
+	// Floor of the hierarchy that the pages are charged to; see ReclaimTarget::floor.
+	// Set by MemoryReclaimer::registerBundle().
+	size_t reclaimFloor_ = 0;
+
 	frg::ticket_spinlock reclaimMutex_;
 
 	// One list of pages per generation.
