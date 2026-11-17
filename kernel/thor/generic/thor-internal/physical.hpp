@@ -238,7 +238,27 @@ bool canBlockForMemory();
 // Zero if the context cannot block (see canBlockForMemory()).
 size_t currentContextFloor();
 
-// Wakes the reclaimer since PhysicalChunkAllocator::pressureShortfall() may have become non-zero.
+// Pinnable pages that the reclaimer should work towards.
+struct ReclaimTarget {
+	size_t goal = 0;
+};
+
+// Targets of the reclaimer. Only targets that are not met yet are set.
+struct ReclaimDemand {
+	// The first waiter can only be served once there are goal pinnable pages.
+	frg::optional<ReclaimTarget> waiter;
+	// Background reclaim: an allocation left less than reclaimResumeHeadroom_ above its floor.
+	frg::optional<ReclaimTarget> background;
+	// pinnablePages_() at the time the targets were checked; shortfalls are goal - pinnable.
+	size_t pinnable = 0;
+
+	explicit operator bool () const {
+		return waiter || background;
+	}
+};
+
+// Wakes the reclaimer since PhysicalChunkAllocator::reclaimDemand() may have changed
+// (other than by meeting its targets).
 // Implemented by the reclaimer. Callers must not hold the physical allocator's lock.
 void handleReclaimPressure();
 
@@ -412,9 +432,7 @@ public:
 		return _freePages.load(std::memory_order_relaxed);
 	}
 
-	// Pinnable pages that the reclaimer should free: an allocation left less than
-	// reclaimResumeHeadroom_ above its floor, and the resulting reclaim target is not met yet.
-	size_t pressureShortfall();
+	ReclaimDemand reclaimDemand();
 
 private:
 	void updateFloors_();
@@ -436,6 +454,9 @@ private:
 	// Clears reclaimTarget_ if it is met, such that noteAllocation_() can raise a new target.
 	// Callers must hold _mutex.
 	void updateReclaimTarget_();
+
+	// Callers must hold _mutex.
+	ReclaimDemand demand_();
 
 	// Floor that an allocation with the given floor must respect.
 	// Allocations must not overtake a waiter with an equal or lower floor, so they get no
@@ -471,8 +492,9 @@ private:
 
 	// Completes waiting allocations in the order of waitTree_ until the first node
 	// cannot be served.
+	// Sets kickReclaim to true if another node becomes the first node (and doesn't modify it otherwise).
 	// Callers must hold _mutex.
-	void serveWaiters_(WaitList &served);
+	void serveWaiters_(WaitList &served, bool &kickReclaim);
 
 	// Must be called without holding _mutex.
 	static void completeServed_(WaitList &served);

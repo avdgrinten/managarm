@@ -340,8 +340,8 @@ struct MemoryReclaimer {
 				// Whether to wait until addPage(), handlePressure() or the retry timer re-arms us.
 				bool waitForRearm = paused_.load(std::memory_order_relaxed);
 				if(!waitForRearm) {
-					if(auto shortfall = physicalAllocator->pressureShortfall()) {
-						runRound_(shortfall);
+					if(auto demand = physicalAllocator->reclaimDemand()) {
+						runRound_(demand);
 						continue;
 					}
 					// The next contended episode starts with the shortest retry delay again.
@@ -358,7 +358,7 @@ struct MemoryReclaimer {
 							return false;
 						if(waitForRearm)
 							return paused_.load(std::memory_order_relaxed);
-						return !physicalAllocator->pressureShortfall();
+						return !physicalAllocator->reclaimDemand();
 					}),
 					[] (auto) {}
 				));
@@ -382,10 +382,17 @@ private:
 	static constexpr uint64_t minRetryDelayNs = 10'000'000;
 	static constexpr uint64_t maxRetryDelayNs = 1'000'000'000;
 
-	// Posts pages towards the given shortfall of the target.
+	// Posts pages towards the targets of the reclaim demand.
 	// Waits until the bundles have evicted or averted all posted pages.
-	// Sets paused_ if the round shows that the target cannot be met.
-	void runRound_(size_t shortfall) {
+	// Sets paused_ if the round shows that the targets cannot be met.
+	void runRound_(ReclaimDemand demand) {
+		// Rounds cover the larger shortfall, such that queued waiters do not need a round each.
+		size_t shortfall = 0;
+		if(demand.waiter)
+			shortfall = demand.waiter->goal - demand.pinnable;
+		if(demand.background)
+			shortfall = frg::max(shortfall, demand.background->goal - demand.pinnable);
+
 		auto evictedBefore = numEvicted_.load(std::memory_order_relaxed);
 		auto posted = evictPages_(frg::min(shortfall, maxEvictBatch));
 		if(!posted) {
@@ -1814,7 +1821,7 @@ coroutine<void> ManagedSpace::_runDrainLoop() {
 			// Skip the deadline under memory pressure such that dirty pages become reclaimable immediately.
 			// TODO: Pressure is only sampled before we sleep. The reclaimer could expedite the writeback
 			//       instead, since it is woken by handleReclaimPressure().
-			if(tortureUncaching || physicalAllocator->pressureShortfall())
+			if(tortureUncaching || physicalAllocator->reclaimDemand())
 				break;
 			if(!deadline || getClockNanos() >= deadline)
 				break;

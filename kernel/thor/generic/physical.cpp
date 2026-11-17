@@ -396,6 +396,8 @@ void PhysicalChunkAllocator::startWait_(WaitNode *node) {
 			node->seq = nextSeq_++;
 			node->queued = true;
 			waitTree_.insert(node);
+			if(waitTree_.first() == node)
+				kickReclaim = true;
 		} else {
 			node->result = allocateFungible_(node->kind, node->numPages, node->floor);
 			completed = true;
@@ -411,6 +413,7 @@ void PhysicalChunkAllocator::startWait_(WaitNode *node) {
 
 void PhysicalChunkAllocator::cancelWait_(WaitNode *node) {
 	WaitList served;
+	bool kickReclaim = false;
 	{
 		auto irqLock = frg::guard(&irqMutex());
 		auto lock = frg::guard(&_mutex);
@@ -424,10 +427,15 @@ void PhysicalChunkAllocator::cancelWait_(WaitNode *node) {
 		node->result = std::unexpected{Error::cancelled};
 		served.push_back(node);
 		// Only the first node prevents other nodes from being served.
-		if(wasFirst)
-			serveWaiters_(served);
+		if(wasFirst) {
+			serveWaiters_(served, kickReclaim);
+			if(waitTree_.first())
+				kickReclaim = true;
+		}
 	}
 
+	if(kickReclaim)
+		handleReclaimPressure();
 	completeServed_(served);
 }
 
@@ -440,14 +448,11 @@ size_t PhysicalChunkAllocator::floorFor_(AllocationClass cls) {
 	__builtin_trap();
 }
 
-size_t PhysicalChunkAllocator::pressureShortfall() {
+ReclaimDemand PhysicalChunkAllocator::reclaimDemand() {
 	auto irqLock = frg::guard(&irqMutex());
 	auto lock = frg::guard(&_mutex);
 
-	updateReclaimTarget_();
-	if(!reclaimTarget_)
-		return 0;
-	return reclaimTarget_ - pinnablePages_();
+	return demand_();
 }
 
 void PhysicalChunkAllocator::noteAllocation_(AllocationPolicy policy, bool &kickReclaim) {
@@ -459,9 +464,6 @@ void PhysicalChunkAllocator::noteAllocation_(AllocationPolicy policy, bool &kick
 	// The marks are relative to the user floor for all classes, such that reclaim starts
 	// before user allocations have to wait.
 	auto floor = floorFor_(AllocationClass::user) + policy.floor;
-	// Allocations at or above the floor of the first waiter only proceed once it is served.
-	if(auto first = waitTree_.first(); first && first->floor <= floor)
-		floor += first->numPages;
 	if(pinnablePages_() >= floor + reclaimResumeHeadroom_)
 		return;
 	auto target = floor + reclaimSuspendHeadroom_;
@@ -474,6 +476,19 @@ void PhysicalChunkAllocator::noteAllocation_(AllocationPolicy policy, bool &kick
 void PhysicalChunkAllocator::updateReclaimTarget_() {
 	if(reclaimTarget_ && pinnablePages_() >= reclaimTarget_)
 		reclaimTarget_ = 0;
+}
+
+ReclaimDemand PhysicalChunkAllocator::demand_() {
+	ReclaimDemand demand{.pinnable = pinnablePages_()};
+	if(demand.pinnable < reclaimTarget_)
+		demand.background = ReclaimTarget{.goal = reclaimTarget_};
+	if(auto first = waitTree_.first()) {
+		// Like noteAllocation_(), larger floors get no assistance from the reclaimer.
+		auto goal = first->floor + first->numPages;
+		if(first->floor - floorFor_(first->cls) <= maxAssistedFloor_ && demand.pinnable < goal)
+			demand.waiter = ReclaimTarget{.goal = goal};
+	}
+	return demand;
 }
 
 size_t PhysicalChunkAllocator::effectiveFloor_(size_t floor) {
@@ -671,15 +686,18 @@ void PhysicalChunkAllocator::accountAllocation_(Allocation allocation, size_t nu
 
 void PhysicalChunkAllocator::free(PhysicalAddr address, size_t size, PhysicalKind kind) {
 	WaitList served;
+	bool kickReclaim = false;
 	{
 		auto irqLock = frg::guard(&irqMutex());
 		auto lock = frg::guard(&_mutex);
 
 		freeChunk_(address, size, kind);
-		serveWaiters_(served);
+		serveWaiters_(served, kickReclaim);
 		updateReclaimTarget_();
 	}
 
+	if(kickReclaim)
+		handleReclaimPressure();
 	completeServed_(served);
 }
 
@@ -721,8 +739,9 @@ void PhysicalChunkAllocator::freeChunk_(PhysicalAddr address, size_t size, Physi
 	assert(!"Physical page is not part of any region");
 }
 
-void PhysicalChunkAllocator::serveWaiters_(WaitList &served) {
+void PhysicalChunkAllocator::serveWaiters_(WaitList &served, bool &kickReclaim) {
 	// Serving only the first node ensures that smaller nodes cannot overtake larger ones.
+	bool anyServed = false;
 	while(auto node = waitTree_.first()) {
 		if(!canAllocateFungible_(node->numPages, node->floor))
 			break;
@@ -730,7 +749,10 @@ void PhysicalChunkAllocator::serveWaiters_(WaitList &served) {
 		node->queued = false;
 		node->result = allocateFungible_(node->kind, node->numPages, node->floor);
 		served.push_back(node);
+		anyServed = true;
 	}
+	if(anyServed && waitTree_.first())
+		kickReclaim = true;
 }
 
 void PhysicalChunkAllocator::completeServed_(WaitList &served) {
