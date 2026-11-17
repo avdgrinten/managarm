@@ -353,6 +353,7 @@ struct MemoryReclaimer {
 
 				auto demand = physicalAllocator->reclaimDemand();
 				auto stall = stallFloor_.load(std::memory_order_relaxed);
+				logStall_(demand, stall);
 				if(auto round = pickRound_(demand, stall)) {
 					runRound_(*round);
 					continue;
@@ -396,6 +397,52 @@ private:
 	static constexpr uint64_t maxRetryDelayNs = 1'000'000'000;
 
 	static constexpr size_t noStall = ~size_t{0};
+
+	// Minimal time between the messages of logStall_() unless the floor of a target decreases
+	// (including targets that the last message did not report).
+	static constexpr uint64_t stallLogIntervalNs = 1'000'000'000;
+
+	// Logs the targets of the demand that are stalled (see stallFloor_).
+	// A target is stalled even if pickRound_() picks a round with a lower floor: that round
+	// only helps the target by evicting pages that the target's floor protects.
+	void logStall_(ReclaimDemand demand, size_t stall) {
+		frg::optional<ReclaimTarget> stalledWaiter;
+		frg::optional<ReclaimTarget> stalledBackground;
+		if(demand.waiter && demand.waiter->floor >= stall)
+			stalledWaiter = demand.waiter;
+		if(demand.background && demand.background->floor >= stall)
+			stalledBackground = demand.background;
+		if(!stalledWaiter && !stalledBackground)
+			return;
+
+		auto waiterFloor = stalledWaiter ? stalledWaiter->floor : noStall;
+		auto backgroundFloor = stalledBackground ? stalledBackground->floor : noStall;
+
+		// Lower floors affect allocations of higher priority and newly stalled targets change the
+		// severity (e.g., a stalled waiter turns pressure into OOM), so they are worth another message.
+		auto now = getClockNanos();
+		if(waiterFloor >= lastStallLogWaiterFloor_
+				&& backgroundFloor >= lastStallLogBackgroundFloor_
+				&& now - lastStallLogNs_ < stallLogIntervalNs)
+			return;
+		lastStallLogWaiterFloor_ = waiterFloor;
+		lastStallLogBackgroundFloor_ = backgroundFloor;
+		lastStallLogNs_ = now;
+
+		// TODO: Report the same data (i.e., floor and shortfall both for waiters and background) to userspace.
+		//       A stalled waiter means that an allocation cannot make progress (OOM)
+		//       while a stalled background target only indicates memory pressure.
+		// Stalled targets share stallFloor_, so they are reported together.
+		auto logger = warningLogger();
+		logger << "thor: Reclaim is " << (stallIsContended_ ? "contended" : "exhausted");
+		if(stalledWaiter)
+			logger << ". First waiter at floor " << ((stalledWaiter->floor << kPageShift) >> 10)
+					<< " KiB is " << (stalledWaiter->goal - demand.pinnable) << " pages short";
+		if(stalledBackground)
+			logger << ". Background at floor " << ((stalledBackground->floor << kPageShift) >> 10)
+					<< " KiB is " << (stalledBackground->goal - demand.pinnable) << " pages short";
+		logger << frg::endlog;
+	}
 
 	struct Round {
 		// Only bundles whose floor is at least this high are evicted; see ReclaimTarget::floor.
@@ -768,6 +815,12 @@ private:
 	size_t lastRoundFloor_ = 0;
 	// Whether stallFloor_ was last set by stallContended_(). Only accessed by the reclaimer fiber.
 	bool stallIsContended_ = false;
+
+	// See logStall_(). Only accessed by the reclaimer fiber.
+	// Floors of the targets in the last message, noStall for targets that it did not report.
+	size_t lastStallLogWaiterFloor_ = noStall;
+	size_t lastStallLogBackgroundFloor_ = noStall;
+	uint64_t lastStallLogNs_ = 0;
 
 	// Protected against modification by mutex_.
 	frg::intrusive_rcu_list<
