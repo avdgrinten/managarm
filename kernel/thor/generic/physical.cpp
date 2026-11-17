@@ -157,10 +157,6 @@ void PhysicalChunkAllocator::updateFloors_() {
 	auto total = numTotalPages();
 	reclaimResumeHeadroom_ = total / 100;
 	reclaimSuspendHeadroom_ = total / 50;
-	// Floors of up to 5% of memory (but at least 128 MiB) on top of the user floor get
-	// assistance from the reclaimer.
-	constexpr size_t minAssistedFloor = size_t{128} << (20 - kPageShift);
-	maxAssistedFloor_ = frg::min(frg::max(total / 20, minAssistedFloor), total / 4);
 }
 
 void PhysicalChunkAllocator::assignRootClasses(size_t reserveBytes) {
@@ -456,11 +452,6 @@ ReclaimDemand PhysicalChunkAllocator::reclaimDemand() {
 }
 
 void PhysicalChunkAllocator::noteAllocation_(AllocationPolicy policy, bool &kickReclaim) {
-	// Larger floors get no assistance from the reclaimer.
-	// Otherwise, a floor that can never be met would make the reclaimer evict pages forever.
-	if(policy.floor > maxAssistedFloor_)
-		return;
-
 	// The marks are relative to the user floor for all classes, such that reclaim starts
 	// before user allocations have to wait.
 	auto floor = floorFor_(AllocationClass::user) + policy.floor;
@@ -491,10 +482,9 @@ ReclaimDemand PhysicalChunkAllocator::demand_() {
 			demand.background = ReclaimTarget{.goal = goal, .floor = *backgroundFloor_};
 	}
 	if(auto first = waitTree_.first()) {
-		// Like noteAllocation_(), larger floors get no assistance from the reclaimer.
 		auto floor = first->floor - floorFor_(first->cls);
 		auto goal = first->floor + first->numPages;
-		if(floor <= maxAssistedFloor_ && demand.pinnable < goal)
+		if(demand.pinnable < goal)
 			demand.waiter = ReclaimTarget{.goal = goal, .floor = floor};
 	}
 	return demand;

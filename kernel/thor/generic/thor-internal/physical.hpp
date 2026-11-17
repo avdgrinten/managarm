@@ -574,9 +574,6 @@ private:
 	// starts and stops; see noteAllocation_(). Set by updateFloors_().
 	size_t reclaimResumeHeadroom_ = 0;
 	size_t reclaimSuspendHeadroom_ = 0;
-	// Allocations whose AllocationPolicy::floor exceeds this do not raise the reclaim target.
-	// Set by updateFloors_().
-	size_t maxAssistedFloor_ = 0;
 
 	// Lowest AllocationPolicy::floor of the allocations that left less than reclaimResumeHeadroom_
 	// above their floor; see noteAllocation_(). Protected by _mutex.
