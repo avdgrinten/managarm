@@ -466,27 +466,36 @@ void PhysicalChunkAllocator::noteAllocation_(AllocationPolicy policy, bool &kick
 	auto floor = floorFor_(AllocationClass::user) + policy.floor;
 	if(pinnablePages_() >= floor + reclaimResumeHeadroom_)
 		return;
-	auto target = floor + reclaimSuspendHeadroom_;
-	if(target <= reclaimTarget_)
+	// The lowest floor takes precedence: higher floors have higher targets,
+	// so they are only worth evicting for once its target is met (and they trip again).
+	if(backgroundFloor_ && *backgroundFloor_ <= policy.floor)
 		return;
-	reclaimTarget_ = target;
+	backgroundFloor_ = policy.floor;
 	kickReclaim = true;
 }
 
 void PhysicalChunkAllocator::updateReclaimTarget_() {
-	if(reclaimTarget_ && pinnablePages_() >= reclaimTarget_)
-		reclaimTarget_ = 0;
+	if(backgroundFloor_ && pinnablePages_() >= reclaimTargetOf_(*backgroundFloor_))
+		backgroundFloor_ = frg::null_opt;
+}
+
+size_t PhysicalChunkAllocator::reclaimTargetOf_(size_t floor) {
+	return floorFor_(AllocationClass::user) + floor + reclaimSuspendHeadroom_;
 }
 
 ReclaimDemand PhysicalChunkAllocator::demand_() {
 	ReclaimDemand demand{.pinnable = pinnablePages_()};
-	if(demand.pinnable < reclaimTarget_)
-		demand.background = ReclaimTarget{.goal = reclaimTarget_};
+	if(backgroundFloor_) {
+		auto goal = reclaimTargetOf_(*backgroundFloor_);
+		if(demand.pinnable < goal)
+			demand.background = ReclaimTarget{.goal = goal, .floor = *backgroundFloor_};
+	}
 	if(auto first = waitTree_.first()) {
 		// Like noteAllocation_(), larger floors get no assistance from the reclaimer.
+		auto floor = first->floor - floorFor_(first->cls);
 		auto goal = first->floor + first->numPages;
-		if(first->floor - floorFor_(first->cls) <= maxAssistedFloor_ && demand.pinnable < goal)
-			demand.waiter = ReclaimTarget{.goal = goal};
+		if(floor <= maxAssistedFloor_ && demand.pinnable < goal)
+			demand.waiter = ReclaimTarget{.goal = goal, .floor = floor};
 	}
 	return demand;
 }
