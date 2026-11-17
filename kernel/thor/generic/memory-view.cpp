@@ -322,38 +322,32 @@ struct MemoryReclaimer {
 							<< " KiB in use" << frg::endlog;
 				}
 
+				// Start a new generation when the number of page bumps crosses a threshold.
+				if(shouldRotate_())
+					rotateGenerations_();
+
+				if(tortureUncaching) {
+					evictPages_(~size_t{0});
+					KernelFiber::asyncBlockCurrent(generalTimerEngine()->sleepFor(10'000'000));
+					continue;
+				}
+
 				// The target may have changed since we paused.
 				// Consuming the flag before reading the target ensures that later changes wake us.
 				if(pressurePending_.exchange(false, std::memory_order_relaxed))
 					paused_.store(false, std::memory_order_relaxed);
 
 				// Whether to wait until addPage(), handlePressure() or the retry timer re-arms us.
-				bool waitForRearm = false;
-				if(tortureUncaching) {
-					evictPages_(~size_t{0});
-				}else if(paused_.load(std::memory_order_relaxed)) {
-					waitForRearm = true;
-				}else if(physicalAllocator->pressureShortfall()) {
-					auto result = reclaimShortfall_();
-					if(result == ReclaimResult::exhausted) {
-						if(logReclaim)
-							infoLogger() << "thor: Reclamation is exhausted" << frg::endlog;
-						waitForRearm = true;
-					}else if(result == ReclaimResult::contended) {
-						if(logReclaim)
-							infoLogger() << "thor: Reclamation is contended" << frg::endlog;
-						armRetry_();
-						waitForRearm = true;
+				bool waitForRearm = paused_.load(std::memory_order_relaxed);
+				if(!waitForRearm) {
+					if(auto shortfall = physicalAllocator->pressureShortfall()) {
+						runRound_(shortfall);
+						continue;
 					}
-				}
-
-				// Start a new generation when the number of page bumps crosses a threshold.
-				if(shouldRotate_())
-					rotateGenerations_();
-
-				if(tortureUncaching) {
-					KernelFiber::asyncBlockCurrent(generalTimerEngine()->sleepFor(10'000'000));
-					continue;
+					// The next contended episode starts with the shortest retry delay again.
+					retryDelayNs_ = minRetryDelayNs;
+					roundsWithoutProgress_ = 0;
+					emptyPosts_ = 0;
 				}
 
 				// handleReclaimPressure() raises wakeEvent_ from allocation paths.
@@ -378,86 +372,79 @@ private:
 	static constexpr uint8_t oldestGeneration = 0xFF;
 	static_assert(oldestGeneration >= CacheBundle::numGenerations);
 
-	// Pages to post per round of reclaimShortfall_().
+	// Pages to post per round of runRound_().
 	// Bounds over-eviction, since the shortfall is re-measured between batches.
 	// Also ensure that evictPages_() does not do too much work without dropping locks.
 	static constexpr size_t maxEvictBatch = 2048;
-	// Rounds without evicted pages after which reclaimShortfall_() pauses.
+	// Rounds without evicted pages after which runRound_() pauses.
 	static constexpr unsigned int maxRoundsWithoutProgress = 4;
 	// Bounds of the delay after which the retry timer re-arms a contended reclaimer.
 	static constexpr uint64_t minRetryDelayNs = 10'000'000;
 	static constexpr uint64_t maxRetryDelayNs = 1'000'000'000;
 
-	enum class ReclaimResult {
-		// The target is met.
-		met,
-		// There are no pages that could be evicted. Only addPage() and handlePressure() can change that.
-		exhausted,
-		// Rounds do not evict pages although there are candidates: the bundles averted all
-		// evictions (for example, since the pages were looked up while the eviction was pending),
-		// or evictPages_() repeatedly found no pages that the following count did find.
-		// Pages that were registered before we paused do not re-arm us, the retry timer does.
-		contended,
-	};
-
-	// Posts pages until pressureShortfall() drops to zero.
-	// Each round waits until the bundles have evicted or averted all posted pages.
-	// Sets paused_ unless the target is met.
-	ReclaimResult reclaimShortfall_() {
-		unsigned int roundsWithoutProgress = 0;
-		unsigned int emptyPosts = 0;
-		while(true) {
-			auto shortfall = physicalAllocator->pressureShortfall();
-			if(!shortfall) {
-				// The next contended episode starts with the shortest retry delay again.
-				retryDelayNs_ = minRetryDelayNs;
-				return ReclaimResult::met;
+	// Posts pages towards the given shortfall of the target.
+	// Waits until the bundles have evicted or averted all posted pages.
+	// Sets paused_ if the round shows that the target cannot be met.
+	void runRound_(size_t shortfall) {
+		auto evictedBefore = numEvicted_.load(std::memory_order_relaxed);
+		auto posted = evictPages_(frg::min(shortfall, maxEvictBatch));
+		if(!posted) {
+			// Pages may have been registered after evictPages_() looked at their bundles.
+			pause_();
+			if(!countCandidates_()) {
+				// There are no pages that could be evicted. Only addPage() and handlePressure() can change that.
+				if(logReclaim)
+					infoLogger() << "thor: Reclamation is exhausted" << frg::endlog;
+				roundsWithoutProgress_ = 0;
+				emptyPosts_ = 0;
+				return;
 			}
-
-			auto evictedBefore = numEvicted_.load(std::memory_order_relaxed);
-			auto posted = evictPages_(frg::min(shortfall, maxEvictBatch));
-			if(!posted) {
-				// Pages may have been registered after evictPages_() looked at their bundles.
-				pause_();
-				if(!countCandidates_())
-					return ReclaimResult::exhausted;
-				paused_.store(false, std::memory_order_relaxed);
-				// The new pages were not tried yet, so this is not contention.
-				// Still, bound the number of retries that do not wait for the bundles.
-				if(++emptyPosts >= maxRoundsWithoutProgress) {
-					pause_();
-					return ReclaimResult::contended;
-				}
-				continue;
-			}
-			emptyPosts = 0;
-			if(logReclaim)
-				infoLogger() << "thor: Reclamation posts " << posted << " pages" << frg::endlog;
-
-			while(numOutstanding_.load(std::memory_order_acquire)) {
-				KernelFiber::asyncBlockCurrent(async::transform(
-					feedbackEvent_.async_wait_if([this] -> bool {
-						return numOutstanding_.load(std::memory_order_acquire);
-					}),
-					[] (auto) {}
-				));
-			}
-
-			// Pages that the bundles averted (e.g., since they are in use) do not count as progress.
-			if(numEvicted_.load(std::memory_order_relaxed) != evictedBefore) {
-				roundsWithoutProgress = 0;
-				retryDelayNs_ = minRetryDelayNs;
-			}else if(++roundsWithoutProgress >= maxRoundsWithoutProgress) {
-				pause_();
-				return ReclaimResult::contended;
-			}
+			paused_.store(false, std::memory_order_relaxed);
+			// The new pages were not tried yet, so this is not contention.
+			// Still, bound the number of retries that do not wait for the bundles.
+			if(++emptyPosts_ >= maxRoundsWithoutProgress)
+				pauseContended_();
+			return;
 		}
+		emptyPosts_ = 0;
+		if(logReclaim)
+			infoLogger() << "thor: Reclamation posts " << posted << " pages" << frg::endlog;
+
+		while(numOutstanding_.load(std::memory_order_acquire)) {
+			KernelFiber::asyncBlockCurrent(async::transform(
+				feedbackEvent_.async_wait_if([this] -> bool {
+					return numOutstanding_.load(std::memory_order_acquire);
+				}),
+				[] (auto) {}
+			));
+		}
+
+		// Pages that the bundles averted (e.g., since they are in use) do not count as progress.
+		if(numEvicted_.load(std::memory_order_relaxed) != evictedBefore) {
+			roundsWithoutProgress_ = 0;
+			retryDelayNs_ = minRetryDelayNs;
+		}else if(++roundsWithoutProgress_ >= maxRoundsWithoutProgress) {
+			pauseContended_();
+		}
+	}
+
+	// Rounds do not evict pages although there are candidates: the bundles averted all
+	// evictions (for example, since the pages were looked up while the eviction was pending),
+	// or evictPages_() repeatedly found no pages that the following count did find.
+	// Pages that were registered before we paused do not re-arm us, the retry timer does.
+	void pauseContended_() {
+		if(logReclaim)
+			infoLogger() << "thor: Reclamation is contended" << frg::endlog;
+		pause_();
+		armRetry_();
+		roundsWithoutProgress_ = 0;
+		emptyPosts_ = 0;
 	}
 
 	void pause_() {
 		// Take mutex_ such that bundles that registerBundle() publishes later observe paused_ in addPage().
 		// Bundles that were published earlier are visited by a subsequent countCandidates_()
-		// before reclaimShortfall_() reports exhaustion. Taking reclaimMutex_ in countCandidates_()
+		// before runRound_() reports exhaustion. Taking reclaimMutex_ in countCandidates_()
 		// is enough to ensure that they observe paused_ in addPage() calls that are ordered after countCandidates_().
 		auto irqLock = frg::guard(&irqMutex());
 		auto lock = frg::guard(&mutex_);
@@ -710,7 +697,7 @@ private:
 	async::recurring_event feedbackEvent_;
 	// Set by handlePressure(), consumed by the reclaimer fiber.
 	std::atomic<bool> pressurePending_{false};
-	// Set while reclaimShortfall_() cannot meet the target (see pause_() and ReclaimResult).
+	// Set while runRound_() cannot meet the target (see pause_() and pauseContended_()).
 	// Cleared by addPage() and when pressurePending_ is consumed.
 	std::atomic<bool> paused_{false};
 
@@ -720,6 +707,11 @@ private:
 	> retryOp_;
 	std::atomic<bool> retryArmed_{false};
 	uint64_t retryDelayNs_ = minRetryDelayNs;
+
+	// Consecutive rounds of runRound_() without evicted pages and without posted pages.
+	// Only accessed by the reclaimer fiber.
+	unsigned int roundsWithoutProgress_ = 0;
+	unsigned int emptyPosts_ = 0;
 
 	// Protected against modification by mutex_.
 	frg::intrusive_rcu_list<
