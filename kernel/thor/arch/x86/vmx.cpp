@@ -211,10 +211,15 @@ namespace thor::vmx {
 
 		PageAccessor vmxonAccessor{vmxonRegion};
 		memset(vmxonAccessor.get(), 0, kPageSize);
-		size_t control = common::x86::rdmsr(0x3a);
-		if((control & (0x1 | 0x4)) != (0x1 | 0x04)) {
+		uint64_t control = common::x86::rdmsr(common::x86::kMsrIa32FeatureControl);
+		if(!(control & FEATURE_CONTROL_LOCK)) {
 			//Enabled outside of SMX and lock bit.
-			common::x86::wrmsr(0x3a, control | 0x1 | 0x4);
+			control |= FEATURE_CONTROL_LOCK;
+			control |= FEATURE_CONTROL_VMXON_OUTSIDE_SMX;
+			common::x86::wrmsr(common::x86::kMsrIa32FeatureControl, control);
+		} else {
+			// The MSR is read-only once the lock bit is set.
+			assert(control & FEATURE_CONTROL_VMXON_OUTSIDE_SMX);
 		}
 
 		uint64_t cr0;
