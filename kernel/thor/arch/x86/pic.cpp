@@ -824,7 +824,8 @@ namespace {
 			auto lock = frg::guard(&_chip->_mutex);
 
 			_chip->_storeRegister(kIoApicInts + _index * 2 + 1,
-					static_cast<uint32_t>(pin_word2::destination(0)));
+					static_cast<uint32_t>(pin_word2::destination(
+						static_cast<unsigned int>(getCpuData(0)->localApicId))));
 			_chip->_storeRegister(kIoApicInts + _index * 2,
 					static_cast<uint32_t>(pin_word1::vector(_vector)
 					| pin_word1::deliveryMode(0) | pin_word1::levelTriggered(_levelTriggered)
