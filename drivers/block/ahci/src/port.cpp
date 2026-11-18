@@ -16,6 +16,7 @@ namespace regs {
 	constexpr arch::scalar_register<uint32_t> interruptEnable{0x14};
 	constexpr arch::scalar_register<uint32_t> commandAndStatus{0x18};
 	constexpr arch::scalar_register<uint32_t> tfd{0x20};
+	constexpr arch::scalar_register<uint32_t> signature{0x24};
 	constexpr arch::scalar_register<uint32_t> status{0x28};
 	constexpr arch::scalar_register<uint32_t> sataControl{0x2C};
 	constexpr arch::scalar_register<uint32_t> sErr{0x30};
@@ -44,6 +45,11 @@ namespace flags {
 	namespace tfd {
 		constexpr uint32_t bsy = 1u << 7;
 		constexpr uint32_t drq = 1u << 3;
+	}
+
+	// Values of PxSIG (AHCI 1.3.1, 3.3.9), as reported by the device's first D2H Register FIS.
+	namespace signature {
+		constexpr uint32_t atapi = 0xEB140101;
 	}
 }
 
@@ -114,6 +120,12 @@ async::result<bool> Port::init() {
 	}
 
 	printf("block/ahci: Discovered port %d, PxSSTS.IPM %#x, PxSSTS.DET %#x\n", portIndex_, ipm, det);
+
+	auto signature = regs_.load(regs::signature);
+	if (signature == flags::signature::atapi) {
+		printf("block/ahci: Ignoring ATAPI device on port %d (PxSIG %#x)\n", portIndex_, signature);
+		co_return false;
+	}
 
 	co_return true;
 }

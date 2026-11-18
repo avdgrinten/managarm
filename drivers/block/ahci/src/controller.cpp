@@ -136,7 +136,6 @@ async::detached Controller::run() {
 	for (auto& port : activePorts_) {
 		if (!(co_await port->run())) {
 			dumpState_();
-			abort();
 		}
 	}
 }
