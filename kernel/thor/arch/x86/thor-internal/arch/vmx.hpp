@@ -7,6 +7,8 @@
 #include <thor-internal/arch/vlapic.hpp>
 
 namespace thor::vmx {
+	constexpr uint64_t FEATURE_CONTROL_LOCK              = 0x00000001;
+	constexpr uint64_t FEATURE_CONTROL_VMXON_OUTSIDE_SMX = 0x00000004;
 	constexpr uint64_t MSR_IA32_VMX_PINBASED_CTLS        = 0x00000481;
 	constexpr uint64_t PIN_BASED_VM_EXEC_CONTROLS        = 0x00004000;
 	constexpr uint64_t MSR_IA32_VMX_PROCBASED_CTLS       = 0x00000482;

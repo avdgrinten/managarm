@@ -506,6 +506,17 @@ static initgraph::Task enumerateCpuFeaturesTask{&globalInitEngine, "x86.enumerat
 			// Test for VMX.
 			if(!(common::x86::cpuid(0x1)[2] & (1 << 5)))
 				return false;
+			// Firmware-disabled VMX sets the lock bit, thus
+			// `IA32_FEATURE_CONTROL` is read-only.
+			auto featureControl = common::x86::rdmsr(common::x86::kMsrIa32FeatureControl);
+
+			const bool lock = (featureControl & vmx::FEATURE_CONTROL_LOCK);
+			const bool vmxOn = !(featureControl & vmx::FEATURE_CONTROL_VMXON_OUTSIDE_SMX);
+			if(lock && vmxOn) {
+				debugLogger() << "thor: VMX disabled by firmware"
+						<< frg::endlog;
+				return false;
+			}
 			// Test for secondary processor-based controls.
 			auto procBased = common::x86::rdmsr(0x482);
 			if(!((procBased >> 32) & (1 << 31)))
