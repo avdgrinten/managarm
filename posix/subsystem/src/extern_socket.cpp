@@ -14,7 +14,8 @@ struct Socket : File {
 	pollWait(Process *, uint64_t sequence, int mask,
 			async::cancellation_token cancellation) override {
 		auto resultOrError = co_await _file.pollWait(sequence, mask, cancellation);
-		assert(resultOrError);
+		if(!resultOrError)
+			co_return resultOrError.error() | toPosixError;
 		co_return resultOrError.value();
 	}
 

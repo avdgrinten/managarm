@@ -25,6 +25,10 @@ public:
 
 	async::result<std::string> getFdInfo() override;
 
+	async::result<int> getFileFlags() override;
+
+	async::result<void> setFileFlags(int flags) override;
+
 	void handleClose() override;
 
 	helix::BorrowedDescriptor getPassthroughLane() override {

@@ -171,7 +171,8 @@ async::result<int> File::ptGetFileFlags(void *object) {
 
 async::result<void> File::ptSetFileFlags(void *object, int flags) {
 	auto self = static_cast<File *>(object);
-	return self->setFileFlags(flags);
+	// F_SETFL cannot change the access mode, but callers commonly pass it back from F_GETFL.
+	return self->setFileFlags(flags & ~O_ACCMODE);
 }
 
 async::result<frg::expected<protocols::fs::Error, size_t>> File::ptPeername(void *object, void *addr_ptr, size_t max_addr_length) {

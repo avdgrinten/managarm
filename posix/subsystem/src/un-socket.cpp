@@ -1033,7 +1033,7 @@ public:
 	}
 
 	async::result<void> setFileFlags(int flags) override {
-		if(flags & ~(O_NONBLOCK | O_RDONLY | O_WRONLY | O_RDWR)) {
+		if(flags & ~O_NONBLOCK) {
 			std::cout << std::format("posix: setFileFlags on socket \e[1;34m{}\e[0m called with unknown flags {:x}\n",
 					structName(), flags & ~O_NONBLOCK);
 			co_return;
