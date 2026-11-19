@@ -231,7 +231,11 @@ void NetlinkSocket::newRoute(struct nlmsghdr *hdr) {
 }
 
 void NetlinkSocket::getRoute(struct nlmsghdr *hdr) {
-	assert((hdr->nlmsg_flags & (NLM_F_REQUEST | NLM_F_MATCH)) == (NLM_F_REQUEST | NLM_F_MATCH));
+	// TODO: support single-route lookups (requests without NLM_F_DUMP).
+	if(!(hdr->nlmsg_flags & NLM_F_DUMP)) {
+		sendError(this, hdr, EOPNOTSUPP);
+		return;
+	}
 
 	const struct rtgenmsg *payload;
 
@@ -242,18 +246,17 @@ void NetlinkSocket::getRoute(struct nlmsghdr *hdr) {
 		return;
 	}
 
-	assert(payload->rtgen_family == AF_UNSPEC || payload->rtgen_family == AF_INET);
-
-	// Loop over all ipv4 and ipv6 routes, and return them.
+	// We have no IPv6 routes; like Linux, other unknown families fall back to dumping all families.
 	// TODO: also return ipv6 routes.
-	auto ipv4_router = ip4Router();
+	if(payload->rtgen_family != AF_INET6) {
+		auto ipv4_router = ip4Router();
 
-	for(auto route : ipv4_router.getRoutes()) {
-		sendRoutePacket(hdr, route);
+		for(auto route : ipv4_router.getRoutes()) {
+			sendRoutePacket(hdr, route);
+		}
 	}
 
-	if(hdr->nlmsg_flags & NLM_F_DUMP)
-		sendDone(this, hdr);
+	sendDone(this, hdr);
 }
 
 void NetlinkSocket::deleteRoute(struct nlmsghdr *hdr) {
