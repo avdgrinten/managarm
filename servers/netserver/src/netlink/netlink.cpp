@@ -152,6 +152,13 @@ async::result<frg::expected<protocols::fs::Error, size_t>> NetlinkSocket::sendMs
 		if(hdr->nlmsg_type == NLMSG_ERROR)
 			co_return protocols::fs::Error::illegalArguments;
 
+		// Like Linux, only handle requests; anything else is at most acknowledged.
+		if(!(hdr->nlmsg_flags & NLM_F_REQUEST)) {
+			if(hdr->nlmsg_flags & NLM_F_ACK)
+				sendAck(self, hdr);
+			continue;
+		}
+
 		if(hdr->nlmsg_type == RTM_NEWROUTE) {
 			self->newRoute(hdr);
 		} else if(hdr->nlmsg_type == RTM_GETROUTE) {

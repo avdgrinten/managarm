@@ -231,7 +231,11 @@ void NetlinkSocket::newRoute(struct nlmsghdr *hdr) {
 }
 
 void NetlinkSocket::getRoute(struct nlmsghdr *hdr) {
-	assert((hdr->nlmsg_flags & (NLM_F_REQUEST | NLM_F_MATCH)) == (NLM_F_REQUEST | NLM_F_MATCH));
+	// TODO: support single-route lookups (requests without NLM_F_DUMP).
+	if(!(hdr->nlmsg_flags & NLM_F_DUMP)) {
+		sendError(this, hdr, EOPNOTSUPP);
+		return;
+	}
 
 	const struct rtgenmsg *payload;
 
@@ -242,18 +246,17 @@ void NetlinkSocket::getRoute(struct nlmsghdr *hdr) {
 		return;
 	}
 
-	assert(payload->rtgen_family == AF_UNSPEC || payload->rtgen_family == AF_INET);
-
-	// Loop over all ipv4 and ipv6 routes, and return them.
+	// We have no IPv6 routes; like Linux, other unknown families fall back to dumping all families.
 	// TODO: also return ipv6 routes.
-	auto ipv4_router = ip4Router();
+	if(payload->rtgen_family != AF_INET6) {
+		auto ipv4_router = ip4Router();
 
-	for(auto route : ipv4_router.getRoutes()) {
-		sendRoutePacket(hdr, route);
+		for(auto route : ipv4_router.getRoutes()) {
+			sendRoutePacket(hdr, route);
+		}
 	}
 
-	if(hdr->nlmsg_flags & NLM_F_DUMP)
-		sendDone(this, hdr);
+	sendDone(this, hdr);
 }
 
 void NetlinkSocket::deleteRoute(struct nlmsghdr *hdr) {
@@ -426,6 +429,12 @@ void NetlinkSocket::newAddr(struct nlmsghdr *hdr) {
 }
 
 void NetlinkSocket::getAddr(struct nlmsghdr *hdr) {
+	// Like Linux, RTM_GETADDR only supports dumps.
+	if(!(hdr->nlmsg_flags & NLM_F_DUMP)) {
+		sendError(this, hdr, EOPNOTSUPP);
+		return;
+	}
+
 	const struct ifaddrmsg *msg;
 
 	if(auto opt = netlinkMessage<struct ifaddrmsg>(hdr, hdr->nlmsg_len))
@@ -441,18 +450,20 @@ void NetlinkSocket::getAddr(struct nlmsghdr *hdr) {
 		}
 	}
 
-	auto links = nic::Link::getLinks();
-	for(auto m = links.begin(); m != links.end(); m++) {
-		if(!msg || msg->ifa_index == 0) {
-			sendAddrPackets(hdr, msg, m->second);
-		} else if(static_cast<uint32_t>(m->second->index()) == msg->ifa_index) {
-			sendAddrPackets(hdr, msg, m->second);
-			break;
+	// We have no IPv6 addresses; like Linux, other unknown families fall back to dumping all families.
+	if(msg->ifa_family != AF_INET6) {
+		auto links = nic::Link::getLinks();
+		for(auto m = links.begin(); m != links.end(); m++) {
+			if(!msg || msg->ifa_index == 0) {
+				sendAddrPackets(hdr, msg, m->second);
+			} else if(static_cast<uint32_t>(m->second->index()) == msg->ifa_index) {
+				sendAddrPackets(hdr, msg, m->second);
+				break;
+			}
 		}
 	}
 
-	if(hdr->nlmsg_flags & NLM_F_DUMP)
-		sendDone(this, hdr);
+	sendDone(this, hdr);
 
 	return;
 }
