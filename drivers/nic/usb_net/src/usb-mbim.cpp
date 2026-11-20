@@ -308,6 +308,7 @@ async::result<void> UsbMbimNic::initialize() {
 
 	receiveEncapsulated();
 	listenForNotifications();
+	receiveFrames();
 
 	co_return;
 }
@@ -375,21 +376,17 @@ async::detached UsbMbimNic::listenForNotifications() {
 	co_return;
 }
 
-async::result<size_t> UsbMbimNic::receive(arch::dma_buffer_view frame) {
-	arch::dma_buffer buf{&dmaPool_, mtu};
+async::detached UsbMbimNic::receiveFrames() {
+	// The NTB input size is not negotiated; this holds the NTBs of common devices.
+	arch::dma_buffer buffer{&dmaPool_, 16384};
 
-	auto res = co_await data_in_.transfer(protocols::usb::BulkTransfer{protocols::usb::kXferToHost, buf});
-	assert(res);
+	while(true) {
+		auto res = co_await data_in_.transfer(protocols::usb::BulkTransfer{protocols::usb::kXferToHost, buffer});
+		assert(res);
 
-	if(res.value() != 0) {
-		auto ncmHeader = reinterpret_cast<usb_ncm::NcmTransferHeader *>(buf.data());
-		auto ndp = reinterpret_cast<usb_ncm::NcmDatagramPointer *>(buf.subview(ncmHeader->wNdpIndex).data());
-		assert(ndp->dwSignature == usb_mbim::NCM_NDP16_IPS_SIGNATURE);
-		memcpy(frame.data(), buf.subview(ndp->wDatagram[0].Index).data(), ndp->wDatagram[0].Length);
-		co_return ndp->wDatagram[0].Length;
+		if(res.value() != 0)
+			usb_ncm::feedNtb(*this, buffer.subview(0, res.value()), usb_mbim::NCM_NDP16_IPS_SIGNATURE);
 	}
-
-	assert(!"USB NIC receive failed!");
 }
 
 async::result<void> UsbMbimNic::send(const arch::dma_buffer_view payload) {

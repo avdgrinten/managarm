@@ -1,3 +1,7 @@
+#include <algorithm>
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
 #include <nic/usb_net/usb_net.hpp>
 #include <net/ethernet.h>
 
@@ -124,6 +128,9 @@ async::result<void> UsbNcmNic::initialize() {
 	if(debugNcm)
 		std::cout << std::format("{}", *params) << std::endl;
 
+	// NTB16 cannot exceed 64 KiB; the device sends NTBs of at most dwNtbInMaxSize bytes.
+	ntbInSize_ = std::clamp<size_t>(params->dwNtbInMaxSize, 2048, 0xFFFF);
+
 	if(ncm_hdr->bmNetworkCapabilities & regs::bmNetworkCapabilities::crcMode) {
 		ctrl_msg->type = protocols::usb::setup_type::byClass | protocols::usb::setup_type::targetInterface;
 		ctrl_msg->request = uint8_t(nic::usb_net::RequestCode::SET_CRC_MODE);
@@ -168,6 +175,7 @@ async::result<void> UsbNcmNic::initialize() {
 	}
 
 	listenForNotifications();
+	receiveFrames();
 }
 
 async::detached UsbNcmNic::listenForNotifications() {
@@ -204,20 +212,70 @@ async::detached UsbNcmNic::listenForNotifications() {
 	co_return;
 }
 
-async::result<size_t> UsbNcmNic::receive(arch::dma_buffer_view frame) {
-	arch::dma_buffer buf{&dmaPool_, mtu};
+void feedNtb(nic::Link &link, arch::dma_buffer_view ntb, uint32_t ndpSignature) {
+	// Bounds the walk in case the NDPs of a malformed NTB form a cycle.
+	constexpr int maxNdps = 16;
 
-	auto res = co_await data_in_.transfer(protocols::usb::BulkTransfer{protocols::usb::kXferToHost, buf});
-	assert(res);
+	auto bytes = static_cast<const uint8_t *>(ntb.data());
+	auto load16 = [&] (size_t offset) {
+		uint16_t value;
+		memcpy(&value, bytes + offset, sizeof(value));
+		return value;
+	};
+	auto load32 = [&] (size_t offset) {
+		uint32_t value;
+		memcpy(&value, bytes + offset, sizeof(value));
+		return value;
+	};
 
-	if(res.value() != 0) {
-		auto ncmHeader = reinterpret_cast<NcmTransferHeader *>(buf.data());
-		auto ndp = reinterpret_cast<NcmDatagramPointer *>(buf.subview(ncmHeader->wNdpIndex).data());
-		memcpy(frame.data(), buf.subview(ndp->wDatagram[0].Index).data(), ndp->wDatagram[0].Length);
-		co_return ndp->wDatagram[0].Length;
+	if(ntb.size() < sizeof(NcmTransferHeader)
+			|| load32(offsetof(NcmTransferHeader, dwSignature)) != NCM_NTH16_SIGNATURE) {
+		printf("usb-ncm: Dropping NTB without a valid header\n");
+		return;
 	}
 
-	assert(!"USB NIC receive failed!");
+	size_t ndpIndex = load16(offsetof(NcmTransferHeader, wNdpIndex));
+	for(int n = 0; ndpIndex && n < maxNdps; n++) {
+		constexpr size_t entriesOffset = offsetof(NcmDatagramPointer, wDatagram);
+		if(ndpIndex + entriesOffset > ntb.size()
+				|| load32(ndpIndex + offsetof(NcmDatagramPointer, dwSignature)) != ndpSignature) {
+			printf("usb-ncm: Dropping the rest of an NTB with an invalid NDP\n");
+			return;
+		}
+
+		size_t ndpLength = load16(ndpIndex + offsetof(NcmDatagramPointer, wLength));
+		if(ndpLength < entriesOffset || ndpIndex + ndpLength > ntb.size()) {
+			printf("usb-ncm: Dropping the rest of an NTB with an invalid NDP length\n");
+			return;
+		}
+
+		// The datagram list is terminated by a zero entry.
+		for(size_t entry = ndpIndex + entriesOffset; entry + 4 <= ndpIndex + ndpLength; entry += 4) {
+			size_t index = load16(entry);
+			size_t length = load16(entry + 2);
+			if(!index || !length)
+				break;
+			if(index + length > ntb.size()) {
+				printf("usb-ncm: Dropping datagram beyond the end of its NTB\n");
+				continue;
+			}
+			link.feedPacket(ntb.subview(index, length));
+		}
+
+		ndpIndex = load16(ndpIndex + offsetof(NcmDatagramPointer, wNextNdpIndex));
+	}
+}
+
+async::detached UsbNcmNic::receiveFrames() {
+	arch::dma_buffer buffer{&dmaPool_, ntbInSize_};
+
+	while(true) {
+		auto res = co_await data_in_.transfer(protocols::usb::BulkTransfer{protocols::usb::kXferToHost, buffer});
+		assert(res);
+
+		if(res.value() != 0)
+			feedNtb(*this, buffer.subview(0, res.value()), NCM_NDP16_NO_CRC_SIGNATURE);
+	}
 }
 
 async::result<void> UsbNcmNic::send(const arch::dma_buffer_view payload) {

@@ -53,12 +53,17 @@ struct UsbNcmNic : UsbNic {
 	async::result<void> initialize() override;
 	async::detached listenForNotifications() override;
 
-	async::result<size_t> receive(arch::dma_buffer_view) override;
 	async::result<void> send(const arch::dma_buffer_view) override;
 private:
+	async::detached receiveFrames();
+
 	mbus_ng::EntityId entity_;
 	size_t config_index_;
+	size_t ntbInSize_ = 0;
 };
+
+// Feeds every datagram of an NTB16 whose NDPs carry ndpSignature to the link.
+void feedNtb(nic::Link &link, arch::dma_buffer_view ntb, uint32_t ndpSignature);
 
 namespace regs {
 

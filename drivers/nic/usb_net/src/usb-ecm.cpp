@@ -107,15 +107,19 @@ async::result<void> UsbEcmNic::initialize() {
 	}(std::move(netClassEntity));
 
 	listenForNotifications();
+	receiveFrames();
 }
 
-async::result<size_t> UsbEcmNic::receive(arch::dma_buffer_view frame) {
+async::detached UsbEcmNic::receiveFrames() {
+	// One Ethernet frame without FCS per transfer.
+	arch::dma_buffer buffer{&dmaPool_, 1514};
+
 	while(true) {
-		auto res = co_await data_in_.transfer(protocols::usb::BulkTransfer{protocols::usb::kXferToHost, frame});
+		auto res = co_await data_in_.transfer(protocols::usb::BulkTransfer{protocols::usb::kXferToHost, buffer});
 		assert(res);
 
 		if(res.value() != 0)
-			co_return res.value();
+			feedPacket(buffer.subview(0, res.value()));
 	}
 }
 
