@@ -220,9 +220,9 @@ bool Socket::writable_() {
 int Socket::activeEvents_() {
 	int events = 0;
 	if(readable_())
-		events |= EPOLLIN;
+		events |= EPOLLIN | EPOLLRDNORM;
 	if(writable_())
-		events |= EPOLLOUT;
+		events |= EPOLLOUT | EPOLLWRNORM;
 	if(state_ == State::disconnected || (peerShutdown_ & VIRTIO_VSOCK_SHUTDOWN_SEND)
 			|| (localShutdown_ & VIRTIO_VSOCK_SHUTDOWN_RCV))
 		events |= EPOLLRDHUP;
@@ -237,9 +237,9 @@ int Socket::activeEvents_() {
 int Socket::edgesSince_(uint64_t pastSeq) {
 	int edges = 0;
 	if(inSeq_ > pastSeq)
-		edges |= EPOLLIN;
+		edges |= EPOLLIN | EPOLLRDNORM;
 	if(outSeq_ > pastSeq)
-		edges |= EPOLLOUT;
+		edges |= EPOLLOUT | EPOLLWRNORM;
 	if(hupSeq_ > pastSeq)
 		edges |= EPOLLHUP;
 	if(rdhupSeq_ > pastSeq)
