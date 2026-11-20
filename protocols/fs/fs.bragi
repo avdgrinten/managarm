@@ -38,7 +38,8 @@ enum Errors {
 	NOT_SUPPORTED = 35,
 	BAD_FILE_DESCRIPTOR = 36,
 	IO_ERROR = 37,
-	BUSY = 38
+	BUSY = 38,
+	NO_MEMORY = 39
 }
 
 consts FileType int64 {
@@ -1087,6 +1088,25 @@ head(128):
 }
 
 message BlkRereadPartitionsResponse 75 {
+head(128):
+	Errors error;
+}
+
+message KcovSetSizeRequest 76 {
+head(128):
+	int32 entries;
+}
+
+message KcovStartRequest 77 {
+head(128):
+	int32 mode;
+}
+
+message KcovStopRequest 78 {
+head(128):
+}
+
+message KcovResponse 79 {
 head(128):
 	Errors error;
 }

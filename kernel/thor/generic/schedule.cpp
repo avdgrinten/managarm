@@ -632,7 +632,10 @@ void checkThreadPreemption(FaultImageAccessor image) {
 THOR_DEFINE_PERCPU(localScheduler);
 
 smarter::borrowed_ptr<Thread> getCurrentThread() {
-	return getCpuData()->activeThread;
+	auto thread = getCpuData()->activeThread;
+	if(!thread)
+		return {};
+	return thread->self;
 }
 
 } // namespace thor

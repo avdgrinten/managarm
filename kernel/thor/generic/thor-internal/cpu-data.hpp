@@ -95,7 +95,8 @@ struct CpuData : public PlatformCpuData {
 
 	CpuData &operator= (const CpuData &) = delete;
 
-	std::atomic<Ipl> contextIpl{ipl::passive};
+	// Must only be accessed with __atomic builtins.
+	Ipl contextIpl{ipl::passive};
 	// CPUs boot with interrupts disabled, so we initialize to ipl::interrupt.
 	std::atomic<Ipl> currentIpl{ipl::interrupt};
 	std::atomic<uint32_t> iplDeferred{0};
@@ -108,7 +109,7 @@ struct CpuData : public PlatformCpuData {
 	int cpuIndex;
 
 	ExecutorContext *executorContext{nullptr};
-	smarter::borrowed_ptr<Thread> activeThread;
+	Thread *activeThread{nullptr};
 	KernelFiber *activeFiber{nullptr};
 	KernelFiber *criticalFiber{nullptr};
 	KernelFiber *memoryFiber{nullptr};
@@ -139,7 +140,8 @@ struct CpuData : public PlatformCpuData {
 	SingleContextRecordRing *localProfileRing = nullptr;
 };
 
-inline CpuData *getCpuData() {
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline CpuData *getCpuData() {
 	return static_cast<CpuData *>(getPlatformCpuData());
 }
 

@@ -15,6 +15,7 @@
 #include <thor-internal/fiber.hpp>
 #include <thor-internal/framebuffer/fb.hpp>
 #include <thor-internal/irq.hpp>
+#include <thor-internal/kcov.hpp>
 #include <thor-internal/kerncfg.hpp>
 #include <thor-internal/kernel-log.hpp>
 #include <thor-internal/kernlet.hpp>
@@ -339,6 +340,10 @@ extern "C" void thorMain() {
 					<< frg::endlog;
 
 
+#ifdef THOR_HAS_KCOV
+		enableKcovHooks();
+#endif
+
 		// Launch initial user space programs.
 		initializeKerncfg();
 		initializeSvrctl();
@@ -648,6 +653,17 @@ void handleSyscall(SyscallImageAccessor image) {
 		*image.error() = helAllocateMemory((HelHandle)arg0, (size_t)arg1, (uint32_t)arg2,
 				(const HelAllocRestrictions *)arg3, &handle);
 		*image.out0() = handle;
+	} break;
+	case kHelCallCreateKcovBuffer: {
+		HelHandle handle;
+		*image.error() = helCreateKcovBuffer((size_t)arg0, &handle);
+		*image.out0() = handle;
+	} break;
+	case kHelCallEnableCoverage: {
+		*image.error() = helEnableCoverage((HelHandle)arg0, (HelHandle)arg1, (uint32_t)arg2);
+	} break;
+	case kHelCallDisableCoverage: {
+		*image.error() = helDisableCoverage((HelHandle)arg0);
 	} break;
 	case kHelCallCreateManagedMemory: {
 		HelHandle backing_handle, frontal_handle;

@@ -3,6 +3,9 @@
 
 #include <frg/container_of.hpp>
 
+#ifdef THOR_HAS_KCOV
+#include <thor-internal/kcov.hpp>
+#endif
 #include <thor-internal/arch-generic/ints.hpp>
 #include <thor-internal/credentials.hpp>
 #include <thor-internal/cpu-data.hpp>
@@ -288,6 +291,10 @@ void Thread::launchCurrent_() {
 
 void Thread::terminateCurrent_() {
 	auto thisThread = getCurrentThread();
+
+#ifdef THOR_HAS_KCOV
+	KcovBuffer::exitCurrent(thisThread.get());
+#endif
 
 	StatelessIrqLock irqLock;
 	auto lock = frg::guard(&thisThread->_mutex);
@@ -623,7 +630,7 @@ void Thread::invoke() {
 	AddressSpace::activate(_addressSpace);
 	_executorContext->active.store(true, std::memory_order_relaxed);
 	cpuData->executorContext = _executorContext;
-	cpuData->activeThread = self;
+	cpuData->activeThread = this;
 	restoreExecutor(&_executor);
 }
 
@@ -742,7 +749,7 @@ void Thread::_uninvoke() {
 	auto cpuData = getCpuData();
 	_executorContext->active.store(false, std::memory_order_relaxed);
 	cpuData->executorContext = nullptr;
-	cpuData->activeThread = {};
+	cpuData->activeThread = nullptr;
 }
 
 void Thread::AssociatedWorkQueue::wakeup() {

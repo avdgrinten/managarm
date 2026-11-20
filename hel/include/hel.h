@@ -40,6 +40,9 @@ enum {
 	kHelCallAllocateMemory = 51,
 	kHelCallResizeMemory = 83,
 	kHelCallCreateManagedMemory = 64,
+	kHelCallCreateKcovBuffer = 72,
+	kHelCallEnableCoverage = 90,
+	kHelCallDisableCoverage = 92,
 	kHelCallCopyOnWrite = 39,
 	kHelCallAccessPhysical = 30,
 	kHelCallCreateSliceView = 88,
@@ -1532,6 +1535,46 @@ HEL_C_LINKAGE HelError helAllocateMemory(HelHandle hierarchy, size_t size, uint3
 //! @param[in] newSize
 //!    	New size in bytes.
 HEL_C_LINKAGE HelError helResizeMemory(HelHandle handle, size_t newSize);
+
+//! Creates a buffer for kernel code coverage (kcov).
+//!
+//!    The buffer's memory can be mapped with helMapMemory().
+//! It cannot be resized. To change the size, allocate a new buffer.
+//! Fails with ::kHelErrUnsupportedOperation if the kernel was built without kcov support.
+//! @param[in] size
+//!    	Size of the buffer in bytes.
+//!    	Must be non-zero, a multiple of 8 and at most 64 MiB.
+//! @param[out] handle
+//!    	Handle to the new buffer.
+HEL_C_LINKAGE HelError helCreateKcovBuffer(size_t size, HelHandle *handle);
+
+//! Modes for helEnableCoverage().
+enum {
+	//! Record PCs.
+	kHelKcovModePc = 1,
+	//! Record comparisons.
+	kHelKcovModeCmp = 2
+};
+
+//! Attaches a kcov buffer to a thread, which then records coverage to it.
+//!
+//!    A thread can have at most one buffer attached and a buffer can be
+//! attached to at most one thread at a time.
+//! Fails with ::kHelErrIllegalState if either is already attached.
+//! @param[in] thread
+//!    	Handle to the thread.
+//! @param[in] buffer
+//!    	Handle to a buffer created by helCreateKcovBuffer().
+//! @param[in] mode
+//!    	::kHelKcovModePc or ::kHelKcovModeCmp.
+HEL_C_LINKAGE HelError helEnableCoverage(HelHandle thread, HelHandle buffer, uint32_t mode);
+
+//! Detaches the kcov buffer that is attached to a thread.
+//!
+//!    Fails with ::kHelErrIllegalState if no buffer is attached to @p thread.
+//! @param[in] thread
+//!    	Handle to the thread.
+HEL_C_LINKAGE HelError helDisableCoverage(HelHandle thread);
 
 //! Creates a memory object that is managed by userspace.
 //!

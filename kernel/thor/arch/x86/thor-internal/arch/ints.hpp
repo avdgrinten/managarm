@@ -11,7 +11,8 @@ void setupEarlyInterruptHandlers();
 void setupIdt(uint32_t *table);
 void setupFred();
 
-inline bool intsAreEnabled() {
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline bool intsAreEnabled() {
 	uint64_t rflags;
 	asm volatile (
 		"pushfq\n"
@@ -21,11 +22,13 @@ inline bool intsAreEnabled() {
 	return (rflags & 0x200) != 0;
 }
 
-inline void enableInts() {
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline void enableInts() {
 	asm volatile ("sti");
 }
 
-inline void disableInts() {
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline void disableInts() {
 	asm volatile ("cli");
 }
 

@@ -45,7 +45,8 @@ struct PlatformCpuData : public AssemblyCpuData {
 };
 
 // Get a pointer to this CPU's PlatformCpuData instance.
-inline PlatformCpuData *getPlatformCpuData() {
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline PlatformCpuData *getPlatformCpuData() {
 	AssemblyCpuData *cpu_data;
 	asm volatile ("mov %%gs:0, %0" : "=r"(cpu_data));
 	return static_cast<PlatformCpuData *>(cpu_data);

@@ -69,6 +69,9 @@ template <typename T>
 concept AnyTag = (std::same_as<T, AsyncBlockCurrentNormalTag> || std::same_as<T, AsyncBlockCurrentInterruptibleTag>);
 
 struct Thread;
+#ifdef THOR_HAS_KCOV
+struct KcovBuffer;
+#endif
 struct LbThreadState;
 
 smarter::borrowed_ptr<Thread> getCurrentThread();
@@ -434,6 +437,17 @@ public:
 	smarter::borrowed_ptr<Thread> self;
 
 	uint32_t flags;
+
+#ifdef THOR_HAS_KCOV
+	// Covers writes to kcov, kcovRef and kcovExited.
+	frg::ticket_spinlock kcovMutex;
+	// Buffer where coverage data gets written to.
+	KcovBuffer *kcov{nullptr};
+	// Actual reference to the kcov object.
+	smarter::shared_ptr<KcovBuffer> kcovRef;
+	// Set when the thread exits.
+	bool kcovExited{false};
+#endif
 
 private:
 	typedef frg::ticket_spinlock Mutex;

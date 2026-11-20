@@ -100,6 +100,7 @@ kasan = get_option('kernel_kasan')
 ubsan = get_option('kernel_ubsan')
 log_alloc = get_option('kernel_log_allocations')
 frame_pointers = get_option('kernel_frame_pointers')
+kcov = get_option('kcov')
 
 supported_archs = [
 	'aarch64',

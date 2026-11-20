@@ -304,6 +304,7 @@ inline Error operator|(managarm::fs::Errors e, ToPosixError) {
 		case managarm::fs::Errors::NOT_SUPPORTED: return Error::notSupported;
 		case managarm::fs::Errors::IO_ERROR: return Error::ioError;
 		case managarm::fs::Errors::AF_NOT_SUPPORTED: return Error::addressFamilyNotSupported;
+		case managarm::fs::Errors::NO_MEMORY: return Error::noMemory;
 		default:
 			std::println("posix: unmapped managarm::fs::Errors Error {}", static_cast<int>(e));
 			return Error::ioError;

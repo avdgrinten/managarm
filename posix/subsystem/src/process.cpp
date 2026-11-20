@@ -255,10 +255,14 @@ VmContext::mapFile(uintptr_t hint, helix::UniqueDescriptor memory,
 		}
 
 		HelHandle handle;
-		HEL_CHECK(helCopyOnWrite(_hierarchy.getHandle(),
+		error = helCopyOnWrite(_hierarchy.getHandle(),
 				getSwapSpaceHandle().getHandle(),
 				memoryDesc.getHandle(),
-				offset, alignedSize, &handle));
+				offset, alignedSize, &handle);
+		// Handle files that cannot be mapped CoW.
+		if(error == kHelErrBadDescriptor)
+			co_return Error::illegalArguments;
+		HEL_CHECK(error);
 		copyView = helix::UniqueDescriptor{handle};
 
 		auto mapResult = co_await helix_ng::mapMemory(copyView, _space,

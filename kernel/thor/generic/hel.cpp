@@ -17,6 +17,9 @@
 #include <thor-internal/io.hpp>
 #include <thor-internal/iommu.hpp>
 #include <thor-internal/ipc-queue.hpp>
+#ifdef THOR_HAS_KCOV
+#include <thor-internal/kcov.hpp>
+#endif
 #include <thor-internal/irq.hpp>
 #include <thor-internal/kernlet.hpp>
 #include <thor-internal/load-balancing.hpp>
@@ -568,6 +571,85 @@ HelError helAllocateMemory(HelHandle hierarchyHandle, size_t size, uint32_t flag
 	);
 
 	return kHelErrNone;
+}
+
+HelError helCreateKcovBuffer(size_t size, HelHandle *handle) {
+#ifndef THOR_HAS_KCOV
+	(void)size;
+	(void)handle;
+	return kHelErrUnsupportedOperation;
+#else
+	auto thisThread = getCurrentThread();
+	auto thisUniverse = thisThread->getUniverse();
+
+	auto bufferOutcome = KcovBuffer::create(size);
+	if(!bufferOutcome)
+		return translateError(bufferOutcome.error());
+
+	*handle = thisUniverse->attachDescriptor(
+		AnyDescriptor::make<DescriptorType::kcovBuffer>(
+			std::move(*bufferOutcome),
+			kHelRightRead | kHelRightWrite | kHelRightExecute | kHelRightAssign
+		)
+	);
+
+	return kHelErrNone;
+#endif
+}
+
+HelError helEnableCoverage(HelHandle threadHandle, HelHandle bufferHandle, uint32_t mode) {
+#ifndef THOR_HAS_KCOV
+	(void)threadHandle;
+	(void)bufferHandle;
+	(void)mode;
+	return kHelErrUnsupportedOperation;
+#else
+	auto thisThread = getCurrentThread();
+	auto thisUniverse = thisThread->getUniverse();
+
+	smarter::shared_ptr<Thread> thread;
+	if(threadHandle == kHelThisThread) {
+		thread = thisThread.lock();
+	}else{
+		auto threadOutcome = thisUniverse->resolveObject<DescriptorType::thread>(
+			threadHandle, kHelRightManage
+		);
+		if(!threadOutcome)
+			return translateError(threadOutcome.error());
+		thread = smarter::rc_policy_downcast<smarter::default_rc_policy>(std::move(*threadOutcome));
+	}
+	auto bufferOutcome = thisUniverse->resolveObject<DescriptorType::kcovBuffer>(
+		bufferHandle, kHelRightWrite
+	);
+	if(!bufferOutcome)
+		return translateError(bufferOutcome.error());
+
+	return translateError(KcovBuffer::attach(std::move(*bufferOutcome), thread.get(), mode));
+#endif
+}
+
+HelError helDisableCoverage(HelHandle threadHandle) {
+#ifndef THOR_HAS_KCOV
+	(void)threadHandle;
+	return kHelErrUnsupportedOperation;
+#else
+	auto thisThread = getCurrentThread();
+	auto thisUniverse = thisThread->getUniverse();
+
+	smarter::shared_ptr<Thread> thread;
+	if(threadHandle == kHelThisThread) {
+		thread = thisThread.lock();
+	}else{
+		auto threadOutcome = thisUniverse->resolveObject<DescriptorType::thread>(
+			threadHandle, kHelRightManage
+		);
+		if(!threadOutcome)
+			return translateError(threadOutcome.error());
+		thread = smarter::rc_policy_downcast<smarter::default_rc_policy>(std::move(*threadOutcome));
+	}
+
+	return translateError(KcovBuffer::detach(thread.get()));
+#endif
 }
 
 HelError doSubmitResizeMemory(HelHandle handle, smarter::shared_ptr<IpcQueue> queue,
@@ -1640,6 +1722,9 @@ std::expected<MapMemoryOperands, Error> resolveMapMemory(HelHandle memory_handle
 
 	smarter::shared_ptr<MemoryView> memory;
 	smarter::shared_ptr<IpcQueue> queue;
+#ifdef THOR_HAS_KCOV
+	smarter::shared_ptr<KcovBuffer> kcov;
+#endif
 	auto memoryOutcome = this_universe->inspectDescriptor(memory_handle,
 			[&](const DescriptorView &desc) -> std::expected<void, Error> {
 		if(desc.is<DescriptorType::memorySlice>()) {
@@ -1657,6 +1742,13 @@ std::expected<MapMemoryOperands, Error> resolveMapMemory(HelHandle memory_handle
 			if(!queueOutcome)
 				return std::unexpected{queueOutcome.error()};
 			queue = std::move(*queueOutcome);
+#ifdef THOR_HAS_KCOV
+		}else if(desc.is<DescriptorType::kcovBuffer>()) {
+			auto kcovOutcome = desc.resolveObject<DescriptorType::kcovBuffer>(requiredRights);
+			if(!kcovOutcome)
+				return std::unexpected{kcovOutcome.error()};
+			kcov = std::move(*kcovOutcome);
+#endif
 		}else{
 			return std::unexpected{Error::badDescriptor};
 		}
@@ -1667,6 +1759,10 @@ std::expected<MapMemoryOperands, Error> resolveMapMemory(HelHandle memory_handle
 
 	if(queue)
 		memory = queue->getMemory();
+#ifdef THOR_HAS_KCOV
+	if(kcov)
+		memory = kcov->getMemory();
+#endif
 	if(memory) {
 		auto sliceLength = memory->getLength();
 		auto sliceOutcome = MemorySlice::create(std::move(memory), 0, sliceLength);

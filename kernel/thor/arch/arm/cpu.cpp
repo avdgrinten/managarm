@@ -3,6 +3,7 @@
 #include <thor-internal/cpu-data.hpp>
 #include <thor-internal/cpu-state.hpp>
 #include <thor-internal/ipl.hpp>
+#include <thor-internal/kcov.hpp>
 #include <frg/manual_box.hpp>
 #include <thor-internal/main.hpp>
 #include <thor-internal/kasan.hpp>
@@ -192,7 +193,7 @@ void doRunOnStack(void (*function) (void *, void *), void *sp, void *argument) {
 
 Error getEntropyFromCpu(void *, size_t) { return Error::noHardwareSupport; }
 
-void setupCpuContext(AssemblyCpuData *context) {
+THOR_KCOV_DISABLED void setupCpuContext(AssemblyCpuData *context) {
 	asm volatile("msr tpidr_el1, %0" :: "r"(context));
 }
 

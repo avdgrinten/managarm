@@ -6,8 +6,9 @@
 
 namespace thor {
 
-inline Ipl contextIpl() {
-	return getCpuData()->contextIpl.load(std::memory_order_relaxed);
+// Always inline as this might be called from code that disables coverage
+[[gnu::always_inline]] inline Ipl contextIpl() {
+	return __atomic_load_n(&getCpuData()->contextIpl, __ATOMIC_RELAXED);
 }
 
 inline Ipl currentIpl() {
@@ -22,7 +23,7 @@ inline Ipl currentIpl() {
 inline void iplSave(IplState &savedIpl) {
 	auto cpuData = getCpuData();
 	savedIpl.current = cpuData->currentIpl.load(std::memory_order_relaxed);
-	savedIpl.context = cpuData->contextIpl.load(std::memory_order_relaxed);
+	savedIpl.context = __atomic_load_n(&cpuData->contextIpl, __ATOMIC_RELAXED);
 }
 
 // Raise context IPL. Takes saved IPL for error checking.
@@ -34,7 +35,7 @@ inline void iplEnterContext(Ipl newIpl, IplState savedIpl) {
 	auto cpuData = getCpuData();
 	cpuData->currentIpl.store(newIpl, std::memory_order_relaxed);
 	std::atomic_signal_fence(std::memory_order_release);
-	cpuData->contextIpl.store(newIpl, std::memory_order_relaxed);
+	__atomic_store_n(&cpuData->contextIpl, newIpl, __ATOMIC_RELAXED);
 	// Perform (w, rw) fence to prevent re-ordering of future accesses with the IPL stores.
 	std::atomic_signal_fence(std::memory_order_seq_cst);
 }
@@ -44,7 +45,7 @@ inline void iplLeaveContext(IplState savedIpl) {
 	auto cpuData = getCpuData();
 	// Perform (rw, w) fence to prevent re-ordering of past accesses with the IPL stores.
 	std::atomic_signal_fence(std::memory_order_release);
-	cpuData->contextIpl.store(savedIpl.context, std::memory_order_relaxed);
+	__atomic_store_n(&cpuData->contextIpl, savedIpl.context, __ATOMIC_RELAXED);
 	std::atomic_signal_fence(std::memory_order_release);
 	cpuData->currentIpl.store(savedIpl.current, std::memory_order_relaxed);
 	// Perform (w, rw) fence to prevent re-ordering of the IPL stores with future accesses.
@@ -55,7 +56,7 @@ inline void iplDemoteContext(Ipl newIpl) {
 	auto cpuData = getCpuData();
 	// Perform (rw, w) fence to prevent re-ordering of past accesses with the IPL stores.
 	std::atomic_signal_fence(std::memory_order_release);
-	cpuData->contextIpl.store(newIpl, std::memory_order_relaxed);
+	__atomic_store_n(&cpuData->contextIpl, newIpl, __ATOMIC_RELAXED);
 	std::atomic_signal_fence(std::memory_order_release);
 	cpuData->currentIpl.store(newIpl, std::memory_order_relaxed);
 	// Perform (w, rw) fence to prevent re-ordering of the IPL stores with future accesses.
@@ -109,7 +110,7 @@ template<Ipl L>
 struct IplGuard {
 	IplGuard() {
 		auto cpuData = getCpuData();
-		auto context = cpuData->contextIpl.load(std::memory_order_relaxed);
+		auto context = __atomic_load_n(&cpuData->contextIpl, __ATOMIC_RELAXED);
 
 		// Otherwise, this guard is taken in a context where it cannot be taken.
 		assert(context <= L);
