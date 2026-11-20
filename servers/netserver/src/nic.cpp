@@ -148,6 +148,44 @@ unsigned int Link::iff_flags() {
 	return flags | extra_iff_flags_;
 }
 
+void Link::feedPacket(arch::dma_buffer_view frame) {
+	if(!rawIp()) {
+		if(frame.size() < ethernetHeaderSize) {
+			if(logDiscards)
+				std::println("netserver: Discarding Ethernet frame smaller than the header");
+			return;
+		}
+
+		auto capsule = frame.subview(ethernetHeaderSize);
+		auto data = reinterpret_cast<uint8_t*>(frame.data());
+		uint16_t ethertype = data[12] << 8 | data[13];
+		nic::MacAddress dstsrc[2];
+		std::memcpy(dstsrc, data, sizeof(dstsrc));
+
+		// Packet sockets observe all frames that the device hands to us.
+		raw().feedPacket(frame);
+
+		if(dstsrc[0] != deviceMac() && !isGroupMac(dstsrc[0])) {
+			if(logDiscards)
+				std::println("netserver: Discarding Ethernet frame with foreign destination MAC");
+			return;
+		}
+
+		switch (ethertype) {
+		case ETHER_TYPE_IP4:
+			ip4().feedPacket(dstsrc[0], dstsrc[1], capsule, weak_from_this());
+			break;
+		case ETHER_TYPE_ARP:
+			neigh4().feedArp(dstsrc[0], capsule, weak_from_this());
+			break;
+		default:
+			break;
+		}
+	} else {
+		ip4().feedPacket({}, {}, frame, weak_from_this());
+	}
+}
+
 async::detached runDevice(std::shared_ptr<nic::Link> dev) {
 	using namespace arch;
 	while(true) {
@@ -160,42 +198,7 @@ async::detached runDevice(std::shared_ptr<nic::Link> dev) {
 			continue;
 		}
 
-		if(!dev->rawIp()) {
-			if(len < ethernetHeaderSize) {
-				if(logDiscards)
-					std::println("netserver: Discarding Ethernet frame smaller than the header");
-				continue;
-			}
-
-			auto capsule = frameBuffer.subview(ethernetHeaderSize, len - ethernetHeaderSize);
-			auto data = reinterpret_cast<uint8_t*>(frameBuffer.data());
-			uint16_t ethertype = data[12] << 8 | data[13];
-			nic::MacAddress dstsrc[2];
-			std::memcpy(dstsrc, data, sizeof(dstsrc));
-
-			// Packet sockets observe all frames that the device hands to us.
-			raw().feedPacket(frameBuffer.subview(0, len));
-
-			if(dstsrc[0] != dev->deviceMac() && !isGroupMac(dstsrc[0])) {
-				if(logDiscards)
-					std::println("netserver: Discarding Ethernet frame with foreign destination MAC");
-				continue;
-			}
-
-			switch (ethertype) {
-			case ETHER_TYPE_IP4:
-				ip4().feedPacket(dstsrc[0], dstsrc[1], capsule, dev);
-				break;
-			case ETHER_TYPE_ARP:
-				neigh4().feedArp(dstsrc[0], capsule, dev);
-				break;
-			default:
-				break;
-			}
-		} else {
-			auto capsule = frameBuffer.subview(0, len);
-			ip4().feedPacket({}, {}, capsule, dev);
-		}
+		dev->feedPacket(frameBuffer.subview(0, len));
 	}
 }
 
