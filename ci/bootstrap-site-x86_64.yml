@@ -16,3 +16,4 @@ container:
     src_mount: /var/lib/managarm-buildenv/src
     build_mount: /var/lib/managarm-buildenv/build
     allow_containerless: true
+    sysroot_volume: true
