@@ -56,8 +56,14 @@ size_t ntFileSize(Process *p, const std::vector<VmContext::AreaSnapshot> &areas,
 		if(!area.backingFile())
 			continue;
 		noteSize += 3 * sizeof(long);
-		ViewPath path{area.backingFile()->associatedMount(), area.backingFile()->associatedLink()};
-		noteFiles.push_back(path.getPath(p->fsContext()->getRoot()));
+		auto file = area.backingFile();
+		if(file->associatedMount() && file->associatedLink()) {
+			ViewPath path{file->associatedMount(), file->associatedLink()};
+			noteFiles.push_back(path.getPath(p->fsContext()->getRoot()));
+		}else{
+			// Files without a path (e.g., files that servers install via ServeFdRequest).
+			noteFiles.push_back("anon_inode:" + file->structName().type());
+		}
 		noteSize += noteFiles.back().size() + 1;
 	}
 

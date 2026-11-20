@@ -451,6 +451,27 @@ std::vector<VmContext::AreaSnapshot> VmContext::snapshotAreasLocked_() {
 	return areas;
 }
 
+async::result<std::optional<VmContext::AreaMemory>> VmContext::findAreaMemory(uintptr_t address) {
+	co_await _mutex.async_lock_shared();
+	frg::shared_lock lock{frg::adopt_lock, _mutex};
+
+	auto it = _areaTree.upper_bound(address);
+	if(it == _areaTree.begin())
+		co_return std::nullopt;
+	--it;
+	auto &area = it->second;
+	if(address >= it->first + area.areaSize)
+		co_return std::nullopt;
+
+	auto &memory = area.copyOnWrite ? area.copyView : area.fileView;
+	co_return AreaMemory{
+		.memory = memory.dup(),
+		.baseAddress = it->first,
+		.size = area.areaSize,
+		.memoryOffset = area.effectiveOffset,
+	};
+}
+
 // ----------------------------------------------------------------------------
 // FsContext.
 // ----------------------------------------------------------------------------
@@ -1491,7 +1512,11 @@ void Process::dumpRegisters() {
 		uintptr_t end = start + mapping.size();
 
 		std::string path;
-		if(mapping.backingFile().get()) {
+		if(mapping.backingFile().get() && !(mapping.backingFile()->associatedMount()
+				&& mapping.backingFile()->associatedLink())) {
+			// Files without a path (e.g., files that servers install via ServeFdRequest).
+			path = "anon_inode:" + mapping.backingFile()->structName().type();
+		}else if(mapping.backingFile().get()) {
 			// TODO: store the ViewPath inside the mapping.
 			ViewPath vp{fsContext()->getRoot().first,
 					mapping.backingFile()->associatedLink()};

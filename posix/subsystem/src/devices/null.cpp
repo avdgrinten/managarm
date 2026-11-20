@@ -1,5 +1,6 @@
 #include <string.h>
 #include <helix/dispatcher-pool.hpp>
+#include <sys/epoll.h>
 
 #include "../common.hpp"
 #include "null.hpp"
@@ -21,6 +22,25 @@ private:
 
 	async::result<frg::expected<Error, off_t>> seek(off_t, VfsSeek) override {
 		co_return 0;
+	}
+
+	// Like on Linux, reads (which return EOF) and writes never block.
+	async::result<frg::expected<Error, PollWaitResult>>
+	pollWait(Process *, uint64_t sequence, int mask,
+			async::cancellation_token cancellation) override {
+		(void)mask;
+
+		if(sequence > 1)
+			co_return Error::illegalArguments;
+
+		if(sequence)
+			co_await async::suspend_indefinitely(cancellation);
+		co_return PollWaitResult{1, EPOLLIN | EPOLLOUT};
+	}
+
+	async::result<frg::expected<Error, PollStatusResult>>
+	pollStatus(Process *) override {
+		co_return PollStatusResult{1, EPOLLIN | EPOLLOUT};
 	}
 
 	helix::BorrowedDescriptor getPassthroughLane() override {

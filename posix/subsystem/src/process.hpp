@@ -152,6 +152,18 @@ public:
 	// Returns std::nullopt if the area tree is currently being modified.
 	std::optional<std::vector<AreaSnapshot>> trySnapshotAreas();
 
+	// The area that contains an address together with the memory object that it maps.
+	struct AreaMemory {
+		helix::UniqueDescriptor memory;
+		uintptr_t baseAddress;
+		size_t size;
+		// Offset of the area into the memory object.
+		intptr_t memoryOffset;
+	};
+
+	// Returns std::nullopt if no area contains the given address.
+	async::result<std::optional<AreaMemory>> findAreaMemory(uintptr_t address);
+
 private:
 	std::vector<AreaSnapshot> snapshotAreasLocked_();
 };
