@@ -153,6 +153,7 @@ async::result<void> BcmGenetNic::initialize() {
 	space_.store(reg::intr::clearMask, intr::txDmaDone(true) | intr::rxDmaDone(true));
 
 	processIrqs_();
+	processRx_();
 	co_await device_.enableBusIrq();
 
 	// Kick IRQs since they're already pending in the interrupt controller from earlier.
@@ -444,7 +445,7 @@ void BcmGenetNic::processTxRing_() {
 	txEvent_.raise();
 }
 
-async::result<size_t> BcmGenetNic::receive(arch::dma_buffer_view buf) {
+async::detached BcmGenetNic::processRx_() {
 	auto rxRing = reg::rxDma::subspace(space_, defaultRing);
 
 	while (true) {
@@ -486,21 +487,21 @@ async::result<size_t> BcmGenetNic::receive(arch::dma_buffer_view buf) {
 
 		len -= 2;
 
-		if (len > buf.size()) {
-			std::println("{} Received packet larger than destination buffer ({} > {})",
-					this, len, buf.size());
+		auto &rxBuf = rxBufs_[idx];
+
+		if (len > rxBuf.size() - 2) {
+			std::println("{} Received packet larger than its buffer ({} > {})",
+					this, len, rxBuf.size() - 2);
 			retireDesc();
 			continue;
 		}
 
-		auto &rxBuf = rxBufs_[idx];
 		barrier_.invalidate(rxBuf);
 
 		// Skip first 2 alignment bytes prepended due to rbufCtrl::align2b.
-		memcpy(buf.data(), rxBuf.subview(2).data(), len);
+		feedPacket(rxBuf.subview(2, len));
 
 		retireDesc();
-		co_return len;
 	}
 }
 
