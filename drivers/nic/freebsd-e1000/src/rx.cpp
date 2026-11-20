@@ -53,15 +53,7 @@ void E1000Nic::em_rxd_setup() {
 }
 
 bool E1000Nic::eth_rx_pop() {
-	if(_requests.empty()) {
-		if(e1000_log_trace)
-			printf("e1000: no requests queued\n");
-		return false;
-	}
-
-	auto req = _requests.front();
-	assert(req);
-
+	size_t length;
 	if(_hw.mac.type >= em_mac_min) {
 		union e1000_rx_desc_extended* desc = (union e1000_rx_desc_extended*) &_rxd[_rxIndex];
 
@@ -69,10 +61,7 @@ bool E1000Nic::eth_rx_pop() {
 			return false;
 		}
 
-		memcpy(req->frame.data(), &_rxdbuf[_rxIndex], desc->wb.upper.length);
-		req->size = desc->wb.upper.length;
-
-		em_eth_rx_ack();
+		length = desc->wb.upper.length;
 	} else {
 		struct e1000_rx_desc* desc = &_rxd[_rxIndex];
 
@@ -80,19 +69,23 @@ bool E1000Nic::eth_rx_pop() {
 			return false;
 		}
 
-		// copy out packet
-		memcpy(req->frame.data(), &_rxdbuf[_rxIndex], desc->length);
-		req->size = desc->length;
+		length = desc->length;
+	}
 
-		desc->status = 0;
+	if(length <= sizeof(DescriptorSpace)) {
+		feedPacket(_rxdbuf.object_view(_rxIndex()).view_buffer().subview(0, length));
+	} else if(e1000_log_trace) {
+		printf("e1000: dropping RX frame of %zu bytes\n", length);
+	}
+
+	if(_hw.mac.type >= em_mac_min) {
+		em_eth_rx_ack();
+	} else {
+		_rxd[_rxIndex].status = 0;
 	}
 
 	E1000_WRITE_REG(&_hw, E1000_RDT(0), _rxIndex());
 	++_rxIndex;
-
-	_requests.pop();
-
-	req->event.raise();
 
 	return true;
 }

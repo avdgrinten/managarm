@@ -5,9 +5,8 @@
 #include <async/basic.hpp>
 #include <helix/memory.hpp>
 #include <netserver/nic.hpp>
-#include <nic/freebsd-e1000/queue.hpp>
+#include <core/queue.hpp>
 #include <protocols/hw/client.hpp>
-#include <queue>
 
 // HACKFIX: FreeBSD's imported e1000 headers do not some with C++ guards, so we improvise them here
 extern "C" {
@@ -38,7 +37,6 @@ enum class NicType {
 struct E1000Nic : nic::Link {
 	E1000Nic(protocols::hw::Device device, helix::UniqueDescriptor dmaSpace, bool iommuActive);
 
-	async::result<size_t> receive(arch::dma_buffer_view) override;
 	async::result<void> send(const arch::dma_buffer_view) override;
 
 	async::result<bool> init();
@@ -83,8 +81,6 @@ private:
 	arch::dma_array<struct e1000_tx_desc> _txd;
 	arch::dma_array<DescriptorSpace> _txdbuf;
 	std::vector<uintptr_t> txdIova_;
-
-	std::queue<Request *> _requests;
 
 public:
 	struct e1000_hw _hw;

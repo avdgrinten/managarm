@@ -260,17 +260,6 @@ async::result<bool> E1000Nic::init() {
 	co_return true;
 }
 
-async::result<size_t> E1000Nic::receive(arch::dma_buffer_view frame) {
-	Request req{.frame = frame};
-	_requests.push(&req);
-
-	eth_rx_pop();
-
-	co_await req.event.wait();
-
-	co_return req.size;
-}
-
 async::result<void> E1000Nic::send(const arch::dma_buffer_view buf) {
 	reap_tx_buffers();
 
