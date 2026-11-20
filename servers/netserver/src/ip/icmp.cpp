@@ -194,9 +194,9 @@ struct IcmpSocket {
 
 		while(true) {
 			// For now making sockets always writable is sufficient.
-			edges = EPOLLOUT;
+			edges = EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 			if(self->inSeq_ > past_seq)
-				edges |= EPOLLIN;
+				edges |= EPOLLIN | EPOLLRDNORM;
 
 			if (edges & mask)
 				break;
@@ -211,9 +211,9 @@ struct IcmpSocket {
 	static async::result<frg::expected<protocols::fs::Error, protocols::fs::PollStatusResult>>
 	pollStatus(void *obj) {
 		auto self = static_cast<IcmpSocket *>(obj);
-		int events = EPOLLOUT;
+		int events = EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 		if(!self->queue_.empty())
-			events |= EPOLLIN;
+			events |= EPOLLIN | EPOLLRDNORM;
 
 		co_return protocols::fs::PollStatusResult(self->currentSeq_, events);
 	}

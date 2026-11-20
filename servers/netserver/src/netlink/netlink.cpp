@@ -251,9 +251,9 @@ NetlinkSocket::pollWait(void *obj, uint64_t past_seq, int mask, async::cancellat
 			co_return protocols::fs::Error::internalError;
 
 		// For now making sockets always writable is sufficient.
-		edges = EPOLLOUT;
+		edges = EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 		if(self->_inSeq > past_seq)
-			edges |= EPOLLIN;
+			edges |= EPOLLIN | EPOLLRDNORM;
 
 		if (edges & mask)
 			break;
@@ -270,9 +270,9 @@ NetlinkSocket::pollWait(void *obj, uint64_t past_seq, int mask, async::cancellat
 
 async::result<frg::expected<protocols::fs::Error, protocols::fs::PollStatusResult>> NetlinkSocket::pollStatus(void *obj) {
 	auto self = static_cast<NetlinkSocket *>(obj);
-	int events = EPOLLOUT;
+	int events = EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 	if(!self->_recvQueue.empty())
-		events |= EPOLLIN;
+		events |= EPOLLIN | EPOLLRDNORM;
 
 	co_return protocols::fs::PollStatusResult(self->_currentSeq, events);
 }

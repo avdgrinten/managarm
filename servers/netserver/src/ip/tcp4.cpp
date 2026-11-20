@@ -593,9 +593,9 @@ struct Tcp4Socket {
 		while(true) {
 			edges = 0;
 			if(self->inSeq_ > pastSeq || self->listenSeq_ > pastSeq)
-				edges |= EPOLLIN;
+				edges |= EPOLLIN | EPOLLRDNORM;
 			if(self->outSeq_ > pastSeq)
-				edges |= EPOLLOUT;
+				edges |= EPOLLOUT | EPOLLWRNORM;
 			if(self->hupSeq_ > pastSeq)
 				edges |= EPOLLHUP;
 
@@ -615,9 +615,9 @@ struct Tcp4Socket {
 
 		int active = 0;
 		if(self->recvRing_.availableToDequeue() || !self->pendingConnections_.empty())
-			active |= EPOLLIN;
+			active |= EPOLLIN | EPOLLRDNORM;
 		if(self->sendRing_.spaceForEnqueue())
-			active |= EPOLLOUT;
+			active |= EPOLLOUT | EPOLLWRNORM;
 		if(self->remoteClosed_)
 			active |= EPOLLHUP;
 

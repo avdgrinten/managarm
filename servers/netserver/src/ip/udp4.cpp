@@ -520,11 +520,11 @@ struct Udp4Socket {
 		while(true) {
 			edges = 0;
 			if(!(self->shutdownWriteSeq_ > past_seq))
-				edges |= EPOLLOUT;
+				edges |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 			if(self->_inSeq > past_seq)
-				edges |= EPOLLIN;
+				edges |= EPOLLIN | EPOLLRDNORM;
 			if(self->shutdownReadSeq_ > past_seq)
-				edges |= EPOLLIN;
+				edges |= EPOLLIN | EPOLLRDNORM;
 
 			if (edges & mask)
 				break;
@@ -541,11 +541,11 @@ struct Udp4Socket {
 		auto self = static_cast<Udp4Socket *>(obj);
 		int events = 0;
 		if(!self->shutdownWriteSeq_)
-			events |= EPOLLOUT;
+			events |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 		if(!self->queue_.empty())
-			events |= EPOLLIN;
+			events |= EPOLLIN | EPOLLRDNORM;
 		if(self->shutdownReadSeq_)
-			events |= EPOLLIN;
+			events |= EPOLLIN | EPOLLRDNORM;
 
 		co_return protocols::fs::PollStatusResult(self->_currentSeq, events);
 	}
