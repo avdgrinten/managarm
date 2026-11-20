@@ -216,3 +216,33 @@ DEFINE_TEST(pselect_no_fd_wait, ([] {
 
 	return 0;
 }))
+
+DEFINE_TEST(epoll_rdnorm_only, ([] {
+	int fds[2];
+	int e = pipe(fds);
+	assert(!e);
+
+	int epfd = epoll_create1(0);
+	assert(epfd >= 0);
+
+	epoll_event evt = {};
+	evt.events = EPOLLRDNORM;
+	e = epoll_ctl(epfd, EPOLL_CTL_ADD, fds[0], &evt);
+	assert(!e);
+
+	int pending = epoll_wait(epfd, &evt, 1, 0);
+	assert(pending == 0);
+
+	// The item is now waiting for an edge; EPOLLRDNORM alone must wake it up.
+	e = write(fds[1], "x", 1);
+	assert(e == 1);
+
+	memset(&evt, 0, sizeof(epoll_event));
+	pending = epoll_wait(epfd, &evt, 1, 1000);
+	assert(pending == 1);
+	assert(evt.events == EPOLLRDNORM);
+
+	close(epfd);
+	close(fds[0]);
+	close(fds[1]);
+}))

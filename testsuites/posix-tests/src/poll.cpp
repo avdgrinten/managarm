@@ -3,6 +3,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -105,4 +106,69 @@ DEFINE_TEST(poll_same_fd_pollfd, ([] {
 	close(sv[1]);
 
 	return 0;
+}))
+
+DEFINE_TEST(poll_norm_band_pipe, ([] {
+	int fds[2];
+	int e = pipe(fds);
+	assert(!e);
+	e = write(fds[1], "x", 1);
+	assert(e == 1);
+
+	pollfd pfd[2] = {};
+	pfd[0].fd = fds[0];
+	pfd[0].events = POLLIN | POLLRDNORM | POLLRDBAND;
+	pfd[1].fd = fds[1];
+	pfd[1].events = POLLOUT | POLLWRNORM | POLLWRBAND;
+	e = poll(pfd, 2, 0);
+	assert(e == 2);
+	assert(pfd[0].revents == (POLLIN | POLLRDNORM));
+	assert(pfd[1].revents == (POLLOUT | POLLWRNORM));
+
+	// POLLRDNORM alone must still report readiness.
+	pfd[0].events = POLLRDNORM;
+	e = poll(pfd, 1, 0);
+	assert(e == 1);
+	assert(pfd[0].revents == POLLRDNORM);
+
+	close(fds[0]);
+	close(fds[1]);
+}))
+
+DEFINE_TEST(poll_norm_band_unix_socket, ([] {
+	int sv[2];
+	int e = socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+	assert(!e);
+	e = write(sv[1], "x", 1);
+	assert(e == 1);
+
+	pollfd pfd = {};
+	pfd.fd = sv[0];
+	pfd.events = POLLIN | POLLRDNORM | POLLRDBAND | POLLOUT | POLLWRNORM | POLLWRBAND;
+	e = poll(&pfd, 1, 0);
+	assert(e == 1);
+	assert(pfd.revents == (POLLIN | POLLRDNORM | POLLOUT | POLLWRNORM | POLLWRBAND));
+
+	close(sv[0]);
+	close(sv[1]);
+}))
+
+DEFINE_TEST(poll_norm_eventfd, ([] {
+	int fd = eventfd(1, 0);
+	assert(fd >= 0);
+
+	// Like on Linux, eventfds only report POLLIN and POLLOUT.
+	pollfd pfd = {};
+	pfd.fd = fd;
+	pfd.events = POLLIN | POLLRDNORM | POLLOUT | POLLWRNORM;
+	int e = poll(&pfd, 1, 0);
+	assert(e == 1);
+	assert(pfd.revents == (POLLIN | POLLOUT));
+
+	pfd.events = POLLRDNORM | POLLWRNORM;
+	e = poll(&pfd, 1, 0);
+	assert(e == 0);
+	assert(pfd.revents == 0);
+
+	close(fd);
 }))
