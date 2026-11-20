@@ -235,7 +235,6 @@ struct K1xEmacNic : nic::Link {
 	  _mmio{_mmioMapping.get()},
 	  _mii{std::make_shared<K1xEmacMii>(_mmioMapping.get())} {}
 
-	async::result<size_t> receive(arch::dma_buffer_view) override;
 	async::result<void> send(const arch::dma_buffer_view) override;
 
 	async::result<bool> initialize();
@@ -245,6 +244,11 @@ private:
 	void cleanRxDescriptors(size_t index);
 
 	async::detached processIrqs();
+	async::detached processRx();
+
+	// Returns the frame of a released RX descriptor, or nothing if it has to be dropped.
+	std::optional<arch::dma_buffer_view> checkRxDescriptor(EmacDescriptor &rxDesc,
+			arch::dma_buffer_view rxBuffer);
 
 private:
 	protocols::hw::Device _device;
@@ -314,7 +318,7 @@ K1xEmacMii::write(uint8_t phyAddress, uint8_t registerNum, uint16_t value) {
 	co_return {};
 }
 
-async::result<size_t> K1xEmacNic::receive(arch::dma_buffer_view frame) {
+async::detached K1xEmacNic::processRx() {
 	while (true) {
 		auto index = _rxRing.head;
 
@@ -333,47 +337,51 @@ async::result<size_t> K1xEmacNic::receive(arch::dma_buffer_view frame) {
 		// Get the RX buffer for the current descriptor.
 		auto rxBuffer = _rxBuffer.subview(index * dmaBufferSize, bufferSize);
 
-		// Perform sanity checks on the RX descriptor.
-		if (!(rxDesc.data1.load() & regs::rxDesc1::lastDescriptor)) {
-			std::println("k1x-emac: rx descriptor last descriptor bit not set, discarding");
-			continue;
+		auto frame = checkRxDescriptor(rxDesc, rxBuffer);
+		if (frame) {
+			_barrier.invalidate(rxBuffer.data(), rxBuffer.size());
+			feedPacket(*frame);
 		}
 
-		auto status = rxDesc.data1.load() & regs::rxDesc1::applicationStatus;
-		auto length = rxDesc.data1.load() & regs::rxDesc1::framePacketLength;
-		if (status & regs::rxStatus::runt) {
-			std::println("k1x-emac: received rx frame is less than 64 bytes, discarding");
-			continue;
-		}
-		if (status & regs::rxStatus::checksumError) {
-			std::println("k1x-emac: received rx frame has CRC errors, discarding");
-			continue;
-		}
-		if (status & regs::rxStatus::maxLengthError) {
-			std::println("k1x-emac: received rx frame exceeds maximum length, discarding");
-			continue;
-		}
-		if (status & regs::rxStatus::jabberError) {
-			std::println("k1x-emac: received rx frame has been truncated, discarding");
-			continue;
-		}
-		if (length <= fcsLength || length > rxBuffer.size()) {
-			std::println("k1x-emac: received rx frame is too short or too long, discarding");
-			continue;
-		}
-
-		// Make sure the frame is big enough to copy over everything.
-		assert(length - fcsLength <= frame.size());
-
-		_barrier.invalidate(rxBuffer.data(), rxBuffer.size());
-		memcpy(frame.data(), rxBuffer.data(), length - fcsLength);
-
+		// Dropped frames have to return their descriptors as well.
 		if ((index + 1) % descriptorsPerCacheLine == 0) {
 			cleanRxDescriptors(index + 1 - descriptorsPerCacheLine);
 		}
-
-		co_return length - fcsLength;
 	}
+}
+
+std::optional<arch::dma_buffer_view>
+K1xEmacNic::checkRxDescriptor(EmacDescriptor &rxDesc, arch::dma_buffer_view rxBuffer) {
+	// Perform sanity checks on the RX descriptor.
+	if (!(rxDesc.data1.load() & regs::rxDesc1::lastDescriptor)) {
+		std::println("k1x-emac: rx descriptor last descriptor bit not set, discarding");
+		return std::nullopt;
+	}
+
+	auto status = rxDesc.data1.load() & regs::rxDesc1::applicationStatus;
+	auto length = rxDesc.data1.load() & regs::rxDesc1::framePacketLength;
+	if (status & regs::rxStatus::runt) {
+		std::println("k1x-emac: received rx frame is less than 64 bytes, discarding");
+		return std::nullopt;
+	}
+	if (status & regs::rxStatus::checksumError) {
+		std::println("k1x-emac: received rx frame has CRC errors, discarding");
+		return std::nullopt;
+	}
+	if (status & regs::rxStatus::maxLengthError) {
+		std::println("k1x-emac: received rx frame exceeds maximum length, discarding");
+		return std::nullopt;
+	}
+	if (status & regs::rxStatus::jabberError) {
+		std::println("k1x-emac: received rx frame has been truncated, discarding");
+		return std::nullopt;
+	}
+	if (length <= fcsLength || length > rxBuffer.size()) {
+		std::println("k1x-emac: received rx frame is too short or too long, discarding");
+		return std::nullopt;
+	}
+
+	return rxBuffer.subview(0, length - fcsLength);
 }
 
 async::result<void> K1xEmacNic::send(const arch::dma_buffer_view frame) {
@@ -712,6 +720,7 @@ async::result<bool> K1xEmacNic::initialize() {
 
 	// Kick off the IRQ processing coroutine.
 	processIrqs();
+	processRx();
 
 	co_return true;
 }
