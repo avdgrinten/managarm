@@ -204,7 +204,7 @@ public:
 				currentSeq = _currentSeq;
 				edges = 0;
 				if(_inSeq > sequence)
-					edges |= EPOLLIN;
+					edges |= EPOLLIN | EPOLLRDNORM;
 			}
 
 			if (edges & mask)
@@ -226,7 +226,7 @@ public:
 		std::lock_guard lock{mutex_};
 		int events = 0;
 		if(!_queue.empty())
-			events |= EPOLLIN;
+			events |= EPOLLIN | EPOLLRDNORM;
 
 		co_return PollStatusResult(_currentSeq, events);
 	}

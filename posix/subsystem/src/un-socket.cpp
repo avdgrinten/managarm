@@ -699,14 +699,14 @@ public:
 				sequence = _currentSeq;
 
 				// For now making sockets always writable is sufficient.
-				edges = EPOLLOUT;
+				edges = EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 				if (socktype_ == SOCK_STREAM || socktype_ == SOCK_SEQPACKET) {
 					if (_hupSeq > past_seq)
-						edges |= EPOLLHUP | EPOLLIN;
+						edges |= EPOLLHUP | EPOLLIN | EPOLLRDNORM;
 				}
 
 				if (_inSeq > past_seq)
-					edges |= EPOLLIN;
+					edges |= EPOLLIN | EPOLLRDNORM;
 
 				if (shutdownFlags_ & shutdownRead)
 					edges |= EPOLLRDHUP;
@@ -732,13 +732,13 @@ public:
 	async::result<frg::expected<Error, PollStatusResult>>
 	pollStatus(Process *) override {
 		std::lock_guard lock{unSocketMutex};
-		int events = EPOLLOUT;
+		int events = EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 		if(socktype_ == SOCK_STREAM || socktype_ == SOCK_SEQPACKET) {
 			if(_currentState == State::remoteShutDown)
-				events |= EPOLLHUP | EPOLLIN;
+				events |= EPOLLHUP | EPOLLIN | EPOLLRDNORM;
 		}
 		if(!_acceptQueue.empty() || !_recvQueue.empty())
-			events |= EPOLLIN;
+			events |= EPOLLIN | EPOLLRDNORM;
 		if(shutdownFlags_ & shutdownRead)
 			events |= EPOLLRDHUP;
 

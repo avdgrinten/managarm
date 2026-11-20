@@ -1001,10 +1001,10 @@ MasterFile::pollWait(Process *, uint64_t past_seq, int mask,
 			if(_channel->slaveCount == 0)
 				edges |= EPOLLHUP;
 			else
-				edges |= EPOLLOUT;
+				edges |= EPOLLOUT | EPOLLWRNORM;
 
 			if(_channel->masterInSeq > past_seq)
-				edges |= EPOLLIN;
+				edges |= EPOLLIN | EPOLLRDNORM;
 		}
 
 		if (edges & mask)
@@ -1029,10 +1029,10 @@ MasterFile::pollStatus(Process *) {
 	if(_channel->slaveCount == 0)
 		events |= EPOLLHUP;
 	else
-		events |= EPOLLOUT;
+		events |= EPOLLOUT | EPOLLWRNORM;
 
 	if(!_channel->masterQueue.empty())
-		events |= EPOLLIN;
+		events |= EPOLLIN | EPOLLRDNORM;
 
 	co_return PollStatusResult{_channel->currentSeq, events};
 }
@@ -1318,12 +1318,12 @@ SlaveFile::pollWait(Process *, uint64_t past_seq, int mask,
 
 			edges = 0;
 			if(_channel->masterCount == 0)
-				edges |= EPOLLHUP | EPOLLERR | EPOLLIN;
+				edges |= EPOLLHUP | EPOLLERR | EPOLLIN | EPOLLRDNORM;
 			else
-				edges |= EPOLLOUT;
+				edges |= EPOLLOUT | EPOLLWRNORM;
 
 			if(_channel->slaveInSeq > past_seq)
-				edges |= EPOLLIN;
+				edges |= EPOLLIN | EPOLLRDNORM;
 		}
 
 		if (edges & mask)
@@ -1345,12 +1345,12 @@ SlaveFile::pollStatus(Process *) {
 	std::lock_guard lock{_channel->mutex};
 	int events = 0;
 	if(_channel->masterCount == 0)
-		events |= EPOLLHUP | EPOLLERR | EPOLLIN;
+		events |= EPOLLHUP | EPOLLERR | EPOLLIN | EPOLLRDNORM;
 	else
-		events |= EPOLLOUT;
+		events |= EPOLLOUT | EPOLLWRNORM;
 
 	if(!_channel->slaveQueue.empty())
-		events |= EPOLLIN;
+		events |= EPOLLIN | EPOLLRDNORM;
 
 	co_return PollStatusResult{_channel->currentSeq, events};
 }

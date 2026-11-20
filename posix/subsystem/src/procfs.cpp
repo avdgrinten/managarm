@@ -136,7 +136,7 @@ RegularFile::writeAll(Process *, const void *data, size_t length) {
 
 async::result<frg::expected<Error, PollStatusResult>>
 RegularFile::pollStatus(Process *) {
-	co_return PollStatusResult{1, EPOLLIN};
+	co_return PollStatusResult{1, EPOLLIN | EPOLLRDNORM};
 }
 
 async::result<frg::expected<Error, PollWaitResult>>
@@ -149,7 +149,7 @@ RegularFile::pollWait(Process *, uint64_t sequence, int mask,
 
 	if(sequence)
 		co_await async::suspend_indefinitely(cancellation);
-	co_return PollWaitResult{1, EPOLLIN};
+	co_return PollWaitResult{1, EPOLLIN | EPOLLRDNORM};
 }
 
 helix::BorrowedDescriptor RegularFile::getPassthroughLane() {

@@ -33,14 +33,14 @@ async::result<frg::expected<Error, PollWaitResult>>
 OpenFile::pollWait(Process *, uint64_t inSeq, int pollMask,
 		async::cancellation_token cancellation) {
 	auto p = process_.lock();
-	if(!p && EPOLLIN & pollMask)
-		co_return PollWaitResult(1, EPOLLIN & pollMask);
+	if(!p && (pollMask & (EPOLLIN | EPOLLRDNORM)))
+		co_return PollWaitResult(1, (EPOLLIN | EPOLLRDNORM) & pollMask);
 	if(!isOpen())
 		co_return Error::fileClosed;
 
 	if(inSeq > 1) {
 		co_return Error::illegalArguments;
-	} else if(inSeq == 1 || (EPOLLIN & pollMask) != EPOLLIN) {
+	} else if(inSeq == 1 || !(pollMask & (EPOLLIN | EPOLLRDNORM))) {
 		co_await async::suspend_indefinitely(cancellation);
 	} else {
 		while(p->notifyType() != NotifyType::terminated) {
@@ -52,17 +52,17 @@ OpenFile::pollWait(Process *, uint64_t inSeq, int pollMask,
 		}
 	}
 
-	co_return PollWaitResult(1, (p->notifyType() == NotifyType::terminated ? EPOLLIN : 0) & pollMask);
+	co_return PollWaitResult(1, (p->notifyType() == NotifyType::terminated ? EPOLLIN | EPOLLRDNORM : 0) & pollMask);
 }
 
 async::result<frg::expected<Error, PollStatusResult>>
 OpenFile::pollStatus(Process *) {
 	auto p = process_.lock();
 	if(!p)
-		co_return PollStatusResult{1, EPOLLIN};
+		co_return PollStatusResult{1, EPOLLIN | EPOLLRDNORM};
 
 	bool terminated = p->notifyType() == NotifyType::terminated;
-	co_return PollStatusResult(terminated, terminated ? EPOLLIN : 0);
+	co_return PollStatusResult(terminated, terminated ? EPOLLIN | EPOLLRDNORM : 0);
 }
 
 async::result<std::string> OpenFile::getFdInfo() {
