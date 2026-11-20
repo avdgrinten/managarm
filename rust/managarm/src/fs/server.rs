@@ -137,6 +137,17 @@ pub trait File {
     async fn read_entries(&self) -> Result<Option<DirEntry>, Error> {
         Err(Error::IllegalOperationTarget)
     }
+
+    /// Cancels the request with the given cancellation ID (see CancelOperation),
+    /// e.g., because the client received a signal. The default does nothing.
+    async fn cancel(&self, cancellation_id: u64) {}
+
+    /// Handles an ioctl. `msg` is the message that follows the IoctlRequest
+    /// (e.g., a GenericIoctlRequest) and `id` is its bragi message ID.
+    /// The handler owns the rest of the conversation; the default dismisses it.
+    async fn ioctl(&self, id: u32, msg: Vec<u8>, conversation: hel::Handle) -> Result<(), ServeError> {
+        dismiss(conversation).await
+    }
 }
 
 /// Operations that a filesystem node served via [`serve_node`] can implement.
@@ -470,16 +481,24 @@ async fn handle_read_entries(
     send_response_with_tail(&conversation, &resp).await
 }
 
+async fn handle_ioctl(
+    conversation: hel::Handle,
+    file: Arc<dyn File>,
+    _req: bindings::IoctlRequest,
+) -> Result<(), ServeError> {
+    let msg = hel::submit_async(&conversation, hel::ReceiveInline).await.flatten()?;
+    let preamble = bragi::preamble_from_bytes(&msg).map_err(ServeError::Malformed)?;
+    file.ioctl(preamble.id(), msg, conversation).await
+}
+
 // TODO: Fire a cancellation event once cancellation support is implemented.
 async fn handle_cancel(
     conversation: hel::Handle,
+    file: Arc<dyn File>,
     req: bindings::CancelOperation,
 ) -> Result<(), ServeError> {
     extract_credentials(&conversation).await?;
-    eprintln!(
-        "managarm/fs: ignoring CancelOperation for cancellation ID {}",
-        req.cancellation_id()
-    );
+    file.cancel(req.cancellation_id()).await;
     // CancelOperation expects no response.
     Ok(())
 }
@@ -574,8 +593,17 @@ async fn dispatch_request(lane: &hel::Handle, file: &Arc<dyn File>) -> Result<()
                 handle_read_entries(conversation, file, req)
             })?;
         }
+        bindings::IoctlRequest::MESSAGE_ID => {
+            let file = file.clone();
+            parse_and_spawn(&head, conversation, move |conversation, req| {
+                handle_ioctl(conversation, file, req)
+            })?;
+        }
         bindings::CancelOperation::MESSAGE_ID => {
-            parse_and_spawn(&head, conversation, handle_cancel)?;
+            let file = file.clone();
+            parse_and_spawn(&head, conversation, move |conversation, req| {
+                handle_cancel(conversation, file, req)
+            })?;
         }
         // A decodable but unhandled message ID: unsupported rather than malformed.
         // Dismiss so that the client observes an error instead of hanging.
