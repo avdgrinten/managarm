@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cstring>
 #include <arch/bit.hpp>
-#include <async/oneshot-event.hpp>
 #include <frg/formatting.hpp>
 #include <frg/logging.hpp>
 #include <net/if.h>
@@ -149,12 +148,6 @@ unsigned int Link::iff_flags() {
 	return flags | extra_iff_flags_;
 }
 
-async::result<size_t> Link::receive(arch::dma_buffer_view) {
-	async::oneshot_event never;
-	co_await never.wait();
-	co_return 0;
-}
-
 void Link::feedPacket(arch::dma_buffer_view frame) {
 	if(!rawIp()) {
 		if(frame.size() < ethernetHeaderSize) {
@@ -190,22 +183,6 @@ void Link::feedPacket(arch::dma_buffer_view frame) {
 		}
 	} else {
 		ip4().feedPacket({}, {}, frame, weak_from_this());
-	}
-}
-
-async::detached runDevice(std::shared_ptr<nic::Link> dev) {
-	using namespace arch;
-	while(true) {
-		dma_buffer frameBuffer { dev->dmaPool(), 1514 };
-		auto len = co_await dev->receive(frameBuffer);
-
-		// Guard against drivers that report more bytes than the buffer can hold.
-		if(len > frameBuffer.size()) {
-			std::println("netserver: Discarding frame exceeding the receive buffer");
-			continue;
-		}
-
-		dev->feedPacket(frameBuffer.subview(0, len));
 	}
 }
 

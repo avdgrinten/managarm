@@ -224,7 +224,6 @@ async::result<protocols::svrctl::Error> doBindPci(mbus_ng::Entity baseEntity) {
 		co_return protocols::svrctl::Error::deviceNotSupported;
 
 	baseDeviceMap.insert({baseEntity.id(), device});
-	nic::runDevice(device);
 
 	co_return protocols::svrctl::Error::success;
 }
@@ -409,7 +408,6 @@ async::result<protocols::svrctl::Error> doBindUsb(mbus_ng::Entity baseEntity) {
 	auto device = co_await nic::usb_net::makeShared(baseEntity.id(), std::move(dev), mac, *matched_usb_info);
 
 	baseDeviceMap.insert({baseEntity.id(), device});
-	nic::runDevice(device);
 
 	co_return protocols::svrctl::Error::success;
 }
@@ -431,7 +429,6 @@ async::result<protocols::svrctl::Error> doBindDt(mbus_ng::Entity baseEntity) {
 	}
 
 	baseDeviceMap.insert({baseEntity.id(), nic});
-	nic::runDevice(nic);
 
 	co_return protocols::svrctl::Error::success;
 }
