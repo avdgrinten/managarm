@@ -183,3 +183,7 @@ void RealtekNic::printRegisters() {
 	frg::to(std::cout) << frg::fmt("\t misc_1: 0x{:02x}", uint8_t(_mmio.load(regs::misc_1))) << frg::endlog;
 	frg::to(std::cout) << frg::fmt("\t phy_status: 0x{:02x}", uint8_t(_mmio.load(regs::phy_status))) << frg::endlog;
 }
+
+void RealtekNic::updateLinkState() {
+	l1_up_ = _mmio.load(regs::phy_status) & flags::phy_status::link_status;
+}
