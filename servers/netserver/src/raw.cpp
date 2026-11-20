@@ -58,6 +58,8 @@ void Raw::feedPacket(arch::dma_buffer_view frame) {
 
 		// The frame is only borrowed for the duration of this call, so we have to copy it.
 		auto snapLen = std::min(frame.size(), accept_bytes);
+		if(!(*s)->rcvBudget_.tryCharge(snapLen))
+			continue;
 		arch::dma_buffer snapshot{nullptr, snapLen};
 		memcpy(snapshot.data(), frame.data(), snapLen);
 
@@ -130,6 +132,7 @@ async::result<protocols::fs::RecvResult> RawSocket::recvmsg(void *obj,
 
 	auto element = co_await self->queue_.async_get();
 	assert(element);
+	self->rcvBudget_.release(element->buffer.size());
 
 	size_t data_len = std::min(len, element->buffer.size());
 	memcpy(data, element->buffer.data(), data_len);
