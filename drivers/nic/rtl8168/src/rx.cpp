@@ -37,7 +37,13 @@ void RealtekNic::setRxConfigRegisters() {
 		case MacRevision::MacVer40 ... MacRevision::MacVer53: {
 			_mmio.store(regs::receive_config,
 				flags::receive_config::rx128_int_en(true) |
-				flags::receive_config::rx_multi_en(true) |
+				// TODO: there is conflicting info on this chicken bit;
+				// Linux sets it because of issues with AMD-Vi, the vendor driver
+				// does not do it. We might want to enable this in the long term.
+				// https://github.com/torvalds/linux/commit/607e68111180
+				// As it stands, enabling it for managarm breaks RX, and disabling
+				// it works for both the IOMMU and !IOMMU case.
+				flags::receive_config::rx_multi_en(false) |
 				flags::receive_config::mxdma(flags::receive_config::mxdma_unlimited) |
 				flags::receive_config::rx_early_off(true) |
 				flags::receive_config::accept_packet_with_destination_addr(false) |
