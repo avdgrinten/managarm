@@ -1,10 +1,19 @@
 #include <nic/virtio/virtio.hpp>
 
+#include <algorithm>
 #include <arch/dma_pool.hpp>
+#include <async/recurring-event.hpp>
 #include <core/virtio/core.hpp>
+#include <frg/list.hpp>
+#include <memory>
+#include <print>
+#include <vector>
 
 namespace {
 	constexpr bool logFrames = false;
+
+	// Bounds the RX buffers to 128 * ~1.5 KiB.
+	constexpr size_t maxRxBuffers = 128;
 }
 
 namespace {
@@ -41,16 +50,38 @@ struct VirtioNic : nic::Link {
 	VirtioNic(mbus_ng::EntityId entity, std::unique_ptr<virtio_core::Transport> transport);
 	async::result<void> initialize();
 
-	async::result<size_t> receive(arch::dma_buffer_view) override;
 	async::result<void> send(const arch::dma_buffer_view) override;
 
 	~VirtioNic() override = default;
 private:
+	// Holds the virtio-net header followed by the frame.
+	struct RxBuffer : virtio_core::Request {
+		VirtioNic *nic;
+		arch::dma_buffer buffer;
+		// Header and frame are separate descriptors, as legacy devices without
+		// VIRTIO_F_ANY_LAYOUT require.
+		std::vector<virtio_core::DmaChunk> chunks;
+		std::vector<virtio_core::Handle> handles;
+		// Links the buffer into rxDone_.
+		frg::default_list_hook<RxBuffer> hook;
+	};
+
+	async::result<void> postRx_(RxBuffer *rx);
+	async::detached processRx_();
+
 	mbus_ng::EntityId entity_;
 	std::unique_ptr<virtio_core::Transport> transport_;
 	virtio_core::Queue *receiveVq_;
 	virtio_core::Queue *transmitVq_;
 	size_t headerSize_;
+
+	std::vector<std::unique_ptr<RxBuffer>> rxBuffers_;
+	// Completed RX buffers in the order in which the device used them.
+	frg::intrusive_list<
+		RxBuffer,
+		frg::locate_member<RxBuffer, frg::default_list_hook<RxBuffer>, &RxBuffer::hook>
+	> rxDone_;
+	async::recurring_event rxEvent_;
 };
 
 VirtioNic::VirtioNic(mbus_ng::EntityId entity, std::unique_ptr<virtio_core::Transport> transport)
@@ -91,6 +122,24 @@ async::result<void> VirtioNic::initialize() {
 
 	transport_->runDevice();
 
+	// Keep the RX queue filled; buffers are reposted once their frame was fed to the stack.
+	auto &space = receiveVq_->dmaSpace();
+	size_t numRxBuffers = std::min(receiveVq_->numDescriptors() / 2, maxRxBuffers);
+	for(size_t i = 0; i < numRxBuffers; i++) {
+		auto rx = std::make_unique<RxBuffer>();
+		rx->nic = this;
+		rx->buffer = arch::dma_buffer{&transport_->memoryPool_, headerSize_ + 1514};
+		co_await space.ensure_mapped(rx->buffer);
+		rx->chunks = receiveVq_->splitContiguous(rx->buffer.subview(0, headerSize_));
+		auto frameChunks = receiveVq_->splitContiguous(rx->buffer.subview(headerSize_));
+		rx->chunks.insert(rx->chunks.end(), frameChunks.begin(), frameChunks.end());
+		rx->handles.resize(rx->chunks.size());
+		rxBuffers_.push_back(std::move(rx));
+	}
+	for(auto &rx : rxBuffers_)
+		co_await postRx_(rx.get());
+	processRx_();
+
 	mbus_ng::Properties netProperties{
 		{"drvcore.mbus-parent", mbus_ng::StringItem{std::to_string(entity_)}},
 		{"unix.subsystem", mbus_ng::StringItem{"net"}},
@@ -110,20 +159,42 @@ async::result<void> VirtioNic::initialize() {
 	}(std::move(netClassEntity));
 }
 
-async::result<size_t> VirtioNic::receive(arch::dma_buffer_view frame) {
-	arch::dma_object<VirtHeader> header { &transport_->memoryPool_ };
+async::result<void> VirtioNic::postRx_(RxBuffer *rx) {
+	co_await receiveVq_->obtainDescriptors(rx->handles);
 
-	auto &space = receiveVq_->dmaSpace();
-	co_await space.ensure_mapped(header.view_buffer());
-	co_await space.ensure_mapped(frame);
+	for(size_t i = 1; i < rx->handles.size(); i++)
+		rx->handles[i - 1].setupLink(rx->handles[i]);
+	for(size_t i = 0; i < rx->chunks.size(); i++)
+		rx->handles[i].setupBuffer(virtio_core::deviceToHost, rx->chunks[i]);
 
-	virtio_core::Chain chain;
-	chain.append(co_await receiveVq_->obtainDescriptor());
-	chain.setupBuffer(virtio_core::deviceToHost, header.view_buffer().subview(0, headerSize_));
-	chain.append(co_await receiveVq_->obtainDescriptor());
-	chain.setupBuffer(virtio_core::deviceToHost, frame);
+	receiveVq_->postDescriptor(rx->handles.front(), rx, [] (virtio_core::Request *base) {
+		auto rx = static_cast<RxBuffer *>(base);
+		rx->nic->rxDone_.push_back(rx);
+		rx->nic->rxEvent_.raise();
+	});
+	receiveVq_->notify();
+}
 
-	co_return (co_await receiveVq_->submitDescriptor(chain.front()) - headerSize_);
+async::detached VirtioNic::processRx_() {
+	while(true) {
+		RxBuffer *rx = nullptr;
+		co_await rxEvent_.async_wait_if([&] {
+			if(rxDone_.empty())
+				return true;
+			rx = rxDone_.pop_front();
+			return false;
+		});
+		if(!rx)
+			continue;
+
+		if(rx->len < headerSize_ || rx->len > rx->buffer.size()) {
+			std::println("virtio-driver: Dropping RX buffer with a used length of {}", rx->len);
+		}else{
+			feedPacket(rx->buffer.subview(headerSize_, rx->len - headerSize_));
+		}
+
+		co_await postRx_(rx);
+	}
 }
 
 async::result<void> VirtioNic::send(const arch::dma_buffer_view payload) {
