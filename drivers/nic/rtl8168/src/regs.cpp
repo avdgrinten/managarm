@@ -97,9 +97,12 @@ async::result<uint32_t> RealtekNic::readERIRegister(int reg) {
 }
 
 async::result<void> RealtekNic::writeERIRegister(int reg, uint8_t mask, uint32_t val) {
-	(void) reg;
 	_mmio.store(regs::eridr, val);
-	_mmio.store(regs::eriar, flags::eriar::write(true) | flags::eriar::mask(mask) | flags::eriar::type(flags::eriar::exgmac));
+	_mmio.store(
+	    regs::eriar,
+	    flags::eriar::write(true) | flags::eriar::mask(mask)
+	        | flags::eriar::type(flags::eriar::exgmac) | flags::eriar::address(reg)
+	);
 
 	co_await waitERIARWriteReady();
 }

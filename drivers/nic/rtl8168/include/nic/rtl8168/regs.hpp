@@ -198,8 +198,7 @@ namespace eridr {
 }
 
 namespace eriar {
-	// TODO: check how big this is
-	constexpr arch::field<uint32_t, uint8_t> address(0, 8);
+	constexpr arch::field<uint32_t, uint16_t> address(0, 12);
 	// Mask of which _bytes_ we want to overwrite
 	constexpr arch::field<uint32_t, uint8_t> mask(12, 4);
 	constexpr arch::field<uint32_t, uint8_t> type(16, 2);
