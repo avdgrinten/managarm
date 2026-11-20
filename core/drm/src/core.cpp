@@ -128,7 +128,7 @@ void drm_core::File::postEvent(drm_core::Event event) {
 
 	if(_pendingEvents.empty()) {
 		++_eventSequence;
-		_statusPage.update(_eventSequence, EPOLLIN);
+		_statusPage.update(_eventSequence, EPOLLIN | EPOLLRDNORM);
 	}
 	_pendingEvents.push_back(event);
 	_eventBell.raise();
@@ -188,7 +188,7 @@ drm_core::File::pollWait(void *object, uint64_t sequence, int mask,
 	while (true) {
 		edges = 0;
 		if (self->_eventSequence > sequence)
-			edges |= EPOLLIN;
+			edges |= EPOLLIN | EPOLLRDNORM;
 
 		if (edges & mask)
 			break;
@@ -206,7 +206,7 @@ drm_core::File::pollStatus(void *object) {
 
 	int s = 0;
 	if(!self->_pendingEvents.empty())
-		s |= EPOLLIN;
+		s |= EPOLLIN | EPOLLRDNORM;
 
 	co_return protocols::fs::PollStatusResult{self->_eventSequence, s};
 }
