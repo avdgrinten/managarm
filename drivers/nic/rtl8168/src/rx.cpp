@@ -71,7 +71,8 @@ void RealtekNic::setRxConfigRegisters() {
 		}
 	}
 
-	_mmio.store(regs::rx_max_size, 0x1FFF);
+	// Let the NIC drop frames that do not fit into a single RX descriptor buffer instead of splitting them.
+	_mmio.store(regs::rx_max_size, descriptorBufferSize);
 }
 
 void RealtekNic::closeRX() {
@@ -83,13 +84,13 @@ async::result<std::unique_ptr<RxQueue>> RxQueue::create(RealtekNic &nic, size_t 
 	std::vector<arch::dma_buffer> descriptorBuffers;
 
 	for(size_t i = 0; i < descriptorCount; i++) {
-		descriptorBuffers.emplace_back(nic.dmaPool(), 2048);
-		memset(descriptorBuffers.back().data(), 0, 2048);
+		descriptorBuffers.emplace_back(nic.dmaPool(), descriptorBufferSize);
+		memset(descriptorBuffers.back().data(), 0, descriptorBufferSize);
 
 		co_await nic.dmaSpace().ensure_mapped(descriptorBuffers.back());
 		uintptr_t addr = nic.dmaSpace().iova_of(descriptorBuffers.back());
 
-		descriptors[i].flags = flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(2048);
+		descriptors[i].flags = flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(descriptorBufferSize);
 		descriptors[i].vlan = 0;
 		descriptors[i].base_low = addr & 0xFFFF'FFFF;
 		descriptors[i].base_high = (addr >> 32) & 0xFFFF'FFFF;
@@ -109,11 +110,10 @@ RxQueue::RxQueue(
 )
 : _descriptors{std::move(descriptors)},
   _descriptor_buffers{std::move(descriptorBuffers)},
-  _last_rx_index(0, _descriptors.size()),
   _next_index(0, _descriptors.size()) {}
 
 async::result<size_t> RxQueue::submitDescriptor(arch::dma_buffer_view frame, RealtekNic &nic) {
-	auto ev_req = std::make_shared<Request>(_descriptors.size());
+	auto ev_req = std::make_shared<Request>();
 
 	co_await postDescriptor(frame, nic, ev_req);
 
@@ -124,31 +124,23 @@ async::result<size_t> RxQueue::submitDescriptor(arch::dma_buffer_view frame, Rea
 
 async::result<void> RxQueue::postDescriptor(arch::dma_buffer_view frame, RealtekNic &, std::shared_ptr<Request> req) {
 	req->frame = frame;
-	req->index = _next_index;
 
 	_requests.push(std::move(req));
 
-	++_next_index;
+	// The frame may have arrived before the request; its RX_OK IRQ found no request to complete.
+	handleRxOk();
 
 	co_return;
-}
-
-bool RxQueue::checkOwnerOfNextDescriptor() {
-	return (_descriptors[_next_index].flags & flags::rx::ownership) == flags::rx::owner_nic;
 }
 
 // TODO: support large packets
 void RxQueue::handleRxOk() {
 	while(!_requests.empty()) {
-		auto req = _requests.front();
-		auto i = req->index;
+		auto i = _next_index();
 
-		if((_descriptors[i].flags & flags::rx::ownership) == flags::rx::owner_nic) // Descriptor was not transmitted?
+		auto _flags = loadFlags(_descriptors[i]);
+		if((_flags & flags::rx::ownership) == flags::rx::owner_nic) // Descriptor was not transmitted?
 			break;
-
-		__sync_synchronize();
-
-		auto _flags = _descriptors[i].flags;
 
 		if(logRXDescriptor) {
 			std::cout << "drivers/rtl8168: got RX descriptor, flags:" << std::endl;
@@ -176,10 +168,26 @@ void RxQueue::handleRxOk() {
 			}
 		}
 
+		// Hand the descriptor back to the NIC; frames that cannot be delivered are dropped this way.
+		auto recycle = [&] {
+			_descriptors[i].vlan = 0;
+			storeFlags(_descriptors[i], flags::rx::eor(_flags & flags::rx::eor) |
+				flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(descriptorBufferSize));
+			++_next_index;
+		};
+
+		// Frames spanning several descriptors exceed the MTU; each of their segments is dropped.
+		if((_flags & flags::rx::receive_error) || !(_flags & flags::rx::first_segment)
+				|| !(_flags & flags::rx::last_segment)) {
+			recycle();
+			continue;
+		}
+
 		auto size = _flags & flags::rx::frame_length;
 
 		if(size < 4) {
-			break;
+			recycle();
+			continue;
 		}
 
 		// The NIC always includes the FCS in the resulting buffer, while netserver expacts
@@ -187,14 +195,24 @@ void RxQueue::handleRxOk() {
 		// the receive buffer by 4 bytes.
 		size -= 4;
 
+		auto req = _requests.front();
+
+		// rx_max_size admits frames (e.g., VLAN-tagged ones) larger than the receiver's buffer.
+		if(size > req->frame.size()) {
+			if(!_loggedOversizedFrame) {
+				std::cout << "drivers/rtl8168: dropping RX frame of " << size
+					<< " bytes that exceeds the receive buffer" << std::endl;
+				_loggedOversizedFrame = true;
+			}
+			recycle();
+			continue;
+		}
+
 		memcpy(req->frame.data(), _descriptor_buffers[i].data(), size);
 		req->frame = req->frame.subview(0, size);
+		recycle();
 
-		_descriptors[i].flags = flags::rx::eor(_descriptors[i].flags & flags::rx::eor) |
-			flags::rx::ownership(flags::rx::owner_nic) | flags::rx::frame_length(2048);
-		_descriptors[i].vlan = 0;
-
-		req->event.raise();
 		_requests.pop();
+		req->event.raise();
 	}
 }

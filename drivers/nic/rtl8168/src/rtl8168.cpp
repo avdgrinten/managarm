@@ -596,6 +596,9 @@ async::detached RealtekNic::processIrqs() {
 			_mmio.store(regs::interrupt_status, arch::bit_value<uint16_t>(uint32_t(status)));
 		}
 
+		// The status is cleared, so events from here on raise a new IRQ.
+		HEL_CHECK(helAcknowledgeIrq(_irq.getHandle(), kHelAckAcknowledge, sequence));
+
 		// Did the status of the network link change?
 		if(status & flags::interrupt_status::link_change) {
 			if(logIRQs) {
@@ -608,8 +611,12 @@ async::detached RealtekNic::processIrqs() {
 			if(logIRQs) {
 				std::cout << "drivers/rtl8168: TX_OK" << std::endl;
 			}
-			_txQueue->handleTxOk();
 		}
+
+		// Descriptors of failed transmissions are handed back as well; their senders must not wait forever.
+		if((status & flags::interrupt_status::tx_ok) || (status & flags::interrupt_status::tx_err)
+				|| (status & flags::interrupt_status::tx_desc_unavailable))
+			_txQueue->handleTxOk();
 
 		// Did the NIC run out of descriptors to send?
 		if(status & flags::interrupt_status::tx_desc_unavailable) {
@@ -634,13 +641,23 @@ async::detached RealtekNic::processIrqs() {
 			if(logIRQs) {
 				std::cout << "drivers/rtl8168: RX_OK" << std::endl;
 			}
-			_rxQueue->handleRxOk();
 		}
 
 		// Did the NIC encounter an error doing receive?
 		if(status & flags::interrupt_status::rx_err) {
 			std::cout << "drivers/rtl8168: got RX_ERR interrupt!" << std::endl;
 		}
+
+		// Did the NIC run out of RX descriptors?
+		if((status & flags::interrupt_status::rx_overflow) && !_loggedRxOverflow) {
+			std::cout << "drivers/rtl8168: ran out of RX descriptors" << std::endl;
+			_loggedRxOverflow = true;
+		}
+
+		if((status & flags::interrupt_status::rx_ok) || (status & flags::interrupt_status::rx_err)
+				|| (status & flags::interrupt_status::rx_overflow)
+				|| (status & flags::interrupt_status::rx_fifo_overflow))
+			_rxQueue->handleRxOk();
 
 		// Did we get a timer interrupt?
 		if(status & flags::interrupt_status::pcs_timeout) {
@@ -653,8 +670,6 @@ async::detached RealtekNic::processIrqs() {
 			// Reset the timer
 			_mmio.store(regs::timer_count, 1);
 		}
-
-		HEL_CHECK(helAcknowledgeIrq(_irq.getHandle(), kHelAckAcknowledge, sequence));
 	}
 }
 

@@ -25,8 +25,8 @@ async::result<std::unique_ptr<TxQueue>> TxQueue::create(RealtekNic &nic, size_t 
 	std::vector<arch::dma_buffer> descriptorBuffers;
 
 	for(size_t i = 0; i < descriptorCount; i++) {
-		descriptorBuffers.emplace_back(nic.dmaPool(), 2048);
-		memset(descriptorBuffers.back().data(), 0, 2048);
+		descriptorBuffers.emplace_back(nic.dmaPool(), descriptorBufferSize);
+		memset(descriptorBuffers.back().data(), 0, descriptorBufferSize);
 
 		co_await nic.dmaSpace().ensure_mapped(descriptorBuffers.back());
 		uintptr_t addr = nic.dmaSpace().iova_of(descriptorBuffers.back());
@@ -51,21 +51,30 @@ TxQueue::TxQueue(
 )
 : _descriptor_buffers{std::move(descriptorBuffers)},
   _descriptors{std::move(descriptors)},
-  _amount_free_descriptors{_descriptors.size()},
+  _freeDescriptors{_descriptors.size()},
   tx_index{0, _descriptors.size()},
   hw_tx_index{0, _descriptors.size()} {}
 
 async::result<void> TxQueue::submitDescriptor(arch::dma_buffer_view payload, RealtekNic &nic) {
-	auto ev_req = std::make_shared<Request>(_descriptors.size());
+	// Raw sockets can hand us frames of any size, but each frame has to fit into one descriptor buffer.
+	if(payload.size() > descriptorBufferSize) {
+		if(!_loggedOversizedFrame) {
+			std::cout << "drivers/rtl8168: dropping TX frame of " << payload.size()
+				<< " bytes that exceeds the descriptor buffer" << std::endl;
+			_loggedOversizedFrame = true;
+		}
+		co_return;
+	}
+
+	auto ev_req = std::make_shared<Request>();
 
 	co_await postDescriptor(payload, nic, ev_req);
 	co_await ev_req->event.wait();
 }
 
 // TODO: support large packets
-// TODO: this function should be able to fail; there may not be enough space in the ring buffer, which should be handled gracefully
 async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, RealtekNic &nic, std::shared_ptr<Request> req) {
-	assert(_amount_free_descriptors);
+	co_await _freeDescriptors.async_acquire();
 
 	_requests.push(req);
 
@@ -82,14 +91,9 @@ async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, Realt
 
 	memcpy(_descriptor_buffers[tx_index()].data(), payload.data(), payload.size());
 
-	// Force strict ordering of the ownership flag, in the event that we are already transmitting
-	desc->flags |= flags::tx::first_segment(true);
-	desc->flags |= flags::tx::last_segment(true);
-	desc->flags |= flags::tx::frame_length(actual_size);
-	__sync_synchronize();
-	desc->flags |= flags::tx::ownership(flags::tx::owner_nic);
-	__sync_synchronize();
-	--_amount_free_descriptors;
+	storeFlags(*desc, flags::tx::eor(loadFlags(*desc) & flags::tx::eor) |
+		flags::tx::first_segment(true) | flags::tx::last_segment(true) |
+		flags::tx::frame_length(actual_size) | flags::tx::ownership(flags::tx::owner_nic));
 
 	// TOOD: Technically, we should not be ringing the doorbell after every transmision, but only if there
 	//       are no current transmissions in progress.
@@ -100,7 +104,7 @@ async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, Realt
 		std::cout << "drivers/rtl8168: posting TX descriptor: "
 			<< "tx_index: " << tx_index
 			<< ", hw_tx_index: " << hw_tx_index
-			<< ", amount_free_descriptors: " << _amount_free_descriptors
+			<< ", amount_free_descriptors: " << _descriptors.size() - _requests.size()
 			<< std::endl;
 
 		std::cout << "drivers/rtl8168: "
@@ -115,24 +119,22 @@ async::result<void> TxQueue::postDescriptor(arch::dma_buffer_view payload, Realt
 // TODO: potential race conditions?
 // TODO: locking the queue indexes might be a good idea
 void TxQueue::handleTxOk() {
-	while(hw_tx_index != tx_index) {
+	// Each in-flight descriptor has one request; tx_index == hw_tx_index is ambiguous when the ring is full.
+	while(!_requests.empty()) {
 		auto i = hw_tx_index();
-		if((_descriptors[i].flags & flags::tx::ownership) == flags::tx::owner_nic) // Descriptor was not transmitted?
+		auto descFlags = loadFlags(_descriptors[i]);
+		if((descFlags & flags::tx::ownership) == flags::tx::owner_nic) // Descriptor was not transmitted?
 			break;
 
 		// Remove all info except EOR
-		_descriptors[i].flags = flags::tx::eor(_descriptors[i].flags & flags::tx::eor);
+		storeFlags(_descriptors[i], flags::tx::eor(descFlags & flags::tx::eor));
 		_descriptors[i].vlan = 0;
 
-		if(_requests.empty())
-			break;
-
 		auto req = _requests.front();
-
-		req->event.raise();
 		_requests.pop();
 		++hw_tx_index;
-		++_amount_free_descriptors;
+		_freeDescriptors.release();
+		req->event.raise();
 	}
 	if(logIRQs) {
 		std::cout << "drivers/rtl8168: completed handling of TX_OK"
