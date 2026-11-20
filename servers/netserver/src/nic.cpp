@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <arch/bit.hpp>
+#include <async/oneshot-event.hpp>
 #include <frg/formatting.hpp>
 #include <frg/logging.hpp>
 #include <net/if.h>
@@ -146,6 +147,12 @@ unsigned int Link::iff_flags() {
 		flags |= IFF_LOWER_UP;
 
 	return flags | extra_iff_flags_;
+}
+
+async::result<size_t> Link::receive(arch::dma_buffer_view) {
+	async::oneshot_event never;
+	co_await never.wait();
+	co_return 0;
 }
 
 void Link::feedPacket(arch::dma_buffer_view frame) {

@@ -69,7 +69,8 @@ struct Link : std::enable_shared_from_this<Link> {
 	Link(unsigned int mtu, arch::dma_pool *dmaPool);
 	virtual ~Link() = default;
 	//! Receives an entire frame from the network
-	virtual async::result<size_t> receive(arch::dma_buffer_view) = 0;
+	//! Drivers that push frames with feedPacket() do not override this; it never completes.
+	virtual async::result<size_t> receive(arch::dma_buffer_view);
 	//! Sends an entire ethernet frame
 	virtual async::result<void> send(const arch::dma_buffer_view) = 0;
 	//! Called by the driver for each received frame, in order.
