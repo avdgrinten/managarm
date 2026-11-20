@@ -184,8 +184,7 @@ async::detached runDevice(std::shared_ptr<nic::Link> dev) {
 
 			switch (ethertype) {
 			case ETHER_TYPE_IP4:
-				ip4().feedPacket(dstsrc[0], dstsrc[1],
-					std::move(frameBuffer), capsule, dev);
+				ip4().feedPacket(dstsrc[0], dstsrc[1], capsule, dev);
 				break;
 			case ETHER_TYPE_ARP:
 				neigh4().feedArp(dstsrc[0], capsule, dev);
@@ -195,7 +194,7 @@ async::detached runDevice(std::shared_ptr<nic::Link> dev) {
 			}
 		} else {
 			auto capsule = frameBuffer.subview(0, len);
-			ip4().feedPacket({}, {}, std::move(frameBuffer), capsule, dev);
+			ip4().feedPacket({}, {}, capsule, dev);
 		}
 	}
 }

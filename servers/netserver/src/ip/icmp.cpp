@@ -364,22 +364,21 @@ void Icmp::feedDatagram(smarter::shared_ptr<const Ip4Packet> packet, std::weak_p
 	assert(icmp.packet->payload().size() >= sizeof(IcmpPacket::Header));
 	memcpy(&header, icmp.packet->payload().data(), sizeof(IcmpPacket::Header));
 
+	// Like Linux' icmp_echo_ignore_broadcasts, so that we cannot act as a smurf amplifier.
+	bool dispatch = header.type == ICMP_ECHO
+			&& ip4().classifyAddress(icmp.packet->header.destination) == Ip4::AddressType::unicast;
+
+	if (!sockets.empty() || dispatch)
+		icmp.packet = Ip4Packet::retain(std::move(icmp.packet));
+
 	for(auto s : sockets) {
 		s->queue_.emplace(IcmpPacket{icmp});
 		s->inSeq_ = ++s->currentSeq_;
 		s->statusBell_.raise();
 	}
 
-	switch (header.type) {
-		case ICMP_ECHO:
-			// Like Linux' icmp_echo_ignore_broadcasts, so that we cannot act as a smurf amplifier.
-			if (ip4().classifyAddress(icmp.packet->header.destination)
-					== Ip4::AddressType::unicast)
-				this->queue_.emplace(icmp);
-			break;
-		default:
-			// Do nothing.
-	}
+	if (dispatch)
+		this->queue_.emplace(icmp);
 }
 
 static async::result<void> serveLanes(

@@ -747,6 +747,7 @@ void Udp4::feedDatagram(smarter::shared_ptr<const Ip4Packet> packet, std::weak_p
 			if (!(i->second->shutdownReadSeq_)) {
 				if (logSockets)
 					std::println("netserver: received udp datagram to port {}", udp.header.dst);
+				udp.packet = Ip4Packet::retain(std::move(udp.packet));
 				i->second->queue_.emplace(std::move(udp));
 				i->second->_inSeq = ++i->second->_currentSeq;
 				i->second->_statusBell.raise();

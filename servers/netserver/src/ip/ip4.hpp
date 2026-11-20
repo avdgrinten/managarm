@@ -156,7 +156,11 @@ public:
 	}
 
 	// assumes frame is a valid view into owner
+	// Without an owner, the packet borrows the frame and is only valid during Ip4::feedPacket().
 	bool parse(arch::dma_buffer owner, arch::dma_buffer_view frame, bool resizeData);
+
+	// Everything that keeps a packet beyond Ip4::feedPacket() has to go through this.
+	static smarter::shared_ptr<const Ip4Packet> retain(smarter::shared_ptr<const Ip4Packet> packet);
 };
 
 struct Ip4TargetInfo {
@@ -179,9 +183,9 @@ struct Ip4 {
 	Ip4();
 
 	managarm::fs::Errors serveSocket(helix::UniqueLane ctrlLane, helix::UniqueLane ptLane, int type, int proto, int flags);
-	// frame is a view into the owner buffer, stripping away eth bits
+	// frame is borrowed for the duration of the call, stripping away eth bits
 	void feedPacket(nic::MacAddress dest, nic::MacAddress src,
-		arch::dma_buffer owner, arch::dma_buffer_view frame, std::weak_ptr<nic::Link> link);
+		arch::dma_buffer_view frame, std::weak_ptr<nic::Link> link);
 
 	bool hasIp(uint32_t ip);
 	AddressType classifyAddress(uint32_t ip);
