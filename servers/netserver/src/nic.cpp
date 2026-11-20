@@ -222,19 +222,8 @@ public:
 		extra_iff_flags_ = IFF_LOOPBACK;
 	}
 
-	async::result<size_t> receive(arch::dma_buffer_view view) override {
-		auto buf = co_await queue_.async_get();
-		assert(buf); // Since async_get() is never cancelled.
-		auto chunk = std::min(view.size(), buf->size());
-		if (debugLoopback)
-			std::println("loopback: Received packet (size {})", chunk);
-		memcpy(view.data(), buf->data(), chunk);
-		co_return chunk;
-	}
-
 	async::result<void> send(const arch::dma_buffer_view view) override {
-		std::vector<std::byte> buf;
-		buf.resize(view.size());
+		arch::dma_buffer buf{nullptr, view.size()};
 		memcpy(buf.data(), view.data(), view.size());
 		if (debugLoopback)
 			std::println("loopback: Sending packet (size {})", view.size());
@@ -242,14 +231,29 @@ public:
 		co_return;
 	}
 
+	// put() only posts this coroutine to its run queue, so send() never re-enters feedPacket().
+	async::detached feedFrames() {
+		while (true) {
+			auto buf = co_await queue_.async_get();
+			assert(buf); // Since async_get() is never cancelled.
+			if (debugLoopback)
+				std::println("loopback: Received packet (size {})", buf->size());
+			feedPacket(*buf);
+		}
+	}
+
 private:
-	async::queue<std::vector<std::byte>, frg::stl_allocator> queue_;
+	async::queue<arch::dma_buffer, frg::stl_allocator> queue_;
 };
 
 } // namespace
 
 std::shared_ptr<Link> getLoopback() {
-	static std::shared_ptr<Loopback> singleton = std::make_shared<Loopback>();
+	static std::shared_ptr<Loopback> singleton = [] {
+		auto loopback = std::make_shared<Loopback>();
+		loopback->feedFrames();
+		return loopback;
+	}();
 	return singleton;
 }
 

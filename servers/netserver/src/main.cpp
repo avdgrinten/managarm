@@ -1014,7 +1014,6 @@ int main() {
 	loopbackRoute.scope = RT_SCOPE_HOST;
 	loopbackRoute.source = INADDR_LOOPBACK;
 	ip4Router().addRoute(loopbackRoute);
-	nic::runDevice(loopbackLink);
 
 	async::detach(protocols::svrctl::serveControl(&controlOps));
 	advertise();
