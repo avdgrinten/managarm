@@ -341,6 +341,7 @@ async::result<void> IgcNic::init() {
 	wrfl();
 
 	processIrqs();
+	processRx();
 }
 
 async::detached IgcNic::processIrqs() {
@@ -372,26 +373,26 @@ async::detached IgcNic::processIrqs() {
 	}
 }
 
-async::result<size_t> IgcNic::receive(arch::dma_buffer_view frame) {
+async::detached IgcNic::processRx() {
 	while (true) {
 		size_t i = rxNtc_;
 		__sync_synchronize();
 		uint32_t status = rxDescs_[i].statusError;
 		if (status & desc::rxdStatDd) {
 			uint16_t len = rxDescs_[i].length;
-			size_t n = std::min({size_t(len), frame.size(), bufferSize});
-			memcpy(frame.data(), rxBufs_[i].data, n);
+			size_t n = std::min(size_t(len), bufferSize);
+
+			if (!(status & desc::rxdStatEop)) {
+				std::println("igc: Dropping RX frame without EOP");
+			} else {
+				feedPacket(rxBufs_.object_view(i).view_buffer().subview(0, n));
+			}
 
 			armRx(i);
 			__sync_synchronize();
 			space_.store(reg::rdt0, i);
 			rxNtc_ = (i + 1) % ringSize;
-
-			if (!(status & desc::rxdStatEop)) {
-				std::println("igc: Dropping RX frame without EOP");
-				continue;
-			}
-			co_return n;
+			continue;
 		}
 		co_await rxEvent_.async_wait();
 	}

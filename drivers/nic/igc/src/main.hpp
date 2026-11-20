@@ -44,13 +44,13 @@ struct Buffer {
 struct IgcNic : nic::Link {
 	IgcNic(protocols::hw::Device device, helix::UniqueDescriptor dmaSpace, bool iommuActive);
 
-	async::result<size_t> receive(arch::dma_buffer_view) override;
 	async::result<void> send(const arch::dma_buffer_view) override;
 
 	async::result<void> init();
 
 private:
 	async::detached processIrqs();
+	async::detached processRx();
 
 	async::result<void> reset();
 	void readMac(std::array<uint8_t, 6> &out);
