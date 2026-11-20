@@ -4,6 +4,7 @@
 #include "ip4.hpp"
 #include "tcp4.hpp"
 #include "udp4.hpp"
+#include "../receive-budget.hpp"
 #include <async/recurring-event.hpp>
 #include <linux/rtnetlink.h>
 #include <net/if.h>
@@ -208,6 +209,7 @@ struct Ip4Socket {
 		}
 		auto element = std::move(self->pqueue.front());
 		self->pqueue.pop();
+		self->rcvBudget_.release(element->data.size());
 		auto packet = element->data;
 		auto copy_size = std::min(packet.size(), len);
 		std::memcpy(data, packet.data(), copy_size);
@@ -256,6 +258,7 @@ private:
 	int proto;
 	uint32_t remote = 0;
 	std::queue<smarter::shared_ptr<const Ip4Packet>> pqueue;
+	ReceiveBudget rcvBudget_;
 	async::recurring_event bell;
 };
 
@@ -672,10 +675,14 @@ void Ip4::feedPacket(nic::MacAddress, nic::MacAddress,
 	default: break;
 	}
 
-	if (begin != sockets.end() && begin->first == proto)
-		hdrs = Ip4Packet::retain(std::move(hdrs));
-
+	// One copy is shared by all raw sockets, and only made if one of them takes it.
+	bool retained = false;
 	for (; begin != sockets.end() && begin->first == proto; begin++) {
+		if (!begin->second->rcvBudget_.tryCharge(hdrs->data.size()))
+			continue;
+		if (!retained)
+			hdrs = Ip4Packet::retain(std::move(hdrs));
+		retained = true;
 		begin->second->pqueue.emplace(hdrs);
 		begin->second->bell.raise();
 	}
