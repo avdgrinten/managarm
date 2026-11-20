@@ -1508,7 +1508,11 @@ void Process::dumpRegisters() {
 		uintptr_t end = start + mapping.size();
 
 		std::string path;
-		if(mapping.backingFile().get()) {
+		if(mapping.backingFile().get() && !(mapping.backingFile()->associatedMount()
+				&& mapping.backingFile()->associatedLink())) {
+			// Files without a path (e.g., files that servers install via ServeFdRequest).
+			path = "anon_inode:" + mapping.backingFile()->structName().type();
+		}else if(mapping.backingFile().get()) {
 			// TODO: store the ViewPath inside the mapping.
 			ViewPath vp{fsContext()->getRoot().first,
 					mapping.backingFile()->associatedLink()};
