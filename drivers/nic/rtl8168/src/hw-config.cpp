@@ -81,7 +81,7 @@ async::result<void> RealtekNic::RTL8168fCommonConfiguration() {
 	if(_revision != MacRevision::MacVer34) {
 		co_await writeERIRegister(0x1B0, 0b1111, co_await readERIRegister(0x1B0) | (1 << 4));
 	}
-	co_await writeERIRegister(0x1D0, 0b1111, co_await readERIRegister(0x1B0) | (1 << 4) | (1 << 1));
+	co_await writeERIRegister(0x1D0, 0b1111, co_await readERIRegister(0x1D0) | (1 << 4) | (1 << 1));
 	co_await writeERIRegister(0xCC, 0b1111, 0x50);
 	co_await writeERIRegister(0xD0, 0b1111, 0x60);
 
