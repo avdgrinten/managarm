@@ -447,6 +447,27 @@ std::vector<VmContext::AreaSnapshot> VmContext::snapshotAreasLocked_() {
 	return areas;
 }
 
+async::result<std::optional<VmContext::AreaMemory>> VmContext::findAreaMemory(uintptr_t address) {
+	co_await _mutex.async_lock_shared();
+	frg::shared_lock lock{frg::adopt_lock, _mutex};
+
+	auto it = _areaTree.upper_bound(address);
+	if(it == _areaTree.begin())
+		co_return std::nullopt;
+	--it;
+	auto &area = it->second;
+	if(address >= it->first + area.areaSize)
+		co_return std::nullopt;
+
+	auto &memory = area.copyOnWrite ? area.copyView : area.fileView;
+	co_return AreaMemory{
+		.memory = memory.dup(),
+		.baseAddress = it->first,
+		.size = area.areaSize,
+		.memoryOffset = area.effectiveOffset,
+	};
+}
+
 // ----------------------------------------------------------------------------
 // FsContext.
 // ----------------------------------------------------------------------------

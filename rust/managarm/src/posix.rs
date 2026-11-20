@@ -16,6 +16,9 @@ pub enum Error {
     /// POSIX rejected the request.
     #[error("POSIX rejected the request: {0:?}")]
     Rejected(bindings::Errors),
+    /// POSIX did not adhere to the protocol (e.g., it did not send a descriptor).
+    #[error("POSIX violated the protocol")]
+    ProtocolViolation,
     /// A message could not be encoded or decoded.
     #[error("malformed message: {0}")]
     Malformed(#[from] std::io::Error),
@@ -143,4 +146,55 @@ pub async fn serve_fd(
         return Err(Error::Rejected(resp.error()));
     }
     Ok(resp.fd())
+}
+
+/// A mapping in the address space of another process, see [`access_process_memory`].
+pub struct ProcessMemory {
+    /// The memory object that backs the mapping.
+    pub memory: Handle,
+    /// The mapping covers `[base, base + size)` in the process' address space.
+    pub base: usize,
+    pub size: usize,
+    /// Offset of `base` into `memory`.
+    pub offset: usize,
+}
+
+/// Asks POSIX for the mapping that contains `address` in the process with the given credentials.
+/// `posix_lane` is the lane that POSIX passed to the device via OPEN_FD_LANE.
+pub async fn access_process_memory(
+    posix_lane: &Handle,
+    credentials: [u8; 16],
+    address: usize,
+) -> Result<ProcessMemory> {
+    let head = bragi::head_to_bytes(&bindings::AccessProcessMemoryRequest::new(
+        credentials,
+        address as u64,
+    ))?;
+    let (offer, (send_req, recv_resp, pull_memory)) = hel::submit_async(
+        posix_lane,
+        hel::Offer::new((
+            hel::SendBuffer::new(&head),
+            hel::ReceiveInline,
+            hel::PullDescriptor::new(
+                hel_sys::kHelRightRead
+                    | hel_sys::kHelRightWrite
+                    | hel_sys::kHelRightExecute
+                    | hel_sys::kHelRightAssign,
+            ),
+        )),
+    )
+    .await?;
+    offer?;
+    send_req?;
+    let resp: bindings::AccessProcessMemoryResponse = bragi::head_from_bytes(&recv_resp?)?;
+    if resp.error() != bindings::Errors::Success {
+        return Err(Error::Rejected(resp.error()));
+    }
+    let memory = pull_memory?.ok_or(Error::ProtocolViolation)?;
+    Ok(ProcessMemory {
+        memory,
+        base: resp.base() as usize,
+        size: resp.size() as usize,
+        offset: resp.offset() as usize,
+    })
 }

@@ -373,6 +373,46 @@ async::result<void> serveServerLane(helix::UniqueDescriptor lane) {
 				helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
 			);
 			HEL_CHECK(send_resp.error());
+		} else if(id == bragi::message_id<managarm::posix::AccessProcessMemoryRequest>) {
+			auto req = *bragi::parse_head_only<managarm::posix::AccessProcessMemoryRequest>(recv_req);
+			recv_req.reset();
+
+			managarm::posix::AccessProcessMemoryResponse resp;
+
+			auto creds = helix_ng::CredentialsView{req.passthrough_credentials()};
+			auto process = findProcessWithCredentials(creds);
+			if(!process) {
+				std::cout << "posix: ACCESS_PROCESS_MEMORY with unknown process credentials" << std::endl;
+				resp.set_error(managarm::posix::Errors::NO_SUCH_RESOURCE);
+				auto [send_resp] = co_await helix_ng::exchangeMsgs(conversation,
+					helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
+				);
+				HEL_CHECK(send_resp.error());
+				continue;
+			}
+
+			auto area = co_await (*process)->vmContext()->findAreaMemory(req.address());
+			if(!area) {
+				resp.set_error(managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+				auto [send_resp] = co_await helix_ng::exchangeMsgs(conversation,
+					helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{})
+				);
+				HEL_CHECK(send_resp.error());
+				continue;
+			}
+
+			resp.set_error(managarm::posix::Errors::SUCCESS);
+			resp.set_base(area->baseAddress);
+			resp.set_size(area->size);
+			resp.set_offset(area->memoryOffset);
+
+			auto [send_resp, push_memory] = co_await helix_ng::exchangeMsgs(conversation,
+				helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{}),
+				helix_ng::pushDescriptor(area->memory,
+					kHelRightRead | kHelRightWrite | kHelRightExecute | kHelRightAssign)
+			);
+			HEL_CHECK(send_resp.error());
+			HEL_CHECK(push_memory.error());
 		} else {
 			auto [dismiss] = co_await helix_ng::exchangeMsgs(
 				conversation, helix_ng::dismiss());

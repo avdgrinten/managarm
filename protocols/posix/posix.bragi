@@ -1222,6 +1222,24 @@ head(128):
 	int32 fd;
 }
 
+// Sent by servers on the lane that they obtain via OPEN_FD_LANE.
+// Looks up the mapping that contains `address` in the process with the given credentials.
+// On success, the response is followed by the memory object that backs the mapping.
+// The mapping covers [base, base + size) and `base` is at `offset` into the memory object.
+message AccessProcessMemoryRequest 251 {
+head(128):
+	char[16] passthrough_credentials;
+	uint64 address;
+}
+
+message AccessProcessMemoryResponse 252 {
+head(128):
+	Errors error;
+	uint64 base;
+	uint64 size;
+	uint64 offset;
+}
+
 message DupFdQueryRequest 223 {
 head(128):
 	int32 fd;
