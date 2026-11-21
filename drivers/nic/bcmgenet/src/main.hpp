@@ -51,7 +51,6 @@ struct BcmGenetNic : nic::Link {
 	, phyMode_{phyMode}
 	, mii_{std::make_shared<BcmGenetMii>(this)} { mac_ = macAddr; }
 
-	async::result<size_t> receive(arch::dma_buffer_view) override;
 	async::result<void> send(const arch::dma_buffer_view) override;
 
 	async::result<void> initialize();
@@ -74,6 +73,7 @@ private:
 	void setupRxFilter_();
 
 	async::detached processIrqs_();
+	async::detached processRx_();
 
 	void processRxRing_();
 	void processTxRing_();

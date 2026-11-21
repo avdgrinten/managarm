@@ -32,11 +32,12 @@ struct UsbMbimNic : UsbNic {
 	async::detached receiveEncapsulated();
 	async::detached listenForNotifications() override;
 
-	async::result<size_t> receive(arch::dma_buffer_view) override;
 	async::result<void> send(const arch::dma_buffer_view) override;
 
 	async::result<void> writeCommand(arch::dma_buffer_view request);
 private:
+	async::detached receiveFrames();
+
 	mbus_ng::EntityId entity_;
 	size_t config_index_;
 

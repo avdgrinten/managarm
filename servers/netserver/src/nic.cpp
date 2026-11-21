@@ -148,55 +148,41 @@ unsigned int Link::iff_flags() {
 	return flags | extra_iff_flags_;
 }
 
-async::detached runDevice(std::shared_ptr<nic::Link> dev) {
-	using namespace arch;
-	while(true) {
-		dma_buffer frameBuffer { dev->dmaPool(), 1514 };
-		auto len = co_await dev->receive(frameBuffer);
-
-		// Guard against drivers that report more bytes than the buffer can hold.
-		if(len > frameBuffer.size()) {
-			std::println("netserver: Discarding frame exceeding the receive buffer");
-			continue;
+void Link::feedPacket(arch::dma_buffer_view frame) {
+	if(!rawIp()) {
+		if(frame.size() < ethernetHeaderSize) {
+			if(logDiscards)
+				std::println("netserver: Discarding Ethernet frame smaller than the header");
+			return;
 		}
 
-		if(!dev->rawIp()) {
-			if(len < ethernetHeaderSize) {
-				if(logDiscards)
-					std::println("netserver: Discarding Ethernet frame smaller than the header");
-				continue;
-			}
+		auto capsule = frame.subview(ethernetHeaderSize);
+		auto data = reinterpret_cast<uint8_t*>(frame.data());
+		uint16_t ethertype = data[12] << 8 | data[13];
+		nic::MacAddress dstsrc[2];
+		std::memcpy(dstsrc, data, sizeof(dstsrc));
 
-			auto capsule = frameBuffer.subview(ethernetHeaderSize, len - ethernetHeaderSize);
-			auto data = reinterpret_cast<uint8_t*>(frameBuffer.data());
-			uint16_t ethertype = data[12] << 8 | data[13];
-			nic::MacAddress dstsrc[2];
-			std::memcpy(dstsrc, data, sizeof(dstsrc));
+		// Packet sockets observe all frames that the device hands to us.
+		raw().feedPacket(frame);
 
-			// Packet sockets observe all frames that the device hands to us.
-			raw().feedPacket(frameBuffer.subview(0, len));
-
-			if(dstsrc[0] != dev->deviceMac() && !isGroupMac(dstsrc[0])) {
-				if(logDiscards)
-					std::println("netserver: Discarding Ethernet frame with foreign destination MAC");
-				continue;
-			}
-
-			switch (ethertype) {
-			case ETHER_TYPE_IP4:
-				ip4().feedPacket(dstsrc[0], dstsrc[1],
-					std::move(frameBuffer), capsule, dev);
-				break;
-			case ETHER_TYPE_ARP:
-				neigh4().feedArp(dstsrc[0], capsule, dev);
-				break;
-			default:
-				break;
-			}
-		} else {
-			auto capsule = frameBuffer.subview(0, len);
-			ip4().feedPacket({}, {}, std::move(frameBuffer), capsule, dev);
+		if(dstsrc[0] != deviceMac() && !isGroupMac(dstsrc[0])) {
+			if(logDiscards)
+				std::println("netserver: Discarding Ethernet frame with foreign destination MAC");
+			return;
 		}
+
+		switch (ethertype) {
+		case ETHER_TYPE_IP4:
+			ip4().feedPacket(dstsrc[0], dstsrc[1], capsule, weak_from_this());
+			break;
+		case ETHER_TYPE_ARP:
+			neigh4().feedArp(dstsrc[0], capsule, weak_from_this());
+			break;
+		default:
+			break;
+		}
+	} else {
+		ip4().feedPacket({}, {}, frame, weak_from_this());
 	}
 }
 
@@ -213,19 +199,8 @@ public:
 		extra_iff_flags_ = IFF_LOOPBACK;
 	}
 
-	async::result<size_t> receive(arch::dma_buffer_view view) override {
-		auto buf = co_await queue_.async_get();
-		assert(buf); // Since async_get() is never cancelled.
-		auto chunk = std::min(view.size(), buf->size());
-		if (debugLoopback)
-			std::println("loopback: Received packet (size {})", chunk);
-		memcpy(view.data(), buf->data(), chunk);
-		co_return chunk;
-	}
-
 	async::result<void> send(const arch::dma_buffer_view view) override {
-		std::vector<std::byte> buf;
-		buf.resize(view.size());
+		arch::dma_buffer buf{nullptr, view.size()};
 		memcpy(buf.data(), view.data(), view.size());
 		if (debugLoopback)
 			std::println("loopback: Sending packet (size {})", view.size());
@@ -233,14 +208,29 @@ public:
 		co_return;
 	}
 
+	// put() only posts this coroutine to its run queue, so send() never re-enters feedPacket().
+	async::detached feedFrames() {
+		while (true) {
+			auto buf = co_await queue_.async_get();
+			assert(buf); // Since async_get() is never cancelled.
+			if (debugLoopback)
+				std::println("loopback: Received packet (size {})", buf->size());
+			feedPacket(*buf);
+		}
+	}
+
 private:
-	async::queue<std::vector<std::byte>, frg::stl_allocator> queue_;
+	async::queue<arch::dma_buffer, frg::stl_allocator> queue_;
 };
 
 } // namespace
 
 std::shared_ptr<Link> getLoopback() {
-	static std::shared_ptr<Loopback> singleton = std::make_shared<Loopback>();
+	static std::shared_ptr<Loopback> singleton = [] {
+		auto loopback = std::make_shared<Loopback>();
+		loopback->feedFrames();
+		return loopback;
+	}();
 	return singleton;
 }
 

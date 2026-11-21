@@ -112,30 +112,9 @@ RxQueue::RxQueue(
   _descriptor_buffers{std::move(descriptorBuffers)},
   _next_index(0, _descriptors.size()) {}
 
-async::result<size_t> RxQueue::submitDescriptor(arch::dma_buffer_view frame, RealtekNic &nic) {
-	auto ev_req = std::make_shared<Request>();
-
-	co_await postDescriptor(frame, nic, ev_req);
-
-	co_await ev_req->event.wait();
-
-	co_return ev_req->frame.size();
-}
-
-async::result<void> RxQueue::postDescriptor(arch::dma_buffer_view frame, RealtekNic &, std::shared_ptr<Request> req) {
-	req->frame = frame;
-
-	_requests.push(std::move(req));
-
-	// The frame may have arrived before the request; its RX_OK IRQ found no request to complete.
-	handleRxOk();
-
-	co_return;
-}
-
 // TODO: support large packets
-void RxQueue::handleRxOk() {
-	while(!_requests.empty()) {
+void RxQueue::handleRxOk(RealtekNic &nic) {
+	while(true) {
 		auto i = _next_index();
 
 		auto _flags = loadFlags(_descriptors[i]);
@@ -195,10 +174,8 @@ void RxQueue::handleRxOk() {
 		// the receive buffer by 4 bytes.
 		size -= 4;
 
-		auto req = _requests.front();
-
-		// rx_max_size admits frames (e.g., VLAN-tagged ones) larger than the receiver's buffer.
-		if(size > req->frame.size()) {
+		// rx_max_size is the buffer size, so this only guards against a misbehaving NIC.
+		if(size > descriptorBufferSize) {
 			if(!_loggedOversizedFrame) {
 				std::cout << "drivers/rtl8168: dropping RX frame of " << size
 					<< " bytes that exceeds the receive buffer" << std::endl;
@@ -208,11 +185,7 @@ void RxQueue::handleRxOk() {
 			continue;
 		}
 
-		memcpy(req->frame.data(), _descriptor_buffers[i].data(), size);
-		req->frame = req->frame.subview(0, size);
+		nic.feedPacket(_descriptor_buffers[i].subview(0, size));
 		recycle();
-
-		_requests.pop();
-		req->event.raise();
 	}
 }

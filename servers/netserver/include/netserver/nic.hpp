@@ -60,7 +60,7 @@ inline bool isGroupMac(const MacAddress &mac) {
 
 // TODO(arsen): Expose interface for csum offloading, constructing frames, and
 // other features of NICs
-struct Link {
+struct Link : std::enable_shared_from_this<Link> {
 	struct AllocatedBuffer {
 		arch::dma_buffer frame;
 		arch::dma_buffer_view payload;
@@ -68,10 +68,11 @@ struct Link {
 
 	Link(unsigned int mtu, arch::dma_pool *dmaPool);
 	virtual ~Link() = default;
-	//! Receives an entire frame from the network
-	virtual async::result<size_t> receive(arch::dma_buffer_view) = 0;
 	//! Sends an entire ethernet frame
 	virtual async::result<void> send(const arch::dma_buffer_view) = 0;
+	//! Called by the driver for each received frame, in order.
+	//! The frame is borrowed for the duration of the call; the driver reposts it afterwards.
+	void feedPacket(arch::dma_buffer_view frame);
 	arch::dma_pool *dmaPool();
 	AllocatedBuffer allocateFrame(size_t payloadSize);
 	AllocatedBuffer allocateFrame(MacAddress to, EtherType type,
@@ -120,8 +121,6 @@ protected:
 };
 
 std::shared_ptr<Link> getLoopback();
-
-async::detached runDevice(std::shared_ptr<Link> dev);
 } // namespace nic
 
 inline std::ostream &operator<<(std::ostream &os, const nic::MacAddress &mac) {

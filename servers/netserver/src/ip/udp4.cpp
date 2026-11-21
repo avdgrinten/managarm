@@ -2,6 +2,7 @@
 
 #include "ip4.hpp"
 #include "checksum.hpp"
+#include "../receive-budget.hpp"
 
 #include <async/algorithm.hpp>
 #include <async/basic.hpp>
@@ -258,6 +259,8 @@ struct Udp4Socket {
 			while (auto packet = self->queue_.maybe_get()) {
 				if (!self->rejectPacket(packet.value()))
 					filteredPackets.push(*packet);
+				else
+					self->rcvBudget_.release(packet->packet->data.size());
 			}
 
 			while (!filteredPackets.empty()) {
@@ -362,6 +365,7 @@ struct Udp4Socket {
 			co_return Error::wouldBlock;
 
 		auto element = co_await self->queue_.async_get();
+		self->rcvBudget_.release(element->packet->data.size());
 		auto packet = element->payload();
 		auto copy_size = std::min(packet.size(), len);
 		std::memcpy(data, packet.data(), copy_size);
@@ -714,6 +718,7 @@ private:
 	friend struct Udp4;
 
 	async::queue<Udp, stl_allocator> queue_;
+	ReceiveBudget rcvBudget_;
 	Endpoint remote_{};
 	Endpoint local_{AF_INET, 0, 0};
 	Udp4 *parent_;
@@ -744,9 +749,11 @@ void Udp4::feedDatagram(smarter::shared_ptr<const Ip4Packet> packet, std::weak_p
 			if (i->second->rejectPacket(udp))
 				continue;
 
-			if (!(i->second->shutdownReadSeq_)) {
+			if (!(i->second->shutdownReadSeq_)
+					&& i->second->rcvBudget_.tryCharge(udp.packet->data.size())) {
 				if (logSockets)
 					std::println("netserver: received udp datagram to port {}", udp.header.dst);
+				udp.packet = Ip4Packet::retain(std::move(udp.packet));
 				i->second->queue_.emplace(std::move(udp));
 				i->second->_inSeq = ++i->second->_currentSeq;
 				i->second->_statusBell.raise();

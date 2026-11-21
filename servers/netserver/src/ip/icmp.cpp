@@ -20,6 +20,7 @@
 
 #include "checksum.hpp"
 #include "icmp.hpp"
+#include "../receive-budget.hpp"
 
 using namespace protocols::fs;
 
@@ -79,6 +80,7 @@ struct IcmpSocket {
 			co_return Error::wouldBlock;
 
 		auto element = co_await self->queue_.async_get();
+		self->rcvBudget_.release(element->packet->data.size());
 
 		auto copySize = std::min(element->payload().size(), len);
 		std::memcpy(data, element->payload().data(), copySize);
@@ -266,6 +268,7 @@ struct IcmpSocket {
 
 public:
 	async::queue<IcmpPacket, frg::stl_allocator> queue_;
+	ReceiveBudget rcvBudget_;
 	Icmp *parent_;
 
 	async::recurring_event statusBell_;
@@ -305,6 +308,7 @@ async::result<void> Icmp::dispatchIcmp_() {
 	while (true) {
 		auto packet = co_await queue_.async_get();
 		assert(packet); // Since async_get() is never cancelled.
+		dispatchQueued_--;
 
 		auto link = packet->link.lock();
 		if (!link) {
@@ -364,21 +368,32 @@ void Icmp::feedDatagram(smarter::shared_ptr<const Ip4Packet> packet, std::weak_p
 	assert(icmp.packet->payload().size() >= sizeof(IcmpPacket::Header));
 	memcpy(&header, icmp.packet->payload().data(), sizeof(IcmpPacket::Header));
 
+	// Like Linux' icmp_echo_ignore_broadcasts, so that we cannot act as a smurf amplifier.
+	bool dispatch = header.type == ICMP_ECHO
+			&& ip4().classifyAddress(icmp.packet->header.destination) == Ip4::AddressType::unicast
+			&& dispatchQueued_ < maxDispatchQueued;
+
+	// One copy is shared by all sockets and the dispatch, and only made if one of them takes it.
+	bool retained = false;
+	auto retain = [&] {
+		if (!retained)
+			icmp.packet = Ip4Packet::retain(std::move(icmp.packet));
+		retained = true;
+	};
+
 	for(auto s : sockets) {
+		if (!s->rcvBudget_.tryCharge(icmp.packet->data.size()))
+			continue;
+		retain();
 		s->queue_.emplace(IcmpPacket{icmp});
 		s->inSeq_ = ++s->currentSeq_;
 		s->statusBell_.raise();
 	}
 
-	switch (header.type) {
-		case ICMP_ECHO:
-			// Like Linux' icmp_echo_ignore_broadcasts, so that we cannot act as a smurf amplifier.
-			if (ip4().classifyAddress(icmp.packet->header.destination)
-					== Ip4::AddressType::unicast)
-				this->queue_.emplace(icmp);
-			break;
-		default:
-			// Do nothing.
+	if (dispatch) {
+		retain();
+		dispatchQueued_++;
+		this->queue_.emplace(icmp);
 	}
 }
 

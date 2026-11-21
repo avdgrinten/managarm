@@ -42,5 +42,9 @@ struct Icmp {
 private:
 	async::result<void> dispatchIcmp_();
 
+	// Echo requests that wait for dispatchIcmp_() to reply; bounded since they hold their data.
+	static constexpr size_t maxDispatchQueued = 16;
+
 	async::queue<IcmpPacket, frg::stl_allocator> queue_;
+	size_t dispatchQueued_ = 0;
 };

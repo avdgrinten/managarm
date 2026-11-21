@@ -543,12 +543,6 @@ async::result<bool> RealtekNic::init() {
 	co_return true;
 }
 
-// TODO: We really should not do this like this
-//       What we should do is have a constant callback we always poll to, as this way of doing things will always be prone to race conditions
-async::result<size_t> RealtekNic::receive(arch::dma_buffer_view frame) {
-	co_return co_await _rxQueue->submitDescriptor(frame, *this);
-}
-
 async::result<void> RealtekNic::send(arch::dma_buffer_view payload) {
 	co_await _txQueue->submitDescriptor(payload, *this);
 }
@@ -657,7 +651,7 @@ async::detached RealtekNic::processIrqs() {
 		if((status & flags::interrupt_status::rx_ok) || (status & flags::interrupt_status::rx_err)
 				|| (status & flags::interrupt_status::rx_overflow)
 				|| (status & flags::interrupt_status::rx_fifo_overflow))
-			_rxQueue->handleRxOk();
+			_rxQueue->handleRxOk(*this);
 
 		// Did we get a timer interrupt?
 		if(status & flags::interrupt_status::pcs_timeout) {
@@ -665,7 +659,7 @@ async::detached RealtekNic::processIrqs() {
 				std::cout << "drivers/rtl8168: PCS_TIMEOUT" << std::endl;
 			}
 			if(use_timer_interrupt_to_check_received_packets) {
-				_rxQueue->handleRxOk();
+				_rxQueue->handleRxOk(*this);
 			}
 			// Reset the timer
 			_mmio.store(regs::timer_count, 1);

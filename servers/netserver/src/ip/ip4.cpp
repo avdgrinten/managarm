@@ -4,6 +4,7 @@
 #include "ip4.hpp"
 #include "tcp4.hpp"
 #include "udp4.hpp"
+#include "../receive-budget.hpp"
 #include <async/recurring-event.hpp>
 #include <linux/rtnetlink.h>
 #include <net/if.h>
@@ -159,6 +160,21 @@ bool Ip4Packet::parse(arch::dma_buffer owner, arch::dma_buffer_view frame, bool 
 	return true;
 }
 
+smarter::shared_ptr<const Ip4Packet> Ip4Packet::retain(smarter::shared_ptr<const Ip4Packet> packet) {
+	if (packet->buffer_.size())
+		return packet;
+
+	arch::dma_buffer buffer{nullptr, packet->data.size()};
+	std::memcpy(buffer.data(), packet->data.data(), packet->data.size());
+
+	Ip4Packet copy;
+	copy.header = packet->header;
+	copy.link = packet->link;
+	copy.data = buffer;
+	copy.buffer_ = std::move(buffer);
+	return smarter::make_shared<const Ip4Packet>(std::move(copy));
+}
+
 namespace {
 auto checkAddress(const void *addr_ptr, size_t addr_len, uint32_t &ip) {
 	struct sockaddr_in addr;
@@ -193,6 +209,7 @@ struct Ip4Socket {
 		}
 		auto element = std::move(self->pqueue.front());
 		self->pqueue.pop();
+		self->rcvBudget_.release(element->data.size());
 		auto packet = element->data;
 		auto copy_size = std::min(packet.size(), len);
 		std::memcpy(data, packet.data(), copy_size);
@@ -241,6 +258,7 @@ private:
 	int proto;
 	uint32_t remote = 0;
 	std::queue<smarter::shared_ptr<const Ip4Packet>> pqueue;
+	ReceiveBudget rcvBudget_;
 	async::recurring_event bell;
 };
 
@@ -476,11 +494,11 @@ async::result<protocols::fs::Error> Ip4::sendFrame(Ip4TargetInfo ti,
 }
 
 void Ip4::feedPacket(nic::MacAddress, nic::MacAddress,
-		arch::dma_buffer owner, arch::dma_buffer_view frame, std::weak_ptr<nic::Link> link) {
+		arch::dma_buffer_view frame, std::weak_ptr<nic::Link> link) {
 	Ip4Packet hdr{};
 	hdr.link = link;
 
-	if (!hdr.parse(std::move(owner), frame, true)) {
+	if (!hdr.parse({}, frame, true)) {
 		return;
 	}
 
@@ -657,7 +675,14 @@ void Ip4::feedPacket(nic::MacAddress, nic::MacAddress,
 	default: break;
 	}
 
+	// One copy is shared by all raw sockets, and only made if one of them takes it.
+	bool retained = false;
 	for (; begin != sockets.end() && begin->first == proto; begin++) {
+		if (!begin->second->rcvBudget_.tryCharge(hdrs->data.size()))
+			continue;
+		if (!retained)
+			hdrs = Ip4Packet::retain(std::move(hdrs));
+		retained = true;
 		begin->second->pqueue.emplace(hdrs);
 		begin->second->bell.raise();
 	}

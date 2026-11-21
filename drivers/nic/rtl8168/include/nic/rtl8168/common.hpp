@@ -86,7 +86,6 @@ public:
 		DashEP
 	};
 
-	async::result<size_t> receive(arch::dma_buffer_view) override;
 	async::result<void> send(const arch::dma_buffer_view) override;
 
 	async::result<bool> init();

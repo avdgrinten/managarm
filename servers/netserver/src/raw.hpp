@@ -8,6 +8,8 @@
 #include <protocols/fs/server.hpp>
 #include <vector>
 
+#include "receive-budget.hpp"
+
 struct RawSocket;
 
 struct Raw {
@@ -73,6 +75,7 @@ private:
 	};
 
 	async::queue<PacketInfo, frg::stl_allocator> queue_;
+	ReceiveBudget rcvBudget_;
 
 	async::recurring_event _statusBell;
 	uint64_t _currentSeq;
