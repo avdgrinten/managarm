@@ -165,7 +165,7 @@ File::pollWait(void *object, uint64_t past_seq, int mask,
 	while(true) {
 		edges = 0;
 		if (self->_currentSeq > past_seq)
-			edges |= EPOLLIN;
+			edges |= EPOLLIN | EPOLLRDNORM;
 
 		if (edges & mask)
 			break;
@@ -186,7 +186,7 @@ File::pollStatus(void *object) {
 
 	co_return protocols::fs::PollStatusResult{
 		self->_currentSeq,
-		self->_pending.empty() ? 0 : EPOLLIN
+		self->_pending.empty() ? 0 : EPOLLIN | EPOLLRDNORM
 	};
 }
 
@@ -618,7 +618,7 @@ void EventDevice::notify() {
 		for(StagedEvent evt : _staged)
 			file->_pending.push_back(PendingEvent{evt.type, evt.code, evt.value, now});
 		file->_currentSeq++;
-		file->_statusPage.update(file->_currentSeq, EPOLLIN);
+		file->_statusPage.update(file->_currentSeq, EPOLLIN | EPOLLRDNORM);
 		file->_statusBell.raise();
 	}
 	_staged.clear();

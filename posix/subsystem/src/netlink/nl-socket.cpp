@@ -329,9 +329,9 @@ OpenFile::pollWait(Process *, uint64_t past_seq, int mask,
 			sequence = _currentSeq;
 
 			// For now making sockets always writable is sufficient.
-			edges = EPOLLOUT;
+			edges = EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 			if(_inSeq > past_seq)
-				edges |= EPOLLIN;
+				edges |= EPOLLIN | EPOLLRDNORM;
 		}
 
 		if (edges & mask)
@@ -353,9 +353,9 @@ OpenFile::pollWait(Process *, uint64_t past_seq, int mask,
 
 async::result<frg::expected<Error, PollStatusResult>> OpenFile::pollStatus(Process *) {
 	std::lock_guard lock{_mutex};
-	int events = EPOLLOUT;
+	int events = EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 	if(!_recvQueue.empty())
-		events |= EPOLLIN;
+		events |= EPOLLIN | EPOLLRDNORM;
 
 	co_return PollStatusResult(_currentSeq, events);
 }

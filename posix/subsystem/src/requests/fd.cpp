@@ -267,12 +267,12 @@ HandleRequest::operator()(managarm::posix::EpollCallRequest &&req,
 
 		// Translate POLL events to EPOLL events.
 		if(req.events(i) & ~(POLLIN | POLLPRI | POLLOUT | POLLRDHUP | POLLERR | POLLHUP
-				| POLLNVAL | POLLWRNORM | POLLRDNORM)) {
+				| POLLNVAL | POLLWRNORM | POLLRDNORM | POLLWRBAND | POLLRDBAND)) {
 			std::println(
 			    "\e[31mposix: Unexpected events {:#x} for poll()\e[39m",
 			    req.events(i)
 			        & ~(POLLIN | POLLPRI | POLLOUT | POLLRDHUP | POLLERR | POLLHUP | POLLNVAL
-			            | POLLWRNORM | POLLRDNORM)
+			            | POLLWRNORM | POLLRDNORM | POLLWRBAND | POLLRDBAND)
 			);
 			co_await sendErrorResponse<managarm::posix::EpollCallResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 			co_return {};
@@ -280,9 +280,11 @@ HandleRequest::operator()(managarm::posix::EpollCallRequest &&req,
 
 		unsigned int mask = 0;
 		if(req.events(i) & POLLIN) mask |= EPOLLIN;
-		if(req.events(i) & POLLRDNORM) mask |= EPOLLIN;
+		if(req.events(i) & POLLRDNORM) mask |= EPOLLRDNORM;
+		if(req.events(i) & POLLRDBAND) mask |= EPOLLRDBAND;
 		if(req.events(i) & POLLOUT) mask |= EPOLLOUT;
-		if(req.events(i) & POLLWRNORM) mask |= EPOLLOUT;
+		if(req.events(i) & POLLWRNORM) mask |= EPOLLWRNORM;
+		if(req.events(i) & POLLWRBAND) mask |= EPOLLWRBAND;
 		if(req.events(i) & POLLPRI) mask |= EPOLLPRI;
 		if(req.events(i) & POLLRDHUP) mask |= EPOLLRDHUP;
 		if(req.events(i) & POLLERR) mask |= EPOLLERR;
@@ -385,7 +387,11 @@ HandleRequest::operator()(managarm::posix::EpollCallRequest &&req,
 		// Translate EPOLL events back to POLL events.
 		assert(!it->second.revents);
 		if(events[j].events & EPOLLIN) it->second.revents |= POLLIN;
+		if(events[j].events & EPOLLRDNORM) it->second.revents |= POLLRDNORM;
+		if(events[j].events & EPOLLRDBAND) it->second.revents |= POLLRDBAND;
 		if(events[j].events & EPOLLOUT) it->second.revents |= POLLOUT;
+		if(events[j].events & EPOLLWRNORM) it->second.revents |= POLLWRNORM;
+		if(events[j].events & EPOLLWRBAND) it->second.revents |= POLLWRBAND;
 		if(events[j].events & EPOLLPRI) it->second.revents |= POLLPRI;
 		if(events[j].events & EPOLLRDHUP) it->second.revents |= POLLRDHUP;
 		if(events[j].events & EPOLLERR) it->second.revents |= POLLERR;

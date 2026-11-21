@@ -491,12 +491,12 @@ private:
 
 		if(sequence)
 			co_await async::suspend_indefinitely(cancellation);
-		co_return PollWaitResult{1, EPOLLIN | EPOLLOUT};
+		co_return PollWaitResult{1, EPOLLIN | EPOLLOUT | EPOLLRDNORM | EPOLLWRNORM};
 	}
 
 	async::result<frg::expected<Error, PollStatusResult>>
 	pollStatus(Process *) override {
-		co_return PollStatusResult{1, EPOLLIN | EPOLLOUT};
+		co_return PollStatusResult{1, EPOLLIN | EPOLLOUT | EPOLLRDNORM | EPOLLWRNORM};
 	}
 
 	FutureMaybe<helix::UniqueDescriptor> accessMemory() override {

@@ -30,12 +30,12 @@ private:
 
 		if(sequence)
 			co_await async::suspend_indefinitely(cancellation);
-		co_return PollWaitResult{1, EPOLLOUT};
+		co_return PollWaitResult{1, EPOLLOUT | EPOLLWRNORM};
 	}
 
 	async::result<frg::expected<Error, PollStatusResult>>
 	pollStatus(Process *) override {
-		co_return PollStatusResult{1, EPOLLOUT};
+		co_return PollStatusResult{1, EPOLLOUT | EPOLLWRNORM};
 	}
 
 	helix::BorrowedDescriptor getPassthroughLane() override {

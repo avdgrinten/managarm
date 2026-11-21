@@ -16,7 +16,8 @@
 
 namespace {
 
-constexpr int epollEvents = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLPRI | EPOLLERR | EPOLLHUP;
+constexpr int epollEvents = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLPRI | EPOLLERR | EPOLLHUP
+		| EPOLLRDNORM | EPOLLRDBAND | EPOLLWRNORM | EPOLLWRBAND;
 [[maybe_unused]]
 constexpr int epollFlags = EPOLLET | EPOLLONESHOT | EPOLLWAKEUP | EPOLLEXCLUSIVE;
 
@@ -513,7 +514,7 @@ public:
 
 			edges = 0;
 			if (sequence > past_seq)
-				edges |= EPOLLIN;
+				edges |= EPOLLIN | EPOLLRDNORM;
 
 			if (edges & mask)
 				break;
@@ -532,7 +533,7 @@ public:
 	async::result<frg::expected<Error, PollStatusResult>>
 	pollStatus(Process *) override {
 		std::lock_guard lock{_mutex};
-		co_return PollStatusResult{_currentSeq, _pendingQueue.empty() ? 0 : EPOLLIN};
+		co_return PollStatusResult{_currentSeq, _pendingQueue.empty() ? 0 : EPOLLIN | EPOLLRDNORM};
 	}
 
 	helix::BorrowedDescriptor getPassthroughLane() override {

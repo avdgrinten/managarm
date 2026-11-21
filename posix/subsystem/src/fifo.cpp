@@ -197,11 +197,11 @@ public:
 				if(_channel->noWriterSeq > pastSeq)
 					edges |= EPOLLHUP;
 				if(_channel->inSeq > pastSeq)
-					edges |= EPOLLIN;
+					edges |= EPOLLIN | EPOLLRDNORM;
 			}
 			if (isWriter_) {
 				if(_channel->outSeq > pastSeq)
-					edges |= EPOLLOUT;
+					edges |= EPOLLOUT | EPOLLWRNORM;
 				if(_channel->noReaderSeq > pastSeq)
 					edges |= EPOLLERR;
 			}
@@ -241,11 +241,11 @@ public:
 			if(!_channel->writerCount)
 				events |= EPOLLHUP;
 			if(!_channel->ring.empty())
-				events |= EPOLLIN;
+				events |= EPOLLIN | EPOLLRDNORM;
 		}
 		if (isWriter_) {
 			if(_channel->ring.available_space())
-				events |= EPOLLOUT;
+				events |= EPOLLOUT | EPOLLWRNORM;
 			if(!_channel->readerCount)
 				events |= EPOLLERR;
 		}
