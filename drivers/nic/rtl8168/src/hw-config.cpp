@@ -68,22 +68,22 @@ async::result<void> RealtekNic::RTL8168fCommonConfiguration() {
 
 	co_await setFifoSize(0x10, 0x10, 0x02, 0x06);
 
-	// The register inits between MacVer 34 and 35/36 in the Linux kernel are very similar, except this register is set earlier.
-	// Given this could have been quite easily broken out into another function if that wasn't the case, we do that here too.
+	// The register inits between MacVer 34 and 35/36 in the Linux kernel are very similar, except that MacVer34
+	// sets only bit 1 of this register, and does so before resetting the packet filter.
 	if(_revision == MacRevision::MacVer34) {
-		co_await writeERIRegister(0x1B0, 0b1111, co_await readERIRegister(0x1B0) | (1 << 4));
+		co_await writeERIRegister(0x1D0, 0b1111, co_await readERIRegister(0x1D0) | (1 << 1));
 	}
 
 	// Reset packet filter
 	co_await writeERIRegister(0xDC, 0b1111, co_await readERIRegister(0xDC) & ~1);
 	co_await writeERIRegister(0xDC, 0b1111, co_await readERIRegister(0xDC) | 1);
 
+	co_await writeERIRegister(0x1B0, 0b1111, co_await readERIRegister(0x1B0) | (1 << 4));
 	if(_revision != MacRevision::MacVer34) {
-		co_await writeERIRegister(0x1B0, 0b1111, co_await readERIRegister(0x1B0) | (1 << 4));
+		co_await writeERIRegister(0x1D0, 0b1111, co_await readERIRegister(0x1D0) | (1 << 4) | (1 << 1));
 	}
-	co_await writeERIRegister(0x1D0, 0b1111, co_await readERIRegister(0x1B0) | (1 << 4) | (1 << 1));
 	co_await writeERIRegister(0xCC, 0b1111, 0x50);
-	co_await writeERIRegister(0xD0, 0b1111, 0x60);
+	co_await writeERIRegister(0xD0, 0b1111, _revision == MacRevision::MacVer34 ? 0x07FF0060 : 0x60);
 
 	// TODO: rtl_disable_clock_request
 	_mmio.store(regs::mcu, _mmio.load(regs::mcu) / flags::mcu::now_is_oob(false));

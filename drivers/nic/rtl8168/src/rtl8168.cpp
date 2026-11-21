@@ -538,6 +538,7 @@ async::result<bool> RealtekNic::init() {
 	}
 
 	printRegisters();
+	updateLinkState();
 
 	processIrqs();
 	co_return true;
@@ -598,6 +599,7 @@ async::detached RealtekNic::processIrqs() {
 			if(logIRQs) {
 				puts("drivers/rtl8168: link change");
 			}
+			updateLinkState();
 		}
 
 		// Did we successfully transmit information?

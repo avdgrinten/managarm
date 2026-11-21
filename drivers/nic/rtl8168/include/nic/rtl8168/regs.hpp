@@ -123,6 +123,17 @@ namespace phy_access {
 	constexpr arch::field<uint32_t, bool> rw{31, 1};
 }
 
+namespace phy_status {
+	constexpr arch::field<uint8_t, bool> tbi_enable{7, 1};
+	constexpr arch::field<uint8_t, bool> tx_flow_control{6, 1};
+	constexpr arch::field<uint8_t, bool> rx_flow_control{5, 1};
+	constexpr arch::field<uint8_t, bool> speed_1000_full{4, 1};
+	constexpr arch::field<uint8_t, bool> speed_100{3, 1};
+	constexpr arch::field<uint8_t, bool> speed_10{2, 1};
+	constexpr arch::field<uint8_t, bool> link_status{1, 1};
+	constexpr arch::field<uint8_t, bool> full_duplex{0, 1};
+}
+
 namespace cr9346 {
 	constexpr arch::field<uint8_t, uint8_t> operating_mode{6, 2};
 	constexpr uint8_t lock_regs = 0;
@@ -198,8 +209,7 @@ namespace eridr {
 }
 
 namespace eriar {
-	// TODO: check how big this is
-	constexpr arch::field<uint32_t, uint8_t> address(0, 8);
+	constexpr arch::field<uint32_t, uint16_t> address(0, 12);
 	// Mask of which _bytes_ we want to overwrite
 	constexpr arch::field<uint32_t, uint8_t> mask(12, 4);
 	constexpr arch::field<uint32_t, uint8_t> type(16, 2);

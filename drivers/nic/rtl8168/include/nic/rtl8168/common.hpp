@@ -93,6 +93,8 @@ public:
 	void ringDoorbell();
 
 	void printRegisters();
+	// Reports the PHY link state to netserver (IFF_LOWER_UP).
+	void updateLinkState();
 
 	arch::dma_space &dmaSpace() {
 		return dmaSpace_;
