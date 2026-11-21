@@ -424,7 +424,12 @@ HandleRequest::operator()(managarm::posix::EpollCreateRequest &&req,
 	logBragiRequest(req);
 	logRequest(logRequests, self, "EPOLL_CREATE");
 
-	assert(!(req.flags() & ~(managarm::posix::OpenFlags::OF_CLOEXEC)));
+	if (req.flags() & ~(managarm::posix::OpenFlags::OF_CLOEXEC)) {
+		co_await sendErrorResponse<managarm::posix::EpollCreateResponse>(
+		    conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS
+		);
+		co_return {};
+	}
 
 	auto file = epoll::createFile();
 	auto fd = self->fileContext()->attachFile(file,
@@ -454,7 +459,12 @@ HandleRequest::operator()(managarm::posix::PipeCreateRequest &&req,
 	logBragiRequest(req);
 	logRequest(logRequests, self, "PIPE_CREATE");
 
-	assert(!(req.flags() & ~(O_CLOEXEC | O_NONBLOCK)));
+	if (req.flags() & ~(O_CLOEXEC | O_NONBLOCK)) {
+		co_await sendErrorResponse<managarm::posix::PipeCreateResponse>(
+		    conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS
+		);
+		co_return {};
+	}
 
 	bool nonBlock = false;
 
