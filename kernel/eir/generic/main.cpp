@@ -23,7 +23,10 @@ constinit physaddr_t eirDtbPtr{0};
 constinit physaddr_t eirRsdpAddr{0};
 constinit physaddr_t eirSmbios3Addr{0};
 
+void *rawInitrd = nullptr;
+size_t rawInitrdSize = 0;
 void *initrd = nullptr;
+size_t initrdSize = 0;
 
 address_t allocatedMemory;
 frg::span<uint8_t> kernel_image{nullptr, 0};

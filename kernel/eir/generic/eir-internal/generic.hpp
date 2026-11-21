@@ -60,6 +60,8 @@ void allocLogRingBuffer();
 
 void setupRegionStructs();
 void createInitialRegion(address_t base, address_t size);
+// Removes memory from the allocatable regions. Must be called before setupRegionStructs().
+address_t cutFromRegion(size_t size);
 
 void
 reportFirmwareMemory(address_t address, address_t size, EirMemoryType type, uint32_t attributes);
@@ -122,6 +124,8 @@ void mapRegionsAndStructs();
 // Kernel entrypoint.
 extern uint64_t kernelEntry;
 
+// Must be called after memory regions are known but before setupRegionStructs().
+void decompressInitrd();
 void parseInitrd(void *initrd);
 void loadKernelImage(void *image);
 

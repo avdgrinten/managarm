@@ -12,6 +12,7 @@ eir_generic_sources = files(
 	'generic/memory-layout.cpp',
 	'generic/debug.cpp',
 	'generic/framebuffer.cpp',
+	'generic/initrd.cpp',
 	'system/acpi/acpi.cpp',
 	'system/acpi/console.cpp',
 	'system/acpi/cpu-count.cpp',
@@ -69,6 +70,17 @@ endif
 #       since we need to compile it both into 32-bit and 64-bit Multiboot2 code.
 eir_generic_sources += uacpi_sources
 eir_includes += uacpi_includes
+
+eir_includes += zstd_includes
+eir_zstd_c_args = [
+	'-include', meson.current_source_dir() / 'generic/zstd-config.h',
+	'-DZSTD_DISABLE_ASM',
+	'-DZSTD_NO_INTRINSICS',
+	'-DZSTD_LEGACY_SUPPORT=0',
+	'-DZSTD_TRACE=0',
+	'-DDYNAMIC_BMI2=0',
+	'-DXXH_NO_STDLIB',
+]
 
 if arch == 'aarch64'
 	subdir('arch/arm')

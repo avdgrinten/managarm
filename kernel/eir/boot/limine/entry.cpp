@@ -206,7 +206,8 @@ extern "C" void eirLimineMain(void) {
 	assert(module_request.response->module_count > 0);
 	auto initrd_file = module_request.response->modules[0];
 
-	initrd = initrd_file->address;
+	rawInitrd = initrd_file->address;
+	rawInitrdSize = initrd_file->size;
 	kernel_physical = executable_address_request.response->physical_base;
 
 	// Enter a stack that is part of Eir's image.
