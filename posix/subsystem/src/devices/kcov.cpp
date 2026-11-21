@@ -8,6 +8,7 @@
 #include <protocols/fs/common.hpp>
 
 #include "../common.hpp"
+#include "../coverage.hpp"
 #include "../process.hpp"
 #include "kcov.hpp"
 
@@ -29,6 +30,7 @@ private:
 
 	std::mutex _mutex;
 	helix::UniqueDescriptor _buffer;
+	size_t _numWords = 0;
 
 	struct HandleIoctl {
 		async::result<std::expected<void, DispatchError>> operator()(
@@ -67,6 +69,7 @@ private:
 				std::lock_guard lock{self->_mutex};
 				if(!self->_buffer) {
 					self->_buffer = std::move(buffer);
+					self->_numWords = static_cast<size_t>(req.entries()) + 1;
 					installed = true;
 				}
 			}
@@ -86,9 +89,11 @@ private:
 			}
 
 			HelHandle buffer;
+			size_t numWords;
 			{
 				std::lock_guard lock{self->_mutex};
 				buffer = self->_buffer.getHandle();
+				numWords = self->_numWords;
 			}
 
 			auto error = helEnableCoverage(process->threadDescriptor().getHandle(),
@@ -108,6 +113,9 @@ private:
 			}
 			HEL_CHECK(error);
 
+			co_await pcovStartRecording(process.get(), helix::BorrowedDescriptor{buffer},
+					numWords, req.mode());
+
 			co_await sendResponse(conversation, managarm::fs::Errors::SUCCESS);
 			co_return {};
 		}
@@ -120,6 +128,8 @@ private:
 				co_await sendResponse(conversation, badCredentialsError());
 				co_return {};
 			}
+
+			co_await pcovStopRecording(process.get());
 
 			auto error = helDisableCoverage(process->threadDescriptor().getHandle());
 			if(error == kHelErrIllegalState) {
@@ -213,10 +223,14 @@ struct KcovDevice final : UnixDevice {
 	}
 
 	async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
-	open(Process *, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
-			SemanticFlags semantic_flags) override {
+	open(Process *process, std::shared_ptr<MountView> mount,
+			smarter::shared_ptr<FsLink, LinkRc> link, SemanticFlags semantic_flags) override {
 		if(semantic_flags & ~(semanticRead | semanticWrite))
 			co_return Error::illegalArguments;
+
+		// From now on, threads created by this will use a special coverage thread.
+		if(process)
+			process->threadGroup()->setUsesKcov();
 
 		auto file = smarter::make_shared<KcovFile>(std::move(mount), std::move(link));
 		file->setupWeakFile(file);
