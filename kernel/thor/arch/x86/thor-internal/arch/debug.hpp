@@ -66,8 +66,10 @@ struct PIOLogHandler final : LogHandler, KernelDevice {
 	void resetPriority();
 
 private:
-	int serialBufferIndex;
-	uint8_t serialBuffer[16];
+	void flushSerial();
+
+	size_t serialBufferIndex;
+	std::array<uint8_t, 16> serialBuffer;
 };
 
 } // namespace thor

@@ -79,6 +79,7 @@ void PIOLogHandler::emit(frg::string_view record) {
 	if (csiSent)
 		resetPriority();
 	printChar('\n');
+	flushSerial();
 }
 
 void PIOLogHandler::emitUrgent(frg::string_view record) {
@@ -92,31 +93,37 @@ void PIOLogHandler::emitUrgent(frg::string_view record) {
 	if (csiSent)
 		resetPriority();
 	printChar('\n');
+	flushSerial();
+}
+
+void PIOLogHandler::flushSerial() {
+	if(!serialBufferIndex)
+		return;
+
+	auto count = serialBufferIndex;
+	serialBufferIndex = 0;
+	// Output is lost while the UART is suspended.
+	if (isSuspended())
+		return;
+
+	auto base = arch::global_io.subspace(0x3F8);
+	while(!(base.load(lineStatus) & txReady)) {
+		// do nothing until the UART is ready to transmit.
+	}
+	base.store_iterative(data, serialBuffer.data(), count);
 }
 
 void PIOLogHandler::printChar(char c) {
-	auto sendByteSerial = [this](uint8_t val) {
-		auto base = arch::global_io.subspace(0x3F8);
-
+	auto bufferSerial = [this](uint8_t val) {
 		serialBuffer[serialBufferIndex++] = val;
-		if (serialBufferIndex == 16) {
-			serialBufferIndex = 0;
-			// Output is lost while the UART is suspended.
-			if (isSuspended())
-				return;
-			while(!(base.load(lineStatus) & txReady)) {
-				// do nothing until the UART is ready to transmit.
-			}
-			base.store_iterative(data, serialBuffer, 16);
-		}
+		if (serialBufferIndex == serialBuffer.size())
+			flushSerial();
 	};
 
 	if(debugToSerial) {
-		if(c == '\n') {
-			sendByteSerial('\r');
-		}
-
-		sendByteSerial(c);
+		if(c == '\n')
+			bufferSerial('\r');
+		bufferSerial(c);
 	}
 
 	if(debugToBochs) {
