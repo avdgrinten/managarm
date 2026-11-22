@@ -36,27 +36,21 @@ std::expected<Uevent, int> UeventSocket::receive() {
 	std::string buf;
 	buf.resize(16384);
 
-	int ret = read(fd_, buf.data(), buf.size());
-	if(ret < 0)
+	ssize_t size = read(fd_, buf.data(), buf.size());
+	if(size < 0)
 		return std::unexpected{errno};
 
-	// Parse the uevent message
+	// The message consists of an "<action>@<devpath>" header and NAME=value pairs.
 	Uevent uevent;
 
-	const char *cur = buf.data();
-	while(cur < buf.data() + ret) {
-		std::string_view line{cur};
-		auto split = line | std::views::split('=');
-		auto it = split.begin();
-
-		// TODO(qookie): C++23 would let us do std::string_view{*it}
-		std::string_view name{(*it).begin(), (*it).end()};
-		it++;
-		std::string_view value{(*it).begin(), (*it).end()};
-
-		uevent[std::string(name)] = value;
-
-		cur += line.size() + 1;
+	std::string_view message{buf.data(), static_cast<size_t>(size)};
+	for(auto part : message | std::views::split('\0')) {
+		std::string_view line{part};
+		auto eq = line.find('=');
+		// This skips the header; ACTION and DEVPATH carry the same information.
+		if(eq == std::string_view::npos)
+			continue;
+		uevent.insert_or_assign(std::string{line.substr(0, eq)}, std::string{line.substr(eq + 1)});
 	}
 
 	return uevent;
