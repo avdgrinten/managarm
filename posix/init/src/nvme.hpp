@@ -3,10 +3,10 @@
 #include <algorithm>
 #include <chrono>
 #include <format>
-#include <iostream>
 #include <linux/netlink.h>
 #include <netinet/in.h>
 #include <optional>
+#include <print>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -45,35 +45,35 @@ public:
 		if(fd_ < 0) {
 			fd_ = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
 			if(fd_ < 0) {
-				std::cout << std::format("init: socket(NETLINK_ROUTE) failed: {}, starting NVMe-oF without waiting",
-						strerror(errno)) << std::endl;
+				std::println("init: socket(NETLINK_ROUTE) failed: {}, starting NVMe-oF without waiting",
+						strerror(errno));
 				return true;
 			}
 		}
 
 		auto link = routeLink(fd_, server_);
 		if(!link) {
-			std::cout << std::format("init: Failed to query the route to the NVMe-oF server: {}, starting NVMe-oF without waiting",
-					strerror(link.error())) << std::endl;
+			std::println("init: Failed to query the route to the NVMe-oF server: {}, starting NVMe-oF without waiting",
+					strerror(link.error()));
 			return true;
 		}
 
 		if(!*link) {
 			if(now >= nextReport_) {
-				std::cout << "init: Still waiting for a route to the NVMe-oF server" << std::endl;
+				std::println("init: Still waiting for a route to the NVMe-oF server");
 				nextReport_ = now + reportInterval;
 			}
 			return false;
 		}
 
 		if((*link)->lowerUp) {
-			std::cout << std::format("init: {} is up, starting NVMe-oF", (*link)->name) << std::endl;
+			std::println("init: {} is up, starting NVMe-oF", (*link)->name);
 			return true;
 		}
 		if(!carrierDeadline_)
 			carrierDeadline_ = now + carrierTimeout;
 		if(now >= *carrierDeadline_) {
-			std::cout << std::format("init: No carrier on {}, starting NVMe-oF anyway", (*link)->name) << std::endl;
+			std::println("init: No carrier on {}, starting NVMe-oF anyway", (*link)->name);
 			return true;
 		}
 		return false;

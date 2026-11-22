@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <iostream>
+#include <print>
 #include <ranges>
 #include <stdexcept>
 #include <sys/stat.h>
@@ -27,7 +27,7 @@ bool hasManagarmRootAttribute(const std::string &device) {
 	if(access(rootAttr.data(), R_OK)) {
 		assert(errno == ENOENT);
 		if(logDiscovery)
-			std::cout << "init: Not the root filesystem" << std::endl;
+			std::println("init: Not the root filesystem");
 		return false;
 	}
 	return true;

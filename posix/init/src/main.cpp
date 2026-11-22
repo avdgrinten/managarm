@@ -23,7 +23,7 @@
 #include <poll.h>
 #include <unistd.h>
 #include <string.h>
-#include <iostream>
+#include <print>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -47,7 +47,7 @@ int main() {
 	dup2(fd, STDOUT_FILENO);
 	dup2(fd, STDERR_FILENO);
 
-	std::cout <<"init: Entering first stage" << std::endl;
+	std::println("init: Entering first stage");
 
 #if defined (__x86_64__)
 	auto uart = fork();
@@ -126,7 +126,7 @@ int main() {
 		if(dp_res) {
 			uefiNetDp = dp_res.value();
 		} else {
-			std::cout << std::format("init: failed to parse device path '{}'", std::string{uefiNetDevpath.data(), uefiNetDevpath.size()}) << std::endl;
+			std::println("init: failed to parse device path '{}'", std::string{uefiNetDevpath.data(), uefiNetDevpath.size()});
 			uefiNetDevpathResolved = true;
 		}
 	}
@@ -155,10 +155,10 @@ int main() {
 		std::string serverStr{nvmeServer.data(), nvmeServer.size()};
 		in_addr server{};
 		if(inet_pton(AF_INET, serverStr.c_str(), &server) == 1) {
-			std::cout << std::format("init: Waiting for the network link to {} for NVMe-oF", serverStr) << std::endl;
+			std::println("init: Waiting for the network link to {} for NVMe-oF", serverStr);
 			nvmeLinkWait.emplace(server);
 		} else {
-			std::cout << std::format("init: Invalid netserver.server '{}', starting NVMe-oF without waiting", serverStr) << std::endl;
+			std::println("init: Invalid netserver.server '{}', starting NVMe-oF without waiting", serverStr);
 			startNvmeOf();
 		}
 	}
@@ -170,7 +170,7 @@ int main() {
 		if(spec.starts_with("PARTUUID="))
 			rootPartuuid = toLower(spec.substr(std::string_view{"PARTUUID="}.size()));
 		else
-			std::cout << std::format("init: Unsupported root={}, falling back to the partition type", spec) << std::endl;
+			std::println("init: Unsupported root={}, falling back to the partition type", spec);
 	}
 	std::string rootDescription = rootPartuuid
 			? std::format("PARTUUID={}", *rootPartuuid)
@@ -185,7 +185,7 @@ int main() {
 	std::unordered_set<std::string> nvmeDevices;
 
 	UeventEngine ueventEngine;
-	std::cout << "init: Looking for the root partition " << rootDescription << std::endl;
+	std::println("init: Looking for the root partition {}", rootDescription);
 
 	ueventEngine.init();
 	ueventEngine.trigger();
@@ -201,7 +201,7 @@ int main() {
 		if(!rootPath) {
 			auto now = Clock::now();
 			if(now >= nextRootReport) {
-				std::cout << "init: Still waiting for the root partition " << rootDescription << std::endl;
+				std::println("init: Still waiting for the root partition {}", rootDescription);
 				nextRootReport = now + rootReportInterval;
 			}
 			auto left = std::chrono::ceil<std::chrono::milliseconds>(nextRootReport - now);
@@ -211,7 +211,7 @@ int main() {
 
 		auto nextUevent = ueventEngine.nextUevent(timeoutMs);
 		if (!nextUevent) {
-			std::cout << "Failed to receive uevent" << std::endl;
+			std::println("init: Failed to receive uevent");
 			abort();
 		}
 		// Timed out to poll the NVMe-oF link or to report that the root is still missing.
@@ -220,10 +220,9 @@ int main() {
 		auto &uevent = *nextUevent;
 
 		if(logDiscovery) {
-			std::cout << "init: Received uevent";
+			std::println("init: Received uevent");
 			for (const auto &kv : *uevent)
-				std::cout << "\n    " << kv.first << "=" << kv.second;
-			std::cout << std::endl;
+				std::println("    {}={}", kv.first, kv.second);
 		}
 
 		// Note: DEVPATH is unconditionally inserted by generic uevent code.
@@ -243,7 +242,7 @@ int main() {
 		if (!rootPath && subsystemIt != uevent->end() && subsystemIt->second == "block") {
 			auto device = "/sys" + devpath;
 			if(logDiscovery)
-				std::cout << "init: Considering device " << device << std::endl;
+				std::println("init: Considering device {}", device);
 
 			bool isRoot;
 			if(rootPartuuid) {
@@ -262,8 +261,8 @@ int main() {
 			if(sysfs) {
 				dpSysfsPath = sysfs.value();
 			} else if(sysfs.error() == DevicePathParser::Error::broken) {
-				std::cout << std::format("init: device path '{}' cannot be resolved, not starting netserver",
-						std::string{uefiNetDevpath.data(), uefiNetDevpath.size()}) << std::endl;
+				std::println("init: device path '{}' cannot be resolved, not starting netserver",
+						std::string{uefiNetDevpath.data(), uefiNetDevpath.size()});
 				uefiNetDevpathResolved = true;
 			}
 		}
@@ -288,7 +287,7 @@ int main() {
 	}else assert(uhci != -1);
 #endif
 
-	std::cout << "init: Mounting " << *rootPath << std::endl;
+	std::println("init: Mounting {}", *rootPath);
 	if(mount(rootPath->data(), "/realfs", "ext2", 0, ""))
 		throw std::runtime_error("mount() failed");
 
@@ -298,7 +297,7 @@ int main() {
 	if(chdir("/"))
 		throw std::runtime_error("chdir() failed");
 
-	std::cout << "init: On /realfs" << std::endl;
+	std::println("init: On /realfs");
 
 	if(access("/etc/machine-id", F_OK)) {
 		auto machineIdPid = fork();
@@ -310,7 +309,7 @@ int main() {
 	}
 
 	execl("/usr/lib/systemd/systemd", "systemd", nullptr);
-	std::cout << "init: Failed to execve() systemd" << std::endl;
+	std::println("init: Failed to execve() systemd");
 	abort();
 }
 

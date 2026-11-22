@@ -3,9 +3,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <filesystem>
-#include <iostream>
 #include <linux/netlink.h>
 #include <poll.h>
+#include <print>
 #include <ranges>
 #include <string.h>
 #include <string_view>
@@ -20,7 +20,7 @@ void UeventEngine::init() {
 
 	nlFd_ = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
 	if(nlFd_ < 0) {
-		std::cout << "init: socket(AF_NETLINK) failed! errno: " << strerror(errno) << std::endl;
+		std::println("init: socket(AF_NETLINK) failed! errno: {}", strerror(errno));
 		return;
 	}
 
@@ -31,7 +31,7 @@ void UeventEngine::init() {
 
 	ret = bind(nlFd_, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa));
 	if(ret < 0) {
-		std::cout << "init: bind(nlFd) failed! errno: " << strerror(errno) << std::endl;
+		std::println("init: bind(nlFd) failed! errno: {}", strerror(errno));
 		return;
 	}
 }
@@ -44,16 +44,16 @@ void UeventEngine::trigger() {
 		if (!std::filesystem::exists(ueventPath))
 			continue;
 		if (logDiscovery)
-			std::cout << "Triggering " << ueventPath << std::endl;
+			std::println("init: Triggering {}", ueventPath.string());
 
 		int fd = open(ueventPath.c_str(), O_WRONLY);
 		if (fd < 0) {
-			std::cout << "Failed open " << ueventPath << " to trigger uevent" << std::endl;
+			std::println("init: Failed to open {} to trigger uevent", ueventPath.string());
 			continue;
 		}
 		std::string_view s = "add";
 		if (write(fd, s.data(), s.size()) != static_cast<ssize_t>(s.size()))
-			std::cout << "Failed to write to uevent file " << ueventPath << std::endl;
+			std::println("init: Failed to write to uevent file {}", ueventPath.string());
 		close(fd);
 	}
 }
@@ -77,7 +77,7 @@ std::expected<std::optional<Uevent>, int> UeventEngine::nextUevent(int timeoutMs
 		ret = poll(&pfd, 1, remainingMs);
 		if(ret < 0) {
 			int err = errno;
-			std::cout << "init: poll(nlFd) failed! errno: " << strerror(err) << std::endl;
+			std::println("init: poll(nlFd) failed! errno: {}", strerror(err));
 			return std::unexpected{err};
 		}
 		if(!ret)
@@ -89,7 +89,7 @@ std::expected<std::optional<Uevent>, int> UeventEngine::nextUevent(int timeoutMs
 		ret = read(nlFd_, buf.data(), buf.size());
 		if(ret < 0) {
 			int err = errno;
-			std::cout << "init: read(nlFd) failed! errno: " << strerror(err) << std::endl;
+			std::println("init: read(nlFd) failed! errno: {}", strerror(err));
 			return std::unexpected{err};
 		}
 
