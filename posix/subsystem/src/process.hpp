@@ -1005,6 +1005,8 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 
 	Error setSupplementaryGroups(std::vector<gid_t> list) {
 		std::lock_guard lock{credentialsMutex_};
+		if(!isRootLocked_())
+			return Error::insufficientPermissions;
 		supplementaryGids_ = std::move(list);
 		return Error::success;
 	}
