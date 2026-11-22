@@ -1,17 +1,21 @@
 #include <algorithm>
-#include <async/algorithm.hpp>
 #include <assert.h>
+#include <async/algorithm.hpp>
 #include <cctype>
 #include <chrono>
+#include <core/logging.hpp>
+#include <errno.h>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <optional>
 #include <print>
-#include <ranges>
-#include <stdexcept>
+#include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <system_error>
 #include <unistd.h>
 
 #include "log.hpp"
@@ -40,36 +44,36 @@ bool hasManagarmRootAttribute(const std::string &device) {
 	return true;
 }
 
-std::string findDevNode(const std::string &device) {
+// Returns the /dev node of a block device, given the path of the device in sysfs.
+std::expected<std::string, int> findDevNode(const std::string &device) {
 	// Figure out the device's major:minor
 	std::ifstream ifs{device + "/dev"};
 	std::string dev;
-	std::getline(ifs, dev);
+	if(!std::getline(ifs, dev))
+		return std::unexpected{EIO};
 
-	auto split = dev | std::views::split(':');
-	auto it = split.begin();
-
-	// TODO(qookie): C++23 would let us do std::string_view{*it}
-	std::string majorStr{(*it).begin(), (*it).end()};
-	it++;
-	std::string minorStr{(*it).begin(), (*it).end()};
-
-	int major = std::stoi(majorStr), minor = std::stoi(minorStr);
+	unsigned int major, minor;
+	if(sscanf(dev.c_str(), "%u:%u", &major, &minor) != 2)
+		return std::unexpected{EINVAL};
 
 	// Find the /dev node with the right major:minor numbers
-	for(auto node : std::filesystem::directory_iterator{"/dev/"}) {
+	std::error_code ec;
+	std::filesystem::directory_iterator it{"/dev/", ec};
+	for(; !ec && it != std::filesystem::directory_iterator{}; it.increment(ec)) {
 		struct stat st;
-		stat(node.path().c_str(), &st);
+		if(stat(it->path().c_str(), &st))
+			continue;
 
-		if(st.st_rdev == makedev(major, minor)) {
-			return node.path();
-		}
+		// Character devices have their own major:minor numbers.
+		if(S_ISBLK(st.st_mode) && st.st_rdev == makedev(major, minor))
+			return it->path().string();
 	}
+	if(ec)
+		return std::unexpected{ec.value()};
 
 	// Device nodes are created before the device's uevents are emitted.
 	// Hence, if the node is missing, it will not appear later.
-	throw std::runtime_error(std::format("init: Device {} (maj:min {}:{}) is the root filesystem,"
-			" but has no corresponding /dev node", device, major, minor));
+	return std::unexpected{ENOENT};
 }
 
 // Returns the device node of the first root partition that shows up.
@@ -90,8 +94,14 @@ matchRoot(UeventStream &uevents, const std::optional<std::string> &partuuid) {
 			} else {
 				isRoot = hasManagarmRootAttribute(device);
 			}
-			if(isRoot)
-				co_return findDevNode(device);
+			if(!isRoot)
+				continue;
+
+			auto devNode = findDevNode(device);
+			if(!devNode)
+				logPanic("init: {} is the root partition, but its /dev node cannot be determined: {}",
+						device, strerror(devNode.error()));
+			co_return std::move(*devNode);
 		}
 	}
 }
