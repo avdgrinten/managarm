@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <sys/mount.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
 
@@ -122,14 +123,21 @@ void enterRoot(const std::string &devNode) {
 }
 
 void setupMachineId() {
-	if(access("/etc/machine-id", F_OK)) {
-		std::string args[] = {"/usr/bin/systemd-machine-id-setup"};
-		auto process = Process::spawn(args, {});
-		if(process)
-			process->wait();
-		else
-			std::println("init: Failed to run systemd-machine-id-setup: {}", strerror(process.error()));
+	if(!access("/etc/machine-id", F_OK))
+		return;
+
+	std::string args[] = {"/usr/bin/systemd-machine-id-setup"};
+	auto process = Process::spawn(args, {});
+	if(!process) {
+		std::println("init: Failed to run systemd-machine-id-setup: {}", strerror(process.error()));
+		return;
 	}
+
+	auto status = process->wait();
+	if(!status)
+		std::println("init: Failed to wait for systemd-machine-id-setup: {}", strerror(status.error()));
+	else if(!WIFEXITED(*status) || WEXITSTATUS(*status))
+		std::println("init: systemd-machine-id-setup failed with wait status {:#x}", *status);
 }
 
 } // namespace
