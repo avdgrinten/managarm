@@ -390,6 +390,13 @@ HandleRequest::operator()(managarm::posix::SetGroupsRequest &&req,
 
 	logRequest(logRequests, self, "SET_GROUPS");
 
+	constexpr uint64_t maxGroups = 65536; // Same limit as on Linux.
+	if(req.entries() > maxGroups) {
+		auto [dismiss] = co_await helix_ng::exchangeMsgs(conversation, helix_ng::dismiss());
+		FRG_CO_TRY(checkIpc(dismiss.error()));
+		co_return {};
+	}
+
 	std::vector<gid_t> list;
 	list.resize(req.entries());
 
