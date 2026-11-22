@@ -53,6 +53,7 @@ fn start_discovery(model: Arc<Model>) {
     spawn_subsystem!("drm", subsystem::drm::run);
     spawn_subsystem!("graphics", subsystem::graphics::run);
     spawn_subsystem!("input", subsystem::input::run);
+    spawn_subsystem!("kvm", subsystem::kvm::run);
     spawn_subsystem!("net", subsystem::net::run);
     spawn_subsystem!("usbmisc", subsystem::usbmisc::run);
     spawn_subsystem!("sound", subsystem::sound::run);
