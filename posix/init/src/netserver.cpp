@@ -1,4 +1,3 @@
-#include <assert.h>
 #include <core/device-path.hpp>
 #include <filesystem>
 #include <format>
@@ -9,16 +8,22 @@
 #include "netserver.hpp"
 #include "spawn.hpp"
 
-mbus_ng::EntityId findNetserver() {
+std::expected<mbus_ng::EntityId, mbus_ng::Error> findNetserver() {
 	auto filter = mbus_ng::Conjunction{{
 		mbus_ng::EqualsFilter{"class", "netserver"}
 	}};
 
 	auto enumerator = mbus_ng::Instance::global().enumerate(filter);
-	auto [_, events] = async::run(enumerator.nextEvents(), helix::currentDispatcher).unwrap();
-	assert(events.size() == 1);
+	while(true) {
+		auto result = async::run(enumerator.nextEvents(), helix::currentDispatcher);
+		if(!result)
+			return std::unexpected{result.error()};
 
-	return events[0].id;
+		for(auto &event : result.value().events) {
+			if(event.type == mbus_ng::EnumerationEvent::Type::created)
+				return event.id;
+		}
+	}
 }
 
 async::result<void> bindNetserver(Reactor &reactor, std::string devicePath) {

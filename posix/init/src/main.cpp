@@ -14,6 +14,7 @@
 #include <string_view>
 #include <sys/mount.h>
 #include <unistd.h>
+#include <utility>
 
 #include "config.hpp"
 #include "log.hpp"
@@ -93,8 +94,14 @@ int main() {
 	// This blocks on mbus, so it cannot be done from a coroutine that runs on the Reactor.
 	// It is done before the uevent socket exists, such that uevents do not pile up meanwhile.
 	std::optional<mbus_ng::EntityId> netserver;
-	if(config.nvmeOverFabric)
-		netserver = findNetserver();
+	if(config.nvmeOverFabric) {
+		auto entity = findNetserver();
+		if(entity)
+			netserver = *entity;
+		else
+			std::println("init: Failed to find netserver on mbus (error {}), not starting NVMe-oF",
+					std::to_underlying(entity.error()));
+	}
 
 	auto socket = UeventSocket::create();
 	if(!socket) {
