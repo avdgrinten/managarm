@@ -15,50 +15,28 @@
 #include "log.hpp"
 #include "uevent.hpp"
 
-void UeventEngine::init() {
-	int ret;
-
-	nlFd_ = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
-	if(nlFd_ < 0) {
-		std::println("init: socket(AF_NETLINK) failed! errno: {}", strerror(errno));
-		return;
-	}
+std::expected<UeventSocket, int> UeventSocket::create() {
+	int fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+	if(fd < 0)
+		return std::unexpected{errno};
+	UeventSocket self{fd};
 
 	struct sockaddr_nl sa;
 	sa.nl_family = AF_NETLINK;
 	sa.nl_pid = getpid();
 	sa.nl_groups = 1;
 
-	ret = bind(nlFd_, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa));
-	if(ret < 0) {
-		std::println("init: bind(nlFd) failed! errno: {}", strerror(errno));
-		return;
-	}
+	if(bind(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) < 0)
+		return std::unexpected{errno};
+	return self;
 }
 
-void UeventEngine::trigger() {
-	for(auto dev : std::filesystem::recursive_directory_iterator{"/sys/devices/"}) {
-		if (!dev.is_directory())
-			continue;
-		auto ueventPath = "/sys/devices/" / dev.path() / "uevent";
-		if (!std::filesystem::exists(ueventPath))
-			continue;
-		if (logDiscovery)
-			std::println("init: Triggering {}", ueventPath.string());
-
-		int fd = open(ueventPath.c_str(), O_WRONLY);
-		if (fd < 0) {
-			std::println("init: Failed to open {} to trigger uevent", ueventPath.string());
-			continue;
-		}
-		std::string_view s = "add";
-		if (write(fd, s.data(), s.size()) != static_cast<ssize_t>(s.size()))
-			std::println("init: Failed to write to uevent file {}", ueventPath.string());
-		close(fd);
-	}
+UeventSocket::~UeventSocket() {
+	if(fd_ >= 0)
+		close(fd_);
 }
 
-std::expected<std::optional<Uevent>, int> UeventEngine::nextUevent(int timeoutMs) {
+std::expected<std::optional<Uevent>, int> UeventSocket::nextUevent(int timeoutMs) {
 	int ret;
 
 	// Uevents that are skipped below must not extend the timeout.
@@ -73,7 +51,7 @@ std::expected<std::optional<Uevent>, int> UeventEngine::nextUevent(int timeoutMs
 			remainingMs = std::max<int>(left.count(), 0);
 		}
 
-		pollfd pfd{.fd = nlFd_, .events = POLLIN};
+		pollfd pfd{.fd = fd_, .events = POLLIN};
 		ret = poll(&pfd, 1, remainingMs);
 		if(ret < 0) {
 			int err = errno;
@@ -86,7 +64,7 @@ std::expected<std::optional<Uevent>, int> UeventEngine::nextUevent(int timeoutMs
 		std::string buf;
 		buf.resize(16384);
 
-		ret = read(nlFd_, buf.data(), buf.size());
+		ret = read(fd_, buf.data(), buf.size());
 		if(ret < 0) {
 			int err = errno;
 			std::println("init: read(nlFd) failed! errno: {}", strerror(err));
@@ -118,5 +96,27 @@ std::expected<std::optional<Uevent>, int> UeventEngine::nextUevent(int timeoutMs
 		if (uevent.at("ACTION") != "add")
 			continue;
 		return uevent;
+	}
+}
+
+void triggerColdplug() {
+	for(auto dev : std::filesystem::recursive_directory_iterator{"/sys/devices/"}) {
+		if (!dev.is_directory())
+			continue;
+		auto ueventPath = "/sys/devices/" / dev.path() / "uevent";
+		if (!std::filesystem::exists(ueventPath))
+			continue;
+		if (logDiscovery)
+			std::println("init: Triggering {}", ueventPath.string());
+
+		int fd = open(ueventPath.c_str(), O_WRONLY);
+		if (fd < 0) {
+			std::println("init: Failed to open {} to trigger uevent", ueventPath.string());
+			continue;
+		}
+		std::string_view s = "add";
+		if (write(fd, s.data(), s.size()) != static_cast<ssize_t>(s.size()))
+			std::println("init: Failed to write to uevent file {}", ueventPath.string());
+		close(fd);
 	}
 }

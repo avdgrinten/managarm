@@ -143,11 +143,14 @@ int main() {
 	// MBUS_IDs of the PCI devices that we already launched block-nvme for.
 	std::unordered_set<std::string> nvmeDevices;
 
-	UeventEngine ueventEngine;
 	std::println("init: Looking for the root partition {}", rootDescription);
 
-	ueventEngine.init();
-	ueventEngine.trigger();
+	auto socket = UeventSocket::create();
+	if(!socket) {
+		std::println("init: Failed to create the uevent socket: {}", strerror(socket.error()));
+		abort();
+	}
+	triggerColdplug();
 
 	while (!rootPath || !uefiNetDevpathResolved || nvmeLinkWait) {
 		if(nvmeLinkWait && nvmeLinkWait->check()) {
@@ -168,7 +171,7 @@ int main() {
 			timeoutMs = timeoutMs < 0 ? reportMs : std::min(timeoutMs, reportMs);
 		}
 
-		auto nextUevent = ueventEngine.nextUevent(timeoutMs);
+		auto nextUevent = socket->nextUevent(timeoutMs);
 		if (!nextUevent) {
 			std::println("init: Failed to receive uevent");
 			abort();
