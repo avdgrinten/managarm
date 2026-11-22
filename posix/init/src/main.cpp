@@ -1,4 +1,3 @@
-#include <async/algorithm.hpp>
 #include <async/result.hpp>
 #include <async/scope.hpp>
 #include <core/cmdline.hpp>
@@ -58,20 +57,14 @@ async::result<void> findRootInto(Reactor &reactor, std::string rootSpec, std::st
 async::result<std::string> discoverRoot(Reactor &reactor, const Config &config,
 		std::optional<mbus_ng::EntityId> netserver) {
 	std::string devNode;
-	co_await async::race_and_cancel(
-		// NVMe controllers can show up at any time, so this only completes by cancellation.
-		[&] (async::cancellation_token ct) { return bindNvmePciDevices(reactor, ct); },
-		// Init needs to wait for all of these before it can enter the root file system.
-		[&] (async::cancellation_token) {
-			return async::dynamic_scope<async::result<void>>(frg::stl_allocator{}, [&] (auto &spawn) {
-				spawn(findRootInto(reactor, config.root, devNode));
-				if(!config.netserverDevice.empty())
-					spawn(bindNetserver(reactor, config.netserverDevice));
-				if(netserver)
-					spawn(startNvmeOf(reactor, std::to_string(*netserver), config.netserverServer));
-			});
-		}
-	);
+	// Init needs to wait for all of these before it can enter the root file system.
+	co_await async::dynamic_scope<async::result<void>>(frg::stl_allocator{}, [&] (auto &spawn) {
+		spawn(findRootInto(reactor, config.root, devNode));
+		if(!config.netserverDevice.empty())
+			spawn(bindNetserver(reactor, config.netserverDevice));
+		if(netserver)
+			spawn(startNvmeOf(reactor, std::to_string(*netserver), config.netserverServer));
+	});
 	co_return devNode;
 }
 
@@ -102,6 +95,9 @@ std::string runDiscovery(const Config &config) {
 	if(!socket)
 		logPanic("init: Failed to create the uevent socket: {}", strerror(socket.error()));
 	Reactor reactor{*socket};
+
+	// The rules exist before the coldplug, so they handle the uevents of all devices.
+	NvmeBinder nvmeBinder{reactor};
 
 	// The uevents are queued in the socket until the Reactor runs.
 	triggerColdplug();

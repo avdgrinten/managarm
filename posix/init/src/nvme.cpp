@@ -8,7 +8,6 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <unordered_set>
 
 #include "nvme.hpp"
 #include "route.hpp"
@@ -70,28 +69,23 @@ async::result<void> waitForLink(Reactor &reactor, in_addr server) {
 
 } // namespace
 
-async::result<void> bindNvmePciDevices(Reactor &reactor, async::cancellation_token ct) {
-	UeventStream uevents{reactor};
-	// MBUS_IDs of the PCI devices that we already launched block-nvme for.
-	std::unordered_set<std::string> nvmeDevices;
+bool NvmeBinder::handle(const Uevent &uevent) {
+	if(lookup(uevent, "SUBSYSTEM") != "pci" || lookup(uevent, "PCI_CLASS") != "10802")
+		return true;
 
-	while(auto uevent = co_await uevents.next(ct)) {
-		if(lookup(*uevent, "SUBSYSTEM") != "pci" || lookup(*uevent, "PCI_CLASS") != "10802")
-			continue;
-
-		auto mbusId = lookup(*uevent, "MBUS_ID");
-		if(mbusId.empty()) {
-			std::println("init: NVMe controller {} has no MBUS_ID", lookup(*uevent, "DEVPATH"));
-			continue;
-		}
-
-		// Only launch one block-nvme per device, even if the device is reported more than once.
-		if(!nvmeDevices.insert(std::string{mbusId}).second)
-			continue;
-
-		if(auto e = bindServer("block-nvme", mbusId); !e)
-			std::println("init: Failed to bind block-nvme: {}", strerror(e.error()));
+	auto mbusId = lookup(uevent, "MBUS_ID");
+	if(mbusId.empty()) {
+		std::println("init: NVMe controller {} has no MBUS_ID", lookup(uevent, "DEVPATH"));
+		return true;
 	}
+
+	// Only launch one block-nvme per device, even if the device is reported more than once.
+	if(!nvmeDevices_.insert(std::string{mbusId}).second)
+		return true;
+
+	if(auto e = bindServer("block-nvme", mbusId); !e)
+		std::println("init: Failed to bind block-nvme: {}", strerror(e.error()));
+	return true;
 }
 
 async::result<void> startNvmeOf(Reactor &reactor, std::string netserver, std::string server) {
