@@ -4,12 +4,56 @@
 #include <linux/netlink.h>
 #include <print>
 #include <ranges>
+#include <string.h>
 #include <string_view>
 #include <sys/socket.h>
+#include <system_error>
 #include <unistd.h>
 
 #include "log.hpp"
 #include "uevent.hpp"
+
+namespace {
+
+// Triggers a synthetic add uevent for the device with the given sysfs directory.
+void triggerDevice(const std::filesystem::path &device) {
+	auto ueventPath = device / "uevent";
+
+	int fd = open(ueventPath.c_str(), O_WRONLY);
+	if (fd < 0) {
+		// Directories that do not correspond to devices have no uevent file.
+		if (errno != ENOENT)
+			std::println("init: Failed to open {} to trigger uevent: {}",
+					ueventPath.string(), strerror(errno));
+		return;
+	}
+	if (logDiscovery)
+		std::println("init: Triggering {}", ueventPath.string());
+
+	std::string_view s = "add";
+	if (write(fd, s.data(), s.size()) != static_cast<ssize_t>(s.size()))
+		std::println("init: Failed to write to uevent file {}", ueventPath.string());
+	close(fd);
+}
+
+// Devices come and go while we walk sysfs, so errors only end the walk of the affected directory.
+void triggerDevicesBelow(const std::filesystem::path &dir) {
+	std::error_code ec;
+	std::filesystem::directory_iterator it{dir, ec};
+	for(; !ec && it != std::filesystem::directory_iterator{}; it.increment(ec)) {
+		std::error_code typeEc;
+		if (!it->is_directory(typeEc))
+			continue;
+		triggerDevice(it->path());
+
+		if (!it->is_symlink(typeEc))
+			triggerDevicesBelow(it->path());
+	}
+	if(ec)
+		std::println("init: Failed to list {}: {}", dir.string(), ec.message());
+}
+
+} // namespace
 
 std::expected<UeventSocket, int> UeventSocket::create() {
 	int fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
@@ -57,23 +101,5 @@ std::expected<Uevent, int> UeventSocket::receive() {
 }
 
 void triggerColdplug() {
-	for(auto dev : std::filesystem::recursive_directory_iterator{"/sys/devices/"}) {
-		if (!dev.is_directory())
-			continue;
-		auto ueventPath = "/sys/devices/" / dev.path() / "uevent";
-		if (!std::filesystem::exists(ueventPath))
-			continue;
-		if (logDiscovery)
-			std::println("init: Triggering {}", ueventPath.string());
-
-		int fd = open(ueventPath.c_str(), O_WRONLY);
-		if (fd < 0) {
-			std::println("init: Failed to open {} to trigger uevent", ueventPath.string());
-			continue;
-		}
-		std::string_view s = "add";
-		if (write(fd, s.data(), s.size()) != static_cast<ssize_t>(s.size()))
-			std::println("init: Failed to write to uevent file {}", ueventPath.string());
-		close(fd);
-	}
+	triggerDevicesBelow("/sys/devices");
 }
