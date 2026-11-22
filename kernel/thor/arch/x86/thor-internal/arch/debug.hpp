@@ -61,6 +61,7 @@ struct PIOLogHandler final : LogHandler, KernelDevice {
 	void emit(frg::string_view record) override;
 	void emitUrgent(frg::string_view record) override;
 
+	void printString(frg::string_view str);
 	void printChar(char c);
 	bool setPriority(Severity severity);
 	void resetPriority();

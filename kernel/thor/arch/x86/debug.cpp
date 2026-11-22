@@ -74,8 +74,7 @@ static initgraph::Task registerBootSerialTask{&globalInitEngine, "x86.register-b
 void PIOLogHandler::emit(frg::string_view record) {
 	auto [md, msg] = destructureLogRecord(record);
 	auto csiSent = setPriority(md.severity);
-	for (size_t i = 0; i < msg.size(); ++i)
-		printChar(msg[i]);
+	printString(msg);
 	if (csiSent)
 		resetPriority();
 	printChar('\n');
@@ -85,11 +84,8 @@ void PIOLogHandler::emit(frg::string_view record) {
 void PIOLogHandler::emitUrgent(frg::string_view record) {
 	auto [md, msg] = destructureLogRecord(record);
 	auto csiSent = setPriority(md.severity);
-	const char *prefix = "URGENT: ";
-	while(*prefix)
-		printChar(*(prefix++));
-	for (size_t i = 0; i < msg.size(); ++i)
-		printChar(msg[i]);
+	printString("URGENT: ");
+	printString(msg);
 	if (csiSent)
 		resetPriority();
 	printChar('\n');
@@ -111,6 +107,11 @@ void PIOLogHandler::flushSerial() {
 		// do nothing until the UART is ready to transmit.
 	}
 	base.store_iterative(data, serialBuffer.data(), count);
+}
+
+void PIOLogHandler::printString(frg::string_view str) {
+	for (size_t i = 0; i < str.size(); i++)
+		printChar(str[i]);
 }
 
 void PIOLogHandler::printChar(char c) {
@@ -152,20 +153,14 @@ bool PIOLogHandler::setPriority(Severity prio) {
 			return false;
 	}
 
-	printChar('\e');
-	printChar('[');
-	printChar('3');
+	printString("\e[3");
 	printChar('0' + c);
 	printChar('m');
 	return true;
 }
 
 void PIOLogHandler::resetPriority() {
-	printChar('\e');
-	printChar('[');
-	printChar('3');
-	printChar('9');
-	printChar('m');
+	printString("\e[39m");
 }
 
 } // namespace thor
