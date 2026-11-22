@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <core/logging.hpp>
 #include <errno.h>
+#include <optional>
 #include <poll.h>
 #include <print>
 #include <string.h>
@@ -8,25 +9,12 @@
 #include "log.hpp"
 #include "reactor.hpp"
 
-UeventStream::UeventStream(Reactor &reactor) : reactor_{reactor} {
-	reactor_.streams_.push_back(this);
+UeventRule::UeventRule(Reactor &reactor) : reactor_{reactor} {
+	reactor_.rules_.push_back(this);
 }
 
-UeventStream::~UeventStream() {
-	reactor_.streams_.remove(this);
-}
-
-async::result<Uevent> UeventStream::next() {
-	// Without cancellation, the queue always yields an item.
-	auto uevent = co_await queue_.async_get();
-	co_return std::move(*uevent);
-}
-
-async::result<std::optional<Uevent>> UeventStream::next(async::cancellation_token ct) {
-	auto uevent = co_await queue_.async_get(ct);
-	if(!uevent)
-		co_return std::nullopt;
-	co_return std::move(*uevent);
+UeventRule::~UeventRule() {
+	reactor_.rules_.remove(this);
 }
 
 async::result<bool> Reactor::sleepFor(Clock::duration duration, async::cancellation_token ct) {
@@ -44,7 +32,7 @@ void Reactor::wait() {
 		return;
 	}
 
-	// Timers are absolute, so uevents that no coroutine waits for do not delay them.
+	// Timers are absolute, so uevents that arrive in the meantime do not delay them.
 	auto now = Clock::now();
 	bool expired = false;
 	std::optional<Clock::time_point> wakeup;
@@ -100,6 +88,10 @@ void Reactor::wait() {
 			std::println("    {}={}", kv.first, kv.second);
 	}
 
-	for(auto stream : streams_)
-		stream->queue_.put(*uevent);
+	for(auto it = rules_.begin(); it != rules_.end(); ) {
+		if((*it)->handle(*uevent))
+			++it;
+		else
+			it = rules_.erase(it);
+	}
 }

@@ -3,12 +3,9 @@
 #include <async/basic.hpp>
 #include <async/cancellation.hpp>
 #include <async/oneshot-event.hpp>
-#include <async/queue.hpp>
 #include <async/result.hpp>
 #include <chrono>
-#include <frg/std_compat.hpp>
 #include <list>
-#include <optional>
 
 #include "uevent.hpp"
 
@@ -16,37 +13,30 @@ using Clock = std::chrono::steady_clock;
 
 class Reactor;
 
-// Yields the add uevents that the Reactor receives after the stream is constructed.
-// All of them carry DEVPATH.
-// Coroutines need to construct their streams before they suspend for the first time;
-// otherwise, they miss the uevents that triggerColdplug() caused before Reactor::run().
-class UeventStream {
-	friend class Reactor;
-
+// Handles the add uevents that the Reactor receives. All of them carry DEVPATH.
+// Rules need to be constructed before triggerColdplug() to handle the uevents of all devices.
+class UeventRule {
 public:
-	explicit UeventStream(Reactor &reactor);
+	explicit UeventRule(Reactor &reactor);
 
-	UeventStream(const UeventStream &) = delete;
-	UeventStream &operator=(const UeventStream &) = delete;
+	UeventRule(const UeventRule &) = delete;
+	UeventRule &operator=(const UeventRule &) = delete;
 
-	~UeventStream();
-
+	// Returns false once the rule is done; the Reactor does not call it again afterwards.
 	// Devices can be reported more than once (e.g., a device that is announced while
 	// triggerColdplug() runs gets both its real and a synthetic add uevent).
-	// Hence, consumers of the uevents need to be idempotent.
-	async::result<Uevent> next();
+	// Hence, rules need to be idempotent.
+	virtual bool handle(const Uevent &uevent) = 0;
 
-	// Returns std::nullopt on cancellation.
-	async::result<std::optional<Uevent>> next(async::cancellation_token ct);
+protected:
+	~UeventRule();
 
-private:
 	Reactor &reactor_;
-	async::queue<Uevent, frg::stl_allocator> queue_;
 };
 
-// Runs coroutines on top of poll(): lets them sleep and hands uevents to their UeventStreams.
+// Runs coroutines on top of poll(): lets them sleep and hands uevents to the UeventRules.
 class Reactor {
-	friend class UeventStream;
+	friend class UeventRule;
 
 public:
 	explicit Reactor(UeventSocket &socket) : socket_{socket} {}
@@ -90,5 +80,5 @@ private:
 	UeventSocket &socket_;
 	RunQueue rq_;
 	std::list<Timer *> timers_;
-	std::list<UeventStream *> streams_;
+	std::list<UeventRule *> rules_;
 };
