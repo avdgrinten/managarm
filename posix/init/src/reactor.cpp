@@ -1,8 +1,8 @@
 #include <algorithm>
+#include <core/logging.hpp>
 #include <errno.h>
 #include <poll.h>
 #include <print>
-#include <stdlib.h>
 #include <string.h>
 
 #include "log.hpp"
@@ -70,25 +70,21 @@ void Reactor::wait() {
 
 	pollfd pfd{.fd = socket_.fd(), .events = POLLIN};
 	int ret = poll(&pfd, 1, timeoutMs);
+	// The coroutines that wait for us cannot be unwound, so errors are fatal here.
 	if(ret < 0) {
 		if(errno == EINTR)
 			return;
-		std::println("init: poll() on the uevent socket failed: {}", strerror(errno));
-		abort();
+		logPanic("init: poll() on the uevent socket failed: {}", strerror(errno));
 	}
 	if(!ret)
 		return;
 	// Without POLLIN, receive() would block and delay the timers.
-	if(!(pfd.revents & POLLIN)) {
-		std::println("init: poll() reported an error on the uevent socket");
-		abort();
-	}
+	if(!(pfd.revents & POLLIN))
+		logPanic("init: poll() reported an error on the uevent socket");
 
 	auto uevent = socket_.receive();
-	if(!uevent) {
-		std::println("init: Failed to receive uevent: {}", strerror(uevent.error()));
-		abort();
-	}
+	if(!uevent)
+		logPanic("init: Failed to receive uevent: {}", strerror(uevent.error()));
 
 	auto action = lookup(*uevent, "ACTION");
 	if(action.empty() || lookup(*uevent, "DEVPATH").empty()) {

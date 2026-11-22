@@ -2,12 +2,13 @@
 #include <async/result.hpp>
 #include <async/scope.hpp>
 #include <core/cmdline.hpp>
+#include <core/logging.hpp>
+#include <errno.h>
 #include <fcntl.h>
 #include <frg/std_compat.hpp>
 #include <helix/ipc.hpp>
 #include <optional>
 #include <print>
-#include <stdexcept>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
@@ -74,9 +75,12 @@ async::result<std::string> discoverRoot(Reactor &reactor, const Config &config,
 }
 
 void setupConsole() {
+	// Errors cannot be reported before the console is set up.
 	int fd = open("/dev/helout", O_WRONLY);
-	dup2(fd, STDOUT_FILENO);
-	dup2(fd, STDERR_FILENO);
+	if(fd < 0)
+		abort();
+	if(dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0)
+		abort();
 }
 
 // Runs discoverRoot() on a Reactor. The uevent socket is closed when this returns.
@@ -94,10 +98,8 @@ std::string runDiscovery(const Config &config) {
 	}
 
 	auto socket = UeventSocket::create();
-	if(!socket) {
-		std::println("init: Failed to create the uevent socket: {}", strerror(socket.error()));
-		abort();
-	}
+	if(!socket)
+		logPanic("init: Failed to create the uevent socket: {}", strerror(socket.error()));
 	Reactor reactor{*socket};
 
 	// The uevents are queued in the socket until the Reactor runs.
@@ -108,13 +110,13 @@ std::string runDiscovery(const Config &config) {
 void enterRoot(const std::string &devNode) {
 	std::println("init: Mounting {}", devNode);
 	if(mount(devNode.c_str(), "/realfs", "ext2", 0, ""))
-		throw std::runtime_error("mount() failed");
+		logPanic("init: Failed to mount {} on /realfs: {}", devNode, strerror(errno));
 
 	if(chroot("/realfs"))
-		throw std::runtime_error("chroot() failed");
+		logPanic("init: chroot() to /realfs failed: {}", strerror(errno));
 	// Some programs, e.g. bash with its builtin getcwd() cannot deal with CWD outside of /.
 	if(chdir("/"))
-		throw std::runtime_error("chdir() failed");
+		logPanic("init: chdir() to / failed: {}", strerror(errno));
 
 	std::println("init: On /realfs");
 }
@@ -158,6 +160,5 @@ int main() {
 	setupMachineId();
 
 	execl("/usr/lib/systemd/systemd", "systemd", nullptr);
-	std::println("init: Failed to execve() systemd");
-	abort();
+	logPanic("init: Failed to execute systemd: {}", strerror(errno));
 }
