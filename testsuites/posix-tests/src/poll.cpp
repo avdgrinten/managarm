@@ -153,6 +153,59 @@ DEFINE_TEST(poll_norm_band_unix_socket, ([] {
 	close(sv[1]);
 }))
 
+namespace {
+
+void pollNormDevice(const char *path, short readyMask) {
+	int fd = open(path, O_RDWR);
+	assert(fd >= 0);
+
+	const short masks[] = {
+		POLLIN | POLLOUT,
+		POLLRDNORM,
+		POLLWRNORM,
+		POLLRDNORM | POLLWRNORM,
+		POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM,
+	};
+	const int timeouts[] = {0, 1000};
+	for(int timeout : timeouts) {
+		for(short mask : masks) {
+			pollfd pfd = {};
+			pfd.fd = fd;
+			pfd.events = mask;
+			short expected = mask & readyMask;
+			// Use a finite wait only when readiness is expected.
+			int e = poll(&pfd, 1, expected ? timeout : 0);
+			assert(e == (expected ? 1 : 0));
+			assert(pfd.revents == expected);
+		}
+	}
+
+	close(fd);
+}
+
+} // namespace
+
+DEFINE_TEST(poll_norm_null, ([] {
+	pollNormDevice("/dev/null", POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM);
+}))
+
+DEFINE_TEST(poll_norm_zero, ([] {
+	pollNormDevice("/dev/zero", POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM);
+}))
+
+DEFINE_TEST(poll_norm_full, ([] {
+	pollNormDevice("/dev/full", POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM);
+}))
+
+DEFINE_TEST(poll_norm_urandom, ([] {
+	pollNormDevice("/dev/urandom", POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM);
+}))
+
+DEFINE_TEST(poll_norm_random, ([] {
+	// Match Linux's /dev/random readiness after RNG initialization.
+	pollNormDevice("/dev/random", POLLIN | POLLRDNORM);
+}))
+
 DEFINE_TEST(poll_norm_eventfd, ([] {
 	int fd = eventfd(1, 0);
 	assert(fd >= 0);
