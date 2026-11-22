@@ -73,24 +73,14 @@ async::result<std::string> discoverRoot(Reactor &reactor, const Config &config,
 	co_return devNode;
 }
 
-} // namespace
-
-int main() {
+void setupConsole() {
 	int fd = open("/dev/helout", O_WRONLY);
 	dup2(fd, STDOUT_FILENO);
 	dup2(fd, STDERR_FILENO);
+}
 
-	std::println("init: Entering first stage");
-
-	for(auto name : earlyServers) {
-		if(auto e = runServer(name); !e)
-			std::println("init: Failed to run {}: {}", name, strerror(e.error()));
-	}
-
-	Cmdline cmdlineHelper{};
-	auto config = parseConfig(async::run(cmdlineHelper.get(), helix::currentDispatcher));
-	logDiscovery = config.logDiscovery;
-
+// Runs discoverRoot() on a Reactor. The uevent socket is closed when this returns.
+std::string runDiscovery(const Config &config) {
 	// This blocks on mbus, so it cannot be done from a coroutine that runs on the Reactor.
 	// It is done before the uevent socket exists, such that uevents do not pile up meanwhile.
 	std::optional<mbus_ng::EntityId> netserver;
@@ -112,16 +102,12 @@ int main() {
 
 	// The uevents are queued in the socket until the Reactor runs.
 	triggerColdplug();
-	auto rootPath = reactor.run(discoverRoot(reactor, config, netserver));
+	return reactor.run(discoverRoot(reactor, config, netserver));
+}
 
-#if defined (__x86_64__)
-	// Hack: Start UHCI only after EHCI devices are ready.
-	if(auto e = runServer("uhci"); !e)
-		std::println("init: Failed to run uhci: {}", strerror(e.error()));
-#endif
-
-	std::println("init: Mounting {}", rootPath);
-	if(mount(rootPath.c_str(), "/realfs", "ext2", 0, ""))
+void enterRoot(const std::string &devNode) {
+	std::println("init: Mounting {}", devNode);
+	if(mount(devNode.c_str(), "/realfs", "ext2", 0, ""))
 		throw std::runtime_error("mount() failed");
 
 	if(chroot("/realfs"))
@@ -131,7 +117,9 @@ int main() {
 		throw std::runtime_error("chdir() failed");
 
 	std::println("init: On /realfs");
+}
 
+void setupMachineId() {
 	if(access("/etc/machine-id", F_OK)) {
 		std::string args[] = {"/usr/bin/systemd-machine-id-setup"};
 		auto process = Process::spawn(args, {});
@@ -140,9 +128,36 @@ int main() {
 		else
 			std::println("init: Failed to run systemd-machine-id-setup: {}", strerror(process.error()));
 	}
+}
+
+} // namespace
+
+int main() {
+	setupConsole();
+
+	std::println("init: Entering first stage");
+
+	for(auto name : earlyServers) {
+		if(auto e = runServer(name); !e)
+			std::println("init: Failed to run {}: {}", name, strerror(e.error()));
+	}
+
+	Cmdline cmdlineHelper{};
+	auto config = parseConfig(async::run(cmdlineHelper.get(), helix::currentDispatcher));
+	logDiscovery = config.logDiscovery;
+
+	auto devNode = runDiscovery(config);
+
+#if defined (__x86_64__)
+	// Hack: Start UHCI only after EHCI devices are ready.
+	if(auto e = runServer("uhci"); !e)
+		std::println("init: Failed to run uhci: {}", strerror(e.error()));
+#endif
+
+	enterRoot(devNode);
+	setupMachineId();
 
 	execl("/usr/lib/systemd/systemd", "systemd", nullptr);
 	std::println("init: Failed to execve() systemd");
 	abort();
 }
-
