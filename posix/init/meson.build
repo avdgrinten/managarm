@@ -1,6 +1,7 @@
 executable('posix-init',
 	'src/config.cpp',
 	'src/main.cpp',
+	'src/netserver.cpp',
 	'src/root.cpp',
 	'src/route.cpp',
 	'src/spawn.cpp',

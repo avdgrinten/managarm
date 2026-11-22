@@ -36,6 +36,7 @@
 
 #include "config.hpp"
 #include "log.hpp"
+#include "netserver.hpp"
 #include "nvme.hpp"
 #include "root.hpp"
 #include "spawn.hpp"
@@ -103,15 +104,7 @@ int main() {
 	// netserver's TCP does not retransmit, so a SYN sent before a link is up would be lost.
 	std::optional<NvmeOfLinkWait> nvmeLinkWait;
 	if(config.nvmeOverFabric) {
-		auto filter = mbus_ng::Conjunction{{
-			mbus_ng::EqualsFilter{"class", "netserver"}
-		}};
-
-		auto enumerator = mbus_ng::Instance::global().enumerate(filter);
-		auto [_, events] = async::run(enumerator.nextEvents(), helix::currentDispatcher).unwrap();
-		assert(events.size() == 1);
-
-		nvmeMbusId = std::to_string(events[0].id);
+		nvmeMbusId = std::to_string(findNetserver());
 		in_addr server{};
 		if(inet_pton(AF_INET, config.netserverServer.c_str(), &server) == 1) {
 			std::println("init: Waiting for the network link to {} for NVMe-oF", config.netserverServer);
