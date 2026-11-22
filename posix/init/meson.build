@@ -1,9 +1,13 @@
-executable('posix-init', 'src/stage1.cpp',
+executable('posix-init',
+	'src/config.cpp',
+	'src/main.cpp',
+	'src/netserver.cpp',
+	'src/nvme.cpp',
+	'src/reactor.cpp',
+	'src/root.cpp',
+	'src/route.cpp',
+	'src/spawn.cpp',
+	'src/uevent.cpp',
 	dependencies: [core_dep, frigg, hel_dep, bragi_dep, mbus_proto_dep],
 	install : true,
-)
-
-executable('init-stage2', 'src/stage2.cpp',
-	dependencies : libudev_dep,
-	install : true
 )

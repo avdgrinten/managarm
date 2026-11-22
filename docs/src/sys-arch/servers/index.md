@@ -10,4 +10,4 @@ Other servers can be loaded from regular file systems, but they will run in the 
 
 ## Launching
 
-Servers needed for bootstrapping are launched from stage1 (`posix/init/src/stage1.cpp`). After this, posix-subsystem sets up the environment by mounting the rootfs, setting up mounted filesystems like procfs, sysfs, and others. Once udev is launched, our udev rules are evaluated. These use `runsvr` to bind devices to servers (via the `svrctl` protocol) or launch servers. USB udev rules are located under `drivers/usb/90-managarm-usb.rules`, and similar rules exist for NICs and graphics.
+Servers needed for bootstrapping are launched by `posix-init` (`posix/init/src/main.cpp`). After this, `posix-init` mounts the rootfs and executes systemd, which sets up file systems like procfs, sysfs, and others. Once udev is launched, our udev rules are evaluated. These use `runsvr` to bind devices to servers (via the `svrctl` protocol) or launch servers. USB udev rules are located under `drivers/usb/90-managarm-usb.rules`, and similar rules exist for NICs and graphics.
