@@ -76,36 +76,6 @@ std::expected<std::string, int> findDevNode(const std::string &device) {
 	return std::unexpected{ENOENT};
 }
 
-// Returns the device node of the first root partition that shows up.
-async::result<std::string>
-matchRoot(UeventStream &uevents, const std::optional<std::string> &partuuid) {
-	while(true) {
-		auto uevent = co_await uevents.next();
-
-		if (lookup(uevent, "SUBSYSTEM") == "block") {
-			auto device = std::format("/sys{}", lookup(uevent, "DEVPATH"));
-			if(logDiscovery)
-				std::println("init: Considering device {}", device);
-
-			bool isRoot;
-			if(partuuid) {
-				// Like Linux, root=PARTUUID= ignores the partition type.
-				isRoot = toLower(lookup(uevent, "PARTUUID")) == *partuuid;
-			} else {
-				isRoot = hasManagarmRootAttribute(device);
-			}
-			if(!isRoot)
-				continue;
-
-			auto devNode = findDevNode(device);
-			if(!devNode)
-				logPanic("init: {} is the root partition, but its /dev node cannot be determined: {}",
-						device, strerror(devNode.error()));
-			co_return std::move(*devNode);
-		}
-	}
-}
-
 async::result<void> reportMissingRoot(Reactor &reactor, const std::string &description,
 		async::cancellation_token ct) {
 	while(co_await reactor.sleepFor(reportInterval, ct))
@@ -114,33 +84,54 @@ async::result<void> reportMissingRoot(Reactor &reactor, const std::string &descr
 
 } // namespace
 
-async::result<std::string> findRoot(Reactor &reactor, std::string rootSpec) {
-	UeventStream uevents{reactor};
-
-	// Without root=, the first partition with the Managarm root type is used.
-	std::optional<std::string> partuuid;
+RootSearch::RootSearch(Reactor &reactor, const std::string &rootSpec) : UeventRule{reactor} {
 	if(rootSpec.size()) {
 		std::string_view spec{rootSpec};
 		// An empty PARTUUID cannot identify a partition.
 		constexpr std::string_view prefix = "PARTUUID=";
 		if(spec.starts_with(prefix) && spec.size() > prefix.size())
-			partuuid = toLower(spec.substr(prefix.size()));
+			partuuid_ = toLower(spec.substr(prefix.size()));
 		else
 			std::println("init: Unsupported root={}, falling back to the partition type", spec);
 	}
-	std::string description = partuuid
-			? std::format("PARTUUID={}", *partuuid)
+	description_ = partuuid_
+			? std::format("PARTUUID={}", *partuuid_)
 			: std::string{"with the Managarm root type"};
 
-	std::println("init: Looking for the root partition {}", description);
+	std::println("init: Looking for the root partition {}", description_);
+}
 
-	std::string devNode;
+// Only the first root partition that shows up is used.
+bool RootSearch::handle(const Uevent &uevent) {
+	if (lookup(uevent, "SUBSYSTEM") == "block") {
+		auto device = std::format("/sys{}", lookup(uevent, "DEVPATH"));
+		if(logDiscovery)
+			std::println("init: Considering device {}", device);
+
+		bool isRoot;
+		if(partuuid_) {
+			// Like Linux, root=PARTUUID= ignores the partition type.
+			isRoot = toLower(lookup(uevent, "PARTUUID")) == *partuuid_;
+		} else {
+			isRoot = hasManagarmRootAttribute(device);
+		}
+		if(!isRoot)
+			return true;
+
+		auto devNode = findDevNode(device);
+		if(!devNode)
+			logPanic("init: {} is the root partition, but its /dev node cannot be determined: {}",
+					device, strerror(devNode.error()));
+		devNode_ = std::move(*devNode);
+		found_.raise();
+		return false;
+	}
+	return true;
+}
+
+async::result<void> RootSearch::wait() {
 	co_await async::race_and_cancel(
-		[&] (async::cancellation_token) {
-			return async::transform(matchRoot(uevents, partuuid),
-					[&] (std::string node) { devNode = std::move(node); });
-		},
-		[&] (async::cancellation_token ct) { return reportMissingRoot(reactor, description, ct); }
+		[&] (async::cancellation_token) { return found_.wait(); },
+		[&] (async::cancellation_token ct) { return reportMissingRoot(reactor_, description_, ct); }
 	);
-	co_return devNode;
 }

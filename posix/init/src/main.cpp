@@ -47,25 +47,19 @@ constexpr std::string_view earlyServers[] = {
 	"snd-hda",
 };
 
-// Lets findRoot() run in a scope of coroutines that do not return values.
-async::result<void> findRootInto(Reactor &reactor, std::string rootSpec, std::string &devNode) {
-	devNode = co_await findRoot(reactor, std::move(rootSpec));
-}
-
 // Brings up the drivers that are needed to access the root partition.
 // Returns the device node of the root partition.
 async::result<std::string> discoverRoot(Reactor &reactor, const Config &config,
-		std::optional<mbus_ng::EntityId> netserver) {
-	std::string devNode;
+		RootSearch &rootSearch, std::optional<mbus_ng::EntityId> netserver) {
 	// Init needs to wait for all of these before it can enter the root file system.
 	co_await async::dynamic_scope<async::result<void>>(frg::stl_allocator{}, [&] (auto &spawn) {
-		spawn(findRootInto(reactor, config.root, devNode));
+		spawn(rootSearch.wait());
 		if(!config.netserverDevice.empty())
 			spawn(bindNetserver(reactor, config.netserverDevice));
 		if(netserver)
 			spawn(startNvmeOf(reactor, std::to_string(*netserver), config.netserverServer));
 	});
-	co_return devNode;
+	co_return rootSearch.devNode();
 }
 
 void setupConsole() {
@@ -98,10 +92,11 @@ std::string runDiscovery(const Config &config) {
 
 	// The rules exist before the coldplug, so they handle the uevents of all devices.
 	NvmeBinder nvmeBinder{reactor};
+	RootSearch rootSearch{reactor, config.root};
 
 	// The uevents are queued in the socket until the Reactor runs.
 	triggerColdplug();
-	return reactor.run(discoverRoot(reactor, config, netserver));
+	return reactor.run(discoverRoot(reactor, config, rootSearch, netserver));
 }
 
 void enterRoot(const std::string &devNode) {
