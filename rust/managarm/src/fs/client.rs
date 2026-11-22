@@ -19,26 +19,47 @@ pub async fn open_device(lane: &Handle) -> Result<DeviceFile> {
     req.set_flags(0);
     let head = bragi::head_to_bytes(&req)?;
 
-    let (_offer, (send_req, recv, pull_passthrough, pull_page)) = hel::submit_async(
+    let (offer, (send_req, recv, pull_passthrough)) = hel::submit_async(
         lane,
-        hel::Offer::new((
+        hel::Offer::new_with_lane((
             hel::SendBuffer::new(&head),
             hel::ReceiveInline,
             hel::PullDescriptor::new(hel_sys::kHelRightInvoke | hel_sys::kHelRightManage),
-            hel::PullDescriptor::new(hel_sys::kHelRightRead | hel_sys::kHelRightAssign),
         )),
     )
     .await?;
+    let conversation = offer?.context("no conversation lane offered")?;
     send_req?;
     let recv_data = recv?;
     let passthrough = pull_passthrough?.context("no passthrough lane pushed")?;
-    // The status page is only pushed by drivers that support FC_STATUS_PAGE.
-    let _ = pull_page;
 
     let resp: bindings::SvrResponse = bragi::head_from_bytes(&recv_data)?;
     if resp.error() != bindings::Errors::Success {
         bail!("DEV_OPEN failed: {:?}", resp.error());
     }
+
+    // One descriptor is transferred per announced capability.
+    // We need neither of them, but we still have to receive them to complete the exchange.
+    let caps = resp.caps().unwrap_or(0);
+    if caps & bindings::FileCaps::FC_STATUS_PAGE.value() != 0 {
+        hel::submit_async(
+            &conversation,
+            hel::PullDescriptor::new(hel_sys::kHelRightRead | hel_sys::kHelRightAssign),
+        )
+        .await??
+        .context("no status page pushed")?;
+    }
+    if caps & bindings::FileCaps::FC_POSIX_LANE.value() != 0 {
+        // We do not serve POSIX requests: hand out a lane whose other end is closed,
+        // so that the driver's requests on it fail.
+        let (_local, remote) = hel::create_stream()?;
+        hel::submit_async(
+            &conversation,
+            hel::PushDescriptor::new(&remote, hel_sys::kHelRightInvoke | hel_sys::kHelRightManage),
+        )
+        .await??;
+    }
+
     Ok(DeviceFile { passthrough })
 }
 

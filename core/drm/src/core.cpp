@@ -311,22 +311,18 @@ struct ServeDeviceVisitor {
 			resp.set_error(managarm::fs::Errors::SUCCESS);
 			resp.set_caps(managarm::fs::FileCaps::FC_STATUS_PAGE | managarm::fs::FileCaps::FC_POSIX_LANE);
 
-			auto [send_resp, push_pt, push_page] = co_await helix_ng::exchangeMsgs(conversation,
+			auto [send_resp, push_pt, push_page, pull_posix_lane] = co_await helix_ng::exchangeMsgs(conversation,
 				helix_ng::sendBragiHeadOnly(resp, frg::stl_allocator{}),
 				helix_ng::pushDescriptor(remote_lane, kHelRightInvoke | kHelRightManage),
-				helix_ng::pushDescriptor(file->statusPageMemory(), kHelRightRead | kHelRightAssign)
+				helix_ng::pushDescriptor(file->statusPageMemory(), kHelRightRead | kHelRightAssign),
+				helix_ng::pullDescriptor(kHelRightInvoke | kHelRightManage)
 			);
 			HEL_CHECK(send_resp.error());
 			HEL_CHECK(push_pt.error());
 			HEL_CHECK(push_page.error());
-		}else if(req.req_type() == managarm::fs::CntReqType::OPEN_FD_LANE) {
-			auto [fd_lane] = co_await helix_ng::exchangeMsgs(
-				conversation,
-				helix_ng::pullDescriptor(kHelRightInvoke | kHelRightManage)
-			);
-			HEL_CHECK(fd_lane.error());
+			HEL_CHECK(pull_posix_lane.error());
 
-			device->_posixLane = fd_lane.descriptor();
+			device->_posixLane = pull_posix_lane.descriptor();
 		}else{
 			throw std::runtime_error("Invalid request in serveDevice()");
 		}
