@@ -41,13 +41,12 @@ void triggerDevicesBelow(const std::filesystem::path &dir) {
 	std::error_code ec;
 	std::filesystem::directory_iterator it{dir, ec};
 	for(; !ec && it != std::filesystem::directory_iterator{}; it.increment(ec)) {
+		// Symlinks lead to devices that are triggered through their own directories.
 		std::error_code typeEc;
-		if (!it->is_directory(typeEc))
+		if (it->is_symlink(typeEc) || !it->is_directory(typeEc))
 			continue;
 		triggerDevice(it->path());
-
-		if (!it->is_symlink(typeEc))
-			triggerDevicesBelow(it->path());
+		triggerDevicesBelow(it->path());
 	}
 	if(ec)
 		std::println("init: Failed to list {}: {}", dir.string(), ec.message());
