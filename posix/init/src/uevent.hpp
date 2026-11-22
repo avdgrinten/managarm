@@ -1,7 +1,6 @@
 #pragma once
 
 #include <expected>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -17,8 +16,10 @@ public:
 
 	~UeventSocket();
 
-	// Yields std::nullopt if no uevent arrives within timeoutMs; a negative timeout waits indefinitely.
-	std::expected<std::optional<Uevent>, int> nextUevent(int timeoutMs = -1);
+	int fd() { return fd_; }
+
+	// Receives a single uevent; blocks if none is pending.
+	std::expected<Uevent, int> receive();
 
 private:
 	explicit UeventSocket(int fd) : fd_{fd} {}

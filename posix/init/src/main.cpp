@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <sys/sysmacros.h>
 #include <arpa/inet.h>
+#include <async/algorithm.hpp>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <net/if.h>
@@ -38,6 +39,7 @@
 #include "log.hpp"
 #include "netserver.hpp"
 #include "nvme.hpp"
+#include "reactor.hpp"
 #include "root.hpp"
 #include "spawn.hpp"
 #include "uevent.hpp"
@@ -63,24 +65,27 @@ constexpr std::string_view earlyServers[] = {
 	"snd-hda",
 };
 
-} // namespace
+// Yields std::nullopt if no uevent arrives within timeoutMs; a negative timeout waits indefinitely.
+async::result<std::optional<Uevent>>
+nextUevent(Reactor &reactor, UeventStream &uevents, int timeoutMs) {
+	if(timeoutMs < 0)
+		co_return co_await uevents.next();
 
-int main() {
-	int fd = open("/dev/helout", O_WRONLY);
-	dup2(fd, STDOUT_FILENO);
-	dup2(fd, STDERR_FILENO);
+	std::optional<Uevent> uevent;
+	co_await async::race_and_cancel(
+		async::lambda([&] (async::cancellation_token ct) -> async::result<void> {
+			uevent = co_await uevents.next(ct);
+		}),
+		async::lambda([&] (async::cancellation_token ct) -> async::result<void> {
+			co_await reactor.sleepFor(std::chrono::milliseconds{timeoutMs}, ct);
+		})
+	);
+	co_return uevent;
+}
 
-	std::println("init: Entering first stage");
-
-	for(auto name : earlyServers) {
-		if(auto e = runServer(name); !e)
-			std::println("init: Failed to run {}: {}", name, strerror(e.error()));
-	}
-
-	Cmdline cmdlineHelper{};
-	auto config = parseConfig(async::run(cmdlineHelper.get(), helix::currentDispatcher));
-	logDiscovery = config.logDiscovery;
-
+// Brings up the drivers that are needed to access the root partition.
+// Returns the device node of the root partition.
+async::result<std::string> discoverRoot(Reactor &reactor, const Config &config) {
 	std::optional<DevicePathParser> uefiNetDp;
 	std::filesystem::path dpSysfsPath{};
 	bool uefiNetDevpathResolved = config.netserverDevice.empty();
@@ -128,7 +133,6 @@ int main() {
 			? std::format("PARTUUID={}", *rootPartuuid)
 			: std::string{"with the Managarm root type"};
 
-	using Clock = std::chrono::steady_clock;
 	constexpr auto rootReportInterval = std::chrono::seconds{10};
 	auto nextRootReport = Clock::now() + rootReportInterval;
 
@@ -138,11 +142,7 @@ int main() {
 
 	std::println("init: Looking for the root partition {}", rootDescription);
 
-	auto socket = UeventSocket::create();
-	if(!socket) {
-		std::println("init: Failed to create the uevent socket: {}", strerror(socket.error()));
-		abort();
-	}
+	UeventStream uevents{reactor};
 	triggerColdplug();
 
 	while (!rootPath || !uefiNetDevpathResolved || nvmeLinkWait) {
@@ -164,21 +164,10 @@ int main() {
 			timeoutMs = timeoutMs < 0 ? reportMs : std::min(timeoutMs, reportMs);
 		}
 
-		auto nextUevent = socket->nextUevent(timeoutMs);
-		if (!nextUevent) {
-			std::println("init: Failed to receive uevent");
-			abort();
-		}
+		auto uevent = co_await nextUevent(reactor, uevents, timeoutMs);
 		// Timed out to poll the NVMe-oF link or to report that the root is still missing.
-		if (!*nextUevent)
+		if (!uevent)
 			continue;
-		auto &uevent = *nextUevent;
-
-		if(logDiscovery) {
-			std::println("init: Received uevent");
-			for (const auto &kv : *uevent)
-				std::println("    {}={}", kv.first, kv.second);
-		}
 
 		// Note: DEVPATH is unconditionally inserted by generic uevent code.
 		const auto &devpath = uevent->at("DEVPATH");
@@ -228,14 +217,43 @@ int main() {
 		}
 	}
 
+	co_return *rootPath;
+}
+
+} // namespace
+
+int main() {
+	int fd = open("/dev/helout", O_WRONLY);
+	dup2(fd, STDOUT_FILENO);
+	dup2(fd, STDERR_FILENO);
+
+	std::println("init: Entering first stage");
+
+	for(auto name : earlyServers) {
+		if(auto e = runServer(name); !e)
+			std::println("init: Failed to run {}: {}", name, strerror(e.error()));
+	}
+
+	Cmdline cmdlineHelper{};
+	auto config = parseConfig(async::run(cmdlineHelper.get(), helix::currentDispatcher));
+	logDiscovery = config.logDiscovery;
+
+	auto socket = UeventSocket::create();
+	if(!socket) {
+		std::println("init: Failed to create the uevent socket: {}", strerror(socket.error()));
+		abort();
+	}
+	Reactor reactor{*socket};
+	auto rootPath = reactor.run(discoverRoot(reactor, config));
+
 #if defined (__x86_64__)
 	// Hack: Start UHCI only after EHCI devices are ready.
 	if(auto e = runServer("uhci"); !e)
 		std::println("init: Failed to run uhci: {}", strerror(e.error()));
 #endif
 
-	std::println("init: Mounting {}", *rootPath);
-	if(mount(rootPath->data(), "/realfs", "ext2", 0, ""))
+	std::println("init: Mounting {}", rootPath);
+	if(mount(rootPath.c_str(), "/realfs", "ext2", 0, ""))
 		throw std::runtime_error("mount() failed");
 
 	if(chroot("/realfs"))
