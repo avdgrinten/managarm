@@ -83,9 +83,10 @@ nextUevent(Reactor &reactor, UeventStream &uevents, int timeoutMs) {
 	co_return uevent;
 }
 
-// Brings up the drivers that are needed to access the root partition.
-// Returns the device node of the root partition.
-async::result<std::string> discoverRoot(Reactor &reactor, const Config &config) {
+// Completes once init can enter the root file system. Stores the device node of the root
+// partition in devNode.
+async::result<void>
+waitForBootDevices(Reactor &reactor, const Config &config, std::string &devNode) {
 	std::optional<DevicePathParser> uefiNetDp;
 	std::filesystem::path dpSysfsPath{};
 	bool uefiNetDevpathResolved = config.netserverDevice.empty();
@@ -137,8 +138,6 @@ async::result<std::string> discoverRoot(Reactor &reactor, const Config &config) 
 	auto nextRootReport = Clock::now() + rootReportInterval;
 
 	std::optional<std::string> rootPath;
-	// MBUS_IDs of the PCI devices that we already launched block-nvme for.
-	std::unordered_set<std::string> nvmeDevices;
 
 	std::println("init: Looking for the root partition {}", rootDescription);
 
@@ -172,13 +171,6 @@ async::result<std::string> discoverRoot(Reactor &reactor, const Config &config) 
 		// Note: DEVPATH is unconditionally inserted by generic uevent code.
 		const auto &devpath = uevent->at("DEVPATH");
 		auto subsystemIt = uevent->find("SUBSYSTEM");
-
-		// Only launch one block-nvme per device, even if the device is reported more than once.
-		if(subsystemIt != uevent->end() && subsystemIt->second == "pci" && uevent->contains("PCI_CLASS") && uevent->at("PCI_CLASS") == "10802"
-				&& nvmeDevices.insert(uevent->at("MBUS_ID")).second) {
-			if(auto e = bindServer("block-nvme", uevent->at("MBUS_ID")); !e)
-				std::println("init: Failed to bind block-nvme: {}", strerror(e.error()));
-		}
 
 		if (!rootPath && subsystemIt != uevent->end() && subsystemIt->second == "block") {
 			auto device = "/sys" + devpath;
@@ -217,7 +209,19 @@ async::result<std::string> discoverRoot(Reactor &reactor, const Config &config) 
 		}
 	}
 
-	co_return *rootPath;
+	devNode = *rootPath;
+}
+
+// Brings up the drivers that are needed to access the root partition.
+// Returns the device node of the root partition.
+async::result<std::string> discoverRoot(Reactor &reactor, const Config &config) {
+	std::string devNode;
+	co_await async::race_and_cancel(
+		// NVMe controllers can show up at any time, so this only completes by cancellation.
+		[&] (async::cancellation_token ct) { return bindNvmePciDevices(reactor, ct); },
+		[&] (async::cancellation_token) { return waitForBootDevices(reactor, config, devNode); }
+	);
+	co_return devNode;
 }
 
 } // namespace

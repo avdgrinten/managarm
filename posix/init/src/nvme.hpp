@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <async/cancellation.hpp>
+#include <async/result.hpp>
 #include <chrono>
 #include <format>
 #include <linux/netlink.h>
@@ -11,7 +13,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "reactor.hpp"
 #include "route.hpp"
+
+// Launches block-nvme for the NVMe controllers that show up on the PCI bus, until it is cancelled.
+async::result<void> bindNvmePciDevices(Reactor &reactor, async::cancellation_token ct);
 
 // Polls whether the interface that routes to the NVMe-oF server reports a carrier. Without a route,
 // NVMe-oF cannot connect, so there is no timeout. Not all drivers report the carrier, so once the
