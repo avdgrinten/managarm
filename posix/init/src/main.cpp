@@ -78,6 +78,7 @@ int main() {
 
 	Cmdline cmdlineHelper{};
 	auto config = parseConfig(async::run(cmdlineHelper.get(), helix::currentDispatcher));
+	logDiscovery = config.logDiscovery;
 
 	std::optional<DevicePathParser> uefiNetDp;
 	std::filesystem::path dpSysfsPath{};
