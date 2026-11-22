@@ -17,6 +17,7 @@
 #include <sys/sysmacros.h>
 #include <arpa/inet.h>
 #include <async/algorithm.hpp>
+#include <async/scope.hpp>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <net/if.h>
@@ -83,8 +84,8 @@ nextUevent(Reactor &reactor, UeventStream &uevents, int timeoutMs) {
 	co_return uevent;
 }
 
-// Completes once init can enter the root file system. Stores the device node of the root
-// partition in devNode.
+// Completes once the root partition is found and netserver is bound to its NIC.
+// Stores the device node of the root partition in devNode.
 async::result<void>
 waitForBootDevices(Reactor &reactor, const Config &config, std::string &devNode) {
 	std::optional<DevicePathParser> uefiNetDp;
@@ -98,26 +99,6 @@ waitForBootDevices(Reactor &reactor, const Config &config, std::string &devNode)
 		} else {
 			std::println("init: failed to parse device path '{}'", config.netserverDevice);
 			uefiNetDevpathResolved = true;
-		}
-	}
-
-	std::string nvmeMbusId;
-	auto startNvmeOf = [&] {
-		if(auto e = bindServer("block-nvme", nvmeMbusId); !e)
-			std::println("init: Failed to start NVMe-oF: {}", strerror(e.error()));
-	};
-
-	// netserver's TCP does not retransmit, so a SYN sent before a link is up would be lost.
-	std::optional<NvmeOfLinkWait> nvmeLinkWait;
-	if(config.nvmeOverFabric) {
-		nvmeMbusId = std::to_string(findNetserver());
-		in_addr server{};
-		if(inet_pton(AF_INET, config.netserverServer.c_str(), &server) == 1) {
-			std::println("init: Waiting for the network link to {} for NVMe-oF", config.netserverServer);
-			nvmeLinkWait.emplace(server);
-		} else {
-			std::println("init: Invalid netserver.server '{}', starting NVMe-oF without waiting", config.netserverServer);
-			startNvmeOf();
 		}
 	}
 
@@ -144,14 +125,8 @@ waitForBootDevices(Reactor &reactor, const Config &config, std::string &devNode)
 	UeventStream uevents{reactor};
 	triggerColdplug();
 
-	while (!rootPath || !uefiNetDevpathResolved || nvmeLinkWait) {
-		if(nvmeLinkWait && nvmeLinkWait->check()) {
-			nvmeLinkWait.reset();
-			startNvmeOf();
-			continue;
-		}
-
-		int timeoutMs = nvmeLinkWait ? nvmeLinkWait->timeoutMs() : -1;
+	while (!rootPath || !uefiNetDevpathResolved) {
+		int timeoutMs = -1;
 		if(!rootPath) {
 			auto now = Clock::now();
 			if(now >= nextRootReport) {
@@ -164,7 +139,7 @@ waitForBootDevices(Reactor &reactor, const Config &config, std::string &devNode)
 		}
 
 		auto uevent = co_await nextUevent(reactor, uevents, timeoutMs);
-		// Timed out to poll the NVMe-oF link or to report that the root is still missing.
+		// Timed out to report that the root is still missing.
 		if (!uevent)
 			continue;
 
@@ -214,12 +189,20 @@ waitForBootDevices(Reactor &reactor, const Config &config, std::string &devNode)
 
 // Brings up the drivers that are needed to access the root partition.
 // Returns the device node of the root partition.
-async::result<std::string> discoverRoot(Reactor &reactor, const Config &config) {
+async::result<std::string> discoverRoot(Reactor &reactor, const Config &config,
+		std::optional<mbus_ng::EntityId> netserver) {
 	std::string devNode;
 	co_await async::race_and_cancel(
 		// NVMe controllers can show up at any time, so this only completes by cancellation.
 		[&] (async::cancellation_token ct) { return bindNvmePciDevices(reactor, ct); },
-		[&] (async::cancellation_token) { return waitForBootDevices(reactor, config, devNode); }
+		// Init needs to wait for all of these before it can enter the root file system.
+		[&] (async::cancellation_token) {
+			return async::dynamic_scope<async::result<void>>(frg::stl_allocator{}, [&] (auto &spawn) {
+				spawn(waitForBootDevices(reactor, config, devNode));
+				if(netserver)
+					spawn(startNvmeOf(reactor, std::to_string(*netserver), config.netserverServer));
+			});
+		}
 	);
 	co_return devNode;
 }
@@ -242,13 +225,20 @@ int main() {
 	auto config = parseConfig(async::run(cmdlineHelper.get(), helix::currentDispatcher));
 	logDiscovery = config.logDiscovery;
 
+	// This blocks on mbus, so it cannot be done from a coroutine that runs on the Reactor.
+	// It is done before the uevent socket exists, such that uevents do not pile up meanwhile.
+	std::optional<mbus_ng::EntityId> netserver;
+	if(config.nvmeOverFabric)
+		netserver = findNetserver();
+
 	auto socket = UeventSocket::create();
 	if(!socket) {
 		std::println("init: Failed to create the uevent socket: {}", strerror(socket.error()));
 		abort();
 	}
 	Reactor reactor{*socket};
-	auto rootPath = reactor.run(discoverRoot(reactor, config));
+
+	auto rootPath = reactor.run(discoverRoot(reactor, config, netserver));
 
 #if defined (__x86_64__)
 	// Hack: Start UHCI only after EHCI devices are ready.
