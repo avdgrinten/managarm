@@ -66,91 +66,9 @@ constexpr std::string_view earlyServers[] = {
 	"snd-hda",
 };
 
-// Yields std::nullopt if no uevent arrives within timeoutMs; a negative timeout waits indefinitely.
-async::result<std::optional<Uevent>>
-nextUevent(Reactor &reactor, UeventStream &uevents, int timeoutMs) {
-	if(timeoutMs < 0)
-		co_return co_await uevents.next();
-
-	std::optional<Uevent> uevent;
-	co_await async::race_and_cancel(
-		async::lambda([&] (async::cancellation_token ct) -> async::result<void> {
-			uevent = co_await uevents.next(ct);
-		}),
-		async::lambda([&] (async::cancellation_token ct) -> async::result<void> {
-			co_await reactor.sleepFor(std::chrono::milliseconds{timeoutMs}, ct);
-		})
-	);
-	co_return uevent;
-}
-
-// Completes once the root partition is found. Stores its device node in devNode.
-async::result<void>
-waitForBootDevices(Reactor &reactor, const Config &config, std::string &devNode) {
-	// Without root=, the first partition with the Managarm root type is used.
-	std::optional<std::string> rootPartuuid;
-	if(config.root.size()) {
-		std::string_view spec{config.root};
-		if(spec.starts_with("PARTUUID="))
-			rootPartuuid = toLower(spec.substr(std::string_view{"PARTUUID="}.size()));
-		else
-			std::println("init: Unsupported root={}, falling back to the partition type", spec);
-	}
-	std::string rootDescription = rootPartuuid
-			? std::format("PARTUUID={}", *rootPartuuid)
-			: std::string{"with the Managarm root type"};
-
-	constexpr auto rootReportInterval = std::chrono::seconds{10};
-	auto nextRootReport = Clock::now() + rootReportInterval;
-
-	std::optional<std::string> rootPath;
-
-	std::println("init: Looking for the root partition {}", rootDescription);
-
-	UeventStream uevents{reactor};
-	triggerColdplug();
-
-	while (!rootPath) {
-		int timeoutMs = -1;
-		if(!rootPath) {
-			auto now = Clock::now();
-			if(now >= nextRootReport) {
-				std::println("init: Still waiting for the root partition {}", rootDescription);
-				nextRootReport = now + rootReportInterval;
-			}
-			auto left = std::chrono::ceil<std::chrono::milliseconds>(nextRootReport - now);
-			int reportMs = std::max<int>(left.count(), 0);
-			timeoutMs = timeoutMs < 0 ? reportMs : std::min(timeoutMs, reportMs);
-		}
-
-		auto uevent = co_await nextUevent(reactor, uevents, timeoutMs);
-		// Timed out to report that the root is still missing.
-		if (!uevent)
-			continue;
-
-		// Note: DEVPATH is unconditionally inserted by generic uevent code.
-		const auto &devpath = uevent->at("DEVPATH");
-		auto subsystemIt = uevent->find("SUBSYSTEM");
-
-		if (!rootPath && subsystemIt != uevent->end() && subsystemIt->second == "block") {
-			auto device = "/sys" + devpath;
-			if(logDiscovery)
-				std::println("init: Considering device {}", device);
-
-			bool isRoot;
-			if(rootPartuuid) {
-				// Like Linux, root=PARTUUID= ignores the partition type.
-				auto partuuidIt = uevent->find("PARTUUID");
-				isRoot = partuuidIt != uevent->end() && toLower(partuuidIt->second) == *rootPartuuid;
-			} else {
-				isRoot = hasManagarmRootAttribute(device);
-			}
-			if(isRoot)
-				rootPath = findDevNode(device);
-		}
-	}
-
-	devNode = *rootPath;
+// Lets findRoot() run in a scope of coroutines that do not return values.
+async::result<void> findRootInto(Reactor &reactor, std::string rootSpec, std::string &devNode) {
+	devNode = co_await findRoot(reactor, std::move(rootSpec));
 }
 
 // Brings up the drivers that are needed to access the root partition.
@@ -164,7 +82,7 @@ async::result<std::string> discoverRoot(Reactor &reactor, const Config &config,
 		// Init needs to wait for all of these before it can enter the root file system.
 		[&] (async::cancellation_token) {
 			return async::dynamic_scope<async::result<void>>(frg::stl_allocator{}, [&] (auto &spawn) {
-				spawn(waitForBootDevices(reactor, config, devNode));
+				spawn(findRootInto(reactor, config.root, devNode));
 				if(!config.netserverDevice.empty())
 					spawn(bindNetserver(reactor, config.netserverDevice));
 				if(netserver)
@@ -206,6 +124,8 @@ int main() {
 	}
 	Reactor reactor{*socket};
 
+	// The uevents are queued in the socket until the Reactor runs.
+	triggerColdplug();
 	auto rootPath = reactor.run(discoverRoot(reactor, config, netserver));
 
 #if defined (__x86_64__)

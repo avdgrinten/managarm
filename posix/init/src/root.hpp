@@ -1,10 +1,10 @@
 #pragma once
 
+#include <async/result.hpp>
 #include <string>
-#include <string_view>
 
-std::string toLower(std::string_view s);
+#include "reactor.hpp"
 
-bool hasManagarmRootAttribute(const std::string &device);
-
-std::string findDevNode(const std::string &device);
+// Finds the partition that holds the root file system and returns its device node.
+// rootSpec is the root= option of the kernel command line.
+async::result<std::string> findRoot(Reactor &reactor, std::string rootSpec);
