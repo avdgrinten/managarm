@@ -25,7 +25,7 @@ constexpr auto pollInterval = std::chrono::milliseconds{250};
 // route exists, NVMe-oF is started after a timeout regardless.
 // Completes once NVMe-oF should be started. Netlink errors are reported and end the wait.
 async::result<void> waitForLink(Reactor &reactor, in_addr server) {
-	int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+	int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
 	if(fd < 0) {
 		std::println("init: socket(NETLINK_ROUTE) failed: {}, starting NVMe-oF without waiting",
 				strerror(errno));

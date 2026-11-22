@@ -55,7 +55,7 @@ void triggerDevicesBelow(const std::filesystem::path &dir) {
 } // namespace
 
 std::expected<UeventSocket, int> UeventSocket::create() {
-	int fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+	int fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT);
 	if(fd < 0)
 		return std::unexpected{errno};
 	UeventSocket self{fd};
