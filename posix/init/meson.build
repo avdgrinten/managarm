@@ -1,4 +1,5 @@
 executable('posix-init',
+	'src/config.cpp',
 	'src/main.cpp',
 	'src/root.cpp',
 	'src/route.cpp',

@@ -6,7 +6,6 @@
 #include <fcntl.h>
 #include <format>
 #include <helix/ipc.hpp>
-#include <frg/cmdline.hpp>
 #include <protocols/mbus/client.hpp>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +34,7 @@
 #include <chrono>
 #include <expected>
 
+#include "config.hpp"
 #include "log.hpp"
 #include "nvme.hpp"
 #include "root.hpp"
@@ -77,31 +77,18 @@ int main() {
 	}
 
 	Cmdline cmdlineHelper{};
-	auto cmdline = async::run(cmdlineHelper.get(), helix::currentDispatcher);
-
-	frg::string_view uefiNetDevpath = "";
-	bool nvmeOverFabric = false;
-	frg::string_view nvmeServer = "";
-	frg::string_view rootSpec = "";
-
-	frg::array args = {
-		frg::option{"netserver.device", frg::as_string_view(uefiNetDevpath)},
-		frg::option{"nvme.over-fabric", frg::store_true(nvmeOverFabric)},
-		frg::option{"netserver.server", frg::as_string_view(nvmeServer)},
-		frg::option{"root", frg::as_string_view(rootSpec)},
-	};
-	frg::parse_arguments(cmdline.c_str(), args);
+	auto config = parseConfig(async::run(cmdlineHelper.get(), helix::currentDispatcher));
 
 	std::optional<DevicePathParser> uefiNetDp;
 	std::filesystem::path dpSysfsPath{};
-	bool uefiNetDevpathResolved = uefiNetDevpath.size() == 0;
+	bool uefiNetDevpathResolved = config.netserverDevice.empty();
 
 	if(!uefiNetDevpathResolved) {
-		auto dp_res = DevicePathParser::fromString(std::string{uefiNetDevpath.data(), uefiNetDevpath.size()});
+		auto dp_res = DevicePathParser::fromString(config.netserverDevice);
 		if(dp_res) {
 			uefiNetDp = dp_res.value();
 		} else {
-			std::println("init: failed to parse device path '{}'", std::string{uefiNetDevpath.data(), uefiNetDevpath.size()});
+			std::println("init: failed to parse device path '{}'", config.netserverDevice);
 			uefiNetDevpathResolved = true;
 		}
 	}
@@ -114,7 +101,7 @@ int main() {
 
 	// netserver's TCP does not retransmit, so a SYN sent before a link is up would be lost.
 	std::optional<NvmeOfLinkWait> nvmeLinkWait;
-	if(nvmeOverFabric) {
+	if(config.nvmeOverFabric) {
 		auto filter = mbus_ng::Conjunction{{
 			mbus_ng::EqualsFilter{"class", "netserver"}
 		}};
@@ -124,21 +111,20 @@ int main() {
 		assert(events.size() == 1);
 
 		nvmeMbusId = std::to_string(events[0].id);
-		std::string serverStr{nvmeServer.data(), nvmeServer.size()};
 		in_addr server{};
-		if(inet_pton(AF_INET, serverStr.c_str(), &server) == 1) {
-			std::println("init: Waiting for the network link to {} for NVMe-oF", serverStr);
+		if(inet_pton(AF_INET, config.netserverServer.c_str(), &server) == 1) {
+			std::println("init: Waiting for the network link to {} for NVMe-oF", config.netserverServer);
 			nvmeLinkWait.emplace(server);
 		} else {
-			std::println("init: Invalid netserver.server '{}', starting NVMe-oF without waiting", serverStr);
+			std::println("init: Invalid netserver.server '{}', starting NVMe-oF without waiting", config.netserverServer);
 			startNvmeOf();
 		}
 	}
 
 	// Without root=, the first partition with the Managarm root type is used.
 	std::optional<std::string> rootPartuuid;
-	if(rootSpec.size()) {
-		std::string_view spec{rootSpec.data(), rootSpec.size()};
+	if(config.root.size()) {
+		std::string_view spec{config.root};
 		if(spec.starts_with("PARTUUID="))
 			rootPartuuid = toLower(spec.substr(std::string_view{"PARTUUID="}.size()));
 		else
@@ -231,7 +217,7 @@ int main() {
 				dpSysfsPath = sysfs.value();
 			} else if(sysfs.error() == DevicePathParser::Error::broken) {
 				std::println("init: device path '{}' cannot be resolved, not starting netserver",
-						std::string{uefiNetDevpath.data(), uefiNetDevpath.size()});
+						config.netserverDevice);
 				uefiNetDevpathResolved = true;
 			}
 		}
