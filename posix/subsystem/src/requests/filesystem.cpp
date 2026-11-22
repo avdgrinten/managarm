@@ -1567,7 +1567,11 @@ HandleRequest::operator()(managarm::posix::OpenAtRequest &&req,
 
 		auto fileResult = co_await node->open(self.get(), resolver.currentView(), std::move(link),
 							semantic_flags);
-		assert(fileResult);
+		if(!fileResult) {
+			co_await sendErrorResponse<managarm::posix::OpenAtResponse>(conversation,
+					fileResult.error() | toPosixProtoError);
+			co_return {};
+		}
 		file = fileResult.value();
 		assert(file);
 	}else{
@@ -1589,7 +1593,8 @@ HandleRequest::operator()(managarm::posix::OpenAtRequest &&req,
 				co_await sendErrorResponse<managarm::posix::OpenAtResponse>(conversation, managarm::posix::Errors::NOT_A_DIRECTORY);
 				co_return {};
 			} else {
-				std::cout << "posix: Unexpected failure from resolve()" << std::endl;
+				co_await sendErrorResponse<managarm::posix::OpenAtResponse>(conversation,
+						resolveResult.error() | toPosixError | toPosixProtoError);
 				co_return {};
 			}
 		}
@@ -1625,18 +1630,10 @@ HandleRequest::operator()(managarm::posix::OpenAtRequest &&req,
 
 			auto fileResult = co_await target->open(self.get(), resolver.currentView(), resolver.currentLink(), semantic_flags);
 			if(!fileResult) {
-				if(fileResult.error() == Error::noBackingDevice) {
-					co_await sendErrorResponse<managarm::posix::OpenAtResponse>(conversation, managarm::posix::Errors::NO_BACKING_DEVICE);
-					co_return {};
-				} else if(fileResult.error() == Error::illegalArguments) {
-					co_await sendErrorResponse<managarm::posix::OpenAtResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
-					co_return {};
-				} else {
-					std::cout << "posix: Unexpected failure from open()" << std::endl;
-					co_return {};
-				}
+				co_await sendErrorResponse<managarm::posix::OpenAtResponse>(conversation,
+						fileResult.error() | toPosixProtoError);
+				co_return {};
 			}
-			assert(fileResult);
 			file = fileResult.value();
 		}
 	}
