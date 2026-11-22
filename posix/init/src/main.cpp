@@ -84,24 +84,9 @@ nextUevent(Reactor &reactor, UeventStream &uevents, int timeoutMs) {
 	co_return uevent;
 }
 
-// Completes once the root partition is found and netserver is bound to its NIC.
-// Stores the device node of the root partition in devNode.
+// Completes once the root partition is found. Stores its device node in devNode.
 async::result<void>
 waitForBootDevices(Reactor &reactor, const Config &config, std::string &devNode) {
-	std::optional<DevicePathParser> uefiNetDp;
-	std::filesystem::path dpSysfsPath{};
-	bool uefiNetDevpathResolved = config.netserverDevice.empty();
-
-	if(!uefiNetDevpathResolved) {
-		auto dp_res = DevicePathParser::fromString(config.netserverDevice);
-		if(dp_res) {
-			uefiNetDp = dp_res.value();
-		} else {
-			std::println("init: failed to parse device path '{}'", config.netserverDevice);
-			uefiNetDevpathResolved = true;
-		}
-	}
-
 	// Without root=, the first partition with the Managarm root type is used.
 	std::optional<std::string> rootPartuuid;
 	if(config.root.size()) {
@@ -125,7 +110,7 @@ waitForBootDevices(Reactor &reactor, const Config &config, std::string &devNode)
 	UeventStream uevents{reactor};
 	triggerColdplug();
 
-	while (!rootPath || !uefiNetDevpathResolved) {
+	while (!rootPath) {
 		int timeoutMs = -1;
 		if(!rootPath) {
 			auto now = Clock::now();
@@ -163,25 +148,6 @@ waitForBootDevices(Reactor &reactor, const Config &config, std::string &devNode)
 			if(isRoot)
 				rootPath = findDevNode(device);
 		}
-
-		if(!uefiNetDevpathResolved && dpSysfsPath.empty()) {
-			auto sysfs = uefiNetDp->sysfs();
-			if(sysfs) {
-				dpSysfsPath = sysfs.value();
-			} else if(sysfs.error() == DevicePathParser::Error::broken) {
-				std::println("init: device path '{}' cannot be resolved, not starting netserver",
-						config.netserverDevice);
-				uefiNetDevpathResolved = true;
-			}
-		}
-
-		if(!uefiNetDevpathResolved && !dpSysfsPath.empty()) {
-			if("/sys" + devpath == dpSysfsPath.string()) {
-				if(auto e = bindServer("netserver", uevent->at("MBUS_ID")); !e)
-					std::println("init: Failed to bind netserver: {}", strerror(e.error()));
-				uefiNetDevpathResolved = true;
-			}
-		}
 	}
 
 	devNode = *rootPath;
@@ -199,6 +165,8 @@ async::result<std::string> discoverRoot(Reactor &reactor, const Config &config,
 		[&] (async::cancellation_token) {
 			return async::dynamic_scope<async::result<void>>(frg::stl_allocator{}, [&] (auto &spawn) {
 				spawn(waitForBootDevices(reactor, config, devNode));
+				if(!config.netserverDevice.empty())
+					spawn(bindNetserver(reactor, config.netserverDevice));
 				if(netserver)
 					spawn(startNvmeOf(reactor, std::to_string(*netserver), config.netserverServer));
 			});
