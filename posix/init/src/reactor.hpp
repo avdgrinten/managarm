@@ -3,46 +3,15 @@
 #include <async/basic.hpp>
 #include <async/cancellation.hpp>
 #include <async/oneshot-event.hpp>
-#include <async/queue.hpp>
 #include <async/result.hpp>
 #include <chrono>
-#include <frg/std_compat.hpp>
 #include <list>
-#include <optional>
 
 #include "uevent.hpp"
 
 using Clock = std::chrono::steady_clock;
 
 class Reactor;
-
-// Yields the add uevents that the Reactor receives after the stream is constructed.
-// All of them carry DEVPATH.
-// Coroutines need to construct their streams before they suspend for the first time;
-// otherwise, they miss the uevents that triggerColdplug() caused before Reactor::run().
-class UeventStream {
-	friend class Reactor;
-
-public:
-	explicit UeventStream(Reactor &reactor);
-
-	UeventStream(const UeventStream &) = delete;
-	UeventStream &operator=(const UeventStream &) = delete;
-
-	~UeventStream();
-
-	// Devices can be reported more than once (e.g., a device that is announced while
-	// triggerColdplug() runs gets both its real and a synthetic add uevent).
-	// Hence, consumers of the uevents need to be idempotent.
-	async::result<Uevent> next();
-
-	// Returns std::nullopt on cancellation.
-	async::result<std::optional<Uevent>> next(async::cancellation_token ct);
-
-private:
-	Reactor &reactor_;
-	async::queue<Uevent, frg::stl_allocator> queue_;
-};
 
 // Handles the add uevents that the Reactor receives. All of them carry DEVPATH.
 // Rules need to be constructed before triggerColdplug() to handle the uevents of all devices.
@@ -65,10 +34,8 @@ protected:
 	Reactor &reactor_;
 };
 
-// Runs coroutines on top of poll(): lets them sleep and hands uevents to their UeventStreams
-// and to the UeventRules.
+// Runs coroutines on top of poll(): lets them sleep and hands uevents to the UeventRules.
 class Reactor {
-	friend class UeventStream;
 	friend class UeventRule;
 
 public:
@@ -113,6 +80,5 @@ private:
 	UeventSocket &socket_;
 	RunQueue rq_;
 	std::list<Timer *> timers_;
-	std::list<UeventStream *> streams_;
 	std::list<UeventRule *> rules_;
 };
