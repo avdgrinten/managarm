@@ -71,11 +71,18 @@ void Reactor::wait() {
 	pollfd pfd{.fd = socket_.fd(), .events = POLLIN};
 	int ret = poll(&pfd, 1, timeoutMs);
 	if(ret < 0) {
+		if(errno == EINTR)
+			return;
 		std::println("init: poll() on the uevent socket failed: {}", strerror(errno));
 		abort();
 	}
 	if(!ret)
 		return;
+	// Without POLLIN, receive() would block and delay the timers.
+	if(!(pfd.revents & POLLIN)) {
+		std::println("init: poll() reported an error on the uevent socket");
+		abort();
+	}
 
 	auto uevent = socket_.receive();
 	if(!uevent) {
