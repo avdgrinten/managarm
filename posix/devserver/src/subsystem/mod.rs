@@ -14,6 +14,7 @@ pub mod dt;
 pub mod generic;
 pub mod graphics;
 pub mod input;
+pub mod kvm;
 pub mod net;
 pub mod nvme;
 pub mod pci;
