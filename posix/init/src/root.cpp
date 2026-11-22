@@ -116,8 +116,10 @@ async::result<std::string> findRoot(Reactor &reactor, std::string rootSpec) {
 	std::optional<std::string> partuuid;
 	if(rootSpec.size()) {
 		std::string_view spec{rootSpec};
-		if(spec.starts_with("PARTUUID="))
-			partuuid = toLower(spec.substr(std::string_view{"PARTUUID="}.size()));
+		// An empty PARTUUID cannot identify a partition.
+		constexpr std::string_view prefix = "PARTUUID=";
+		if(spec.starts_with(prefix) && spec.size() > prefix.size())
+			partuuid = toLower(spec.substr(prefix.size()));
 		else
 			std::println("init: Unsupported root={}, falling back to the partition type", spec);
 	}
