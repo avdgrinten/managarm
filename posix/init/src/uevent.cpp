@@ -17,7 +17,7 @@ std::expected<UeventSocket, int> UeventSocket::create() {
 		return std::unexpected{errno};
 	UeventSocket self{fd};
 
-	struct sockaddr_nl sa;
+	struct sockaddr_nl sa{};
 	sa.nl_family = AF_NETLINK;
 	sa.nl_pid = getpid();
 	sa.nl_groups = 1;
