@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <assert.h>
 #include <async/algorithm.hpp>
 #include <cctype>
 #include <chrono>
@@ -36,8 +35,9 @@ bool hasManagarmRootAttribute(const std::string &device) {
 
 	// Check if the managarm-root attribute exists
 	if(access(rootAttr.data(), R_OK)) {
-		assert(errno == ENOENT);
-		if(logDiscovery)
+		if(errno != ENOENT)
+			std::println("init: Failed to access {}: {}", rootAttr, strerror(errno));
+		else if(logDiscovery)
 			std::println("init: Not the root filesystem");
 		return false;
 	}
