@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <core/device-path.hpp>
 #include <filesystem>
+#include <format>
 #include <helix/ipc.hpp>
 #include <print>
 #include <string.h>
@@ -33,7 +34,6 @@ async::result<void> bindNetserver(Reactor &reactor, std::string devicePath) {
 	std::filesystem::path sysfsPath;
 	while(true) {
 		auto uevent = co_await uevents.next();
-		const auto &devpath = uevent.at("DEVPATH");
 
 		if(sysfsPath.empty()) {
 			auto sysfs = parser->sysfs();
@@ -46,8 +46,12 @@ async::result<void> bindNetserver(Reactor &reactor, std::string devicePath) {
 			}
 		}
 
-		if(!sysfsPath.empty() && "/sys" + devpath == sysfsPath.string()) {
-			if(auto e = bindServer("netserver", uevent.at("MBUS_ID")); !e)
+		if(!sysfsPath.empty()
+				&& std::format("/sys{}", lookup(uevent, "DEVPATH")) == sysfsPath.string()) {
+			auto mbusId = lookup(uevent, "MBUS_ID");
+			if(mbusId.empty())
+				std::println("init: Device {} has no MBUS_ID, not starting netserver", devicePath);
+			else if(auto e = bindServer("netserver", mbusId); !e)
 				std::println("init: Failed to bind netserver: {}", strerror(e.error()));
 			co_return;
 		}

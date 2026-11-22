@@ -78,20 +78,15 @@ matchRoot(UeventStream &uevents, const std::optional<std::string> &partuuid) {
 	while(true) {
 		auto uevent = co_await uevents.next();
 
-		// Note: DEVPATH is unconditionally inserted by generic uevent code.
-		const auto &devpath = uevent.at("DEVPATH");
-		auto subsystemIt = uevent.find("SUBSYSTEM");
-
-		if (subsystemIt != uevent.end() && subsystemIt->second == "block") {
-			auto device = "/sys" + devpath;
+		if (lookup(uevent, "SUBSYSTEM") == "block") {
+			auto device = std::format("/sys{}", lookup(uevent, "DEVPATH"));
 			if(logDiscovery)
 				std::println("init: Considering device {}", device);
 
 			bool isRoot;
 			if(partuuid) {
 				// Like Linux, root=PARTUUID= ignores the partition type.
-				auto partuuidIt = uevent.find("PARTUUID");
-				isRoot = partuuidIt != uevent.end() && toLower(partuuidIt->second) == *partuuid;
+				isRoot = toLower(lookup(uevent, "PARTUUID")) == *partuuid;
 			} else {
 				isRoot = hasManagarmRootAttribute(device);
 			}

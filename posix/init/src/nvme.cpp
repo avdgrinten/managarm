@@ -76,14 +76,21 @@ async::result<void> bindNvmePciDevices(Reactor &reactor, async::cancellation_tok
 	std::unordered_set<std::string> nvmeDevices;
 
 	while(auto uevent = co_await uevents.next(ct)) {
-		auto subsystemIt = uevent->find("SUBSYSTEM");
+		if(lookup(*uevent, "SUBSYSTEM") != "pci" || lookup(*uevent, "PCI_CLASS") != "10802")
+			continue;
+
+		auto mbusId = lookup(*uevent, "MBUS_ID");
+		if(mbusId.empty()) {
+			std::println("init: NVMe controller {} has no MBUS_ID", lookup(*uevent, "DEVPATH"));
+			continue;
+		}
 
 		// Only launch one block-nvme per device, even if the device is reported more than once.
-		if(subsystemIt != uevent->end() && subsystemIt->second == "pci" && uevent->contains("PCI_CLASS") && uevent->at("PCI_CLASS") == "10802"
-				&& nvmeDevices.insert(uevent->at("MBUS_ID")).second) {
-			if(auto e = bindServer("block-nvme", uevent->at("MBUS_ID")); !e)
-				std::println("init: Failed to bind block-nvme: {}", strerror(e.error()));
-		}
+		if(!nvmeDevices.insert(std::string{mbusId}).second)
+			continue;
+
+		if(auto e = bindServer("block-nvme", mbusId); !e)
+			std::println("init: Failed to bind block-nvme: {}", strerror(e.error()));
 	}
 }
 

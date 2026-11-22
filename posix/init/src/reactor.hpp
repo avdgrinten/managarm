@@ -17,6 +17,7 @@ using Clock = std::chrono::steady_clock;
 class Reactor;
 
 // Yields the add uevents that the Reactor receives after the stream is constructed.
+// All of them carry DEVPATH.
 // Coroutines need to construct their streams before they suspend for the first time;
 // otherwise, they miss the uevents that triggerColdplug() caused before Reactor::run().
 class UeventStream {

@@ -83,7 +83,12 @@ void Reactor::wait() {
 		abort();
 	}
 
-	if(uevent->at("ACTION") != "add")
+	auto action = lookup(*uevent, "ACTION");
+	if(action.empty() || lookup(*uevent, "DEVPATH").empty()) {
+		std::println("init: Ignoring uevent without ACTION or DEVPATH");
+		return;
+	}
+	if(action != "add")
 		return;
 
 	if(logDiscovery) {
