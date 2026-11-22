@@ -36,7 +36,6 @@
 #include <expected>
 
 bool logDiscovery = false;
-bool systemd = true;
 
 using Uevent = std::unordered_map<std::string, std::string>;
 
@@ -453,7 +452,6 @@ int main() {
 
 	frg::array args = {
 		frg::option{"netserver.device", frg::as_string_view(uefiNetDevpath)},
-		frg::option{"nosystemd", frg::store_false(systemd)},
 		frg::option{"nvme.over-fabric", frg::store_true(nvmeOverFabric)},
 		frg::option{"netserver.server", frg::as_string_view(nvmeServer)},
 		frg::option{"root", frg::as_string_view(rootSpec)},
@@ -635,28 +633,6 @@ int main() {
 	if(mount(rootPath->data(), "/realfs", "ext2", 0, ""))
 		throw std::runtime_error("mount() failed");
 
-	if(!systemd) {
-		if(mount("", "/realfs/proc", "procfs", 0, ""))
-			throw std::runtime_error("mount() failed");
-		if(mount("", "/realfs/sys", "sysfs", 0, ""))
-			throw std::runtime_error("mount() failed");
-		if(mount("", "/realfs/dev", "devtmpfs", 0, ""))
-			throw std::runtime_error("mount() failed");
-		if(mount("", "/realfs/run", "tmpfs", 0, ""))
-			throw std::runtime_error("mount() failed");
-		if(mount("", "/realfs/tmp", "tmpfs", 0, ""))
-			throw std::runtime_error("mount() failed");
-
-		if(mkdir("/dev/pts", 0620))
-			throw std::runtime_error("mkdir() failed");
-		if(mount("", "/realfs/dev/pts", "devpts", 0, ""))
-			throw std::runtime_error("mount() failed");
-		if(mkdir("/dev/shm", 1777)) // Seems to be the same as linux
-			throw std::runtime_error("mkdir() failed");
-		if(mount("", "/realfs/dev/shm", "tmpfs", 0, ""))
-			throw std::runtime_error("mount() failed");
-	}
-
 	if(chroot("/realfs"))
 		throw std::runtime_error("chroot() failed");
 	// Some programs, e.g. bash with its builtin getcwd() cannot deal with CWD outside of /.
@@ -665,7 +641,7 @@ int main() {
 
 	std::cout << "init: On /realfs" << std::endl;
 
-	if(systemd && access("/etc/machine-id", F_OK)) {
+	if(access("/etc/machine-id", F_OK)) {
 		auto machineIdPid = fork();
 		if(!machineIdPid) {
 			execl("/usr/bin/systemd-machine-id-setup", "systemd-machine-id-setup", nullptr);
@@ -674,32 +650,8 @@ int main() {
 		waitpid(machineIdPid, nullptr, 0);
 	}
 
-	// Systemd-tmpfilesd will make this for us
-	if(!systemd) {
-		// /run needs to be 0700 or programs start complaining.
-		if(chmod("/run", 0700))
-			throw std::runtime_error("chmod() failed");
-
-		// /run/utmp must exist for login to be satisfied.
-		int utmp = open("/run/utmp", O_CREAT, O_RDWR);
-		if(utmp == -1)
-			throw std::runtime_error("Opening /run/utmp failed");
-		close(utmp);
-	}
-
-	// Systemd-tmpfilesd will make this for us
-	if(!systemd) {
-		// Symlink /var/run to /run, just like LFS does
-		int varrun = symlink("/run", "/var/run");
-		if(varrun == -1)
-			throw std::runtime_error("Symlinking /var/run failed");
-	}
-
-	if(!systemd)
-		execl("/usr/bin/init-stage2", "/usr/bin/init-stage2", nullptr);
-	else
-		execl("/usr/lib/systemd/systemd", "systemd", nullptr);
-	std::cout << "init: Failed to execve() second stage" << std::endl;
+	execl("/usr/lib/systemd/systemd", "systemd", nullptr);
+	std::cout << "init: Failed to execve() systemd" << std::endl;
 	abort();
 }
 
