@@ -38,9 +38,31 @@
 #include "log.hpp"
 #include "nvme.hpp"
 #include "root.hpp"
+#include "spawn.hpp"
 #include "uevent.hpp"
 
 bool logDiscovery = false;
+
+namespace {
+
+// The debugging UART, essential bus and storage drivers, and the HDA sound driver.
+constexpr std::string_view earlyServers[] = {
+#if defined (__x86_64__)
+	"uart",
+	"ehci",
+#endif
+	"xhci",
+	"virtio-block",
+#if defined (__x86_64__)
+	"block-ata",
+#endif
+	"block-ahci",
+	"block-nvme",
+	"usb-storage",
+	"snd-hda",
+};
+
+} // namespace
 
 int main() {
 	int fd = open("/dev/helout", O_WRONLY);
@@ -49,57 +71,10 @@ int main() {
 
 	std::println("init: Entering first stage");
 
-#if defined (__x86_64__)
-	auto uart = fork();
-	if(!uart) {
-		execl("/usr/bin/runsvr", "/usr/bin/runsvr", "run", "/usr/lib/managarm/server/uart.bin", nullptr);
-	}else assert(uart != -1);
-#endif
-
-	// Start essential bus and storage drivers.
-#if defined (__x86_64__)
-	auto ehci = fork();
-	if(!ehci) {
-		execl("/usr/bin/runsvr", "/usr/bin/runsvr", "run", "/usr/lib/managarm/server/ehci.bin", nullptr);
-	}else assert(ehci != -1);
-#endif
-
-	auto xhci = fork();
-	if(!xhci) {
-		execl("/usr/bin/runsvr", "/usr/bin/runsvr", "run", "/usr/lib/managarm/server/xhci.bin", nullptr);
-	}else assert(xhci != -1);
-
-	auto virtio = fork();
-	if(!virtio) {
-		execl("/usr/bin/runsvr", "/usr/bin/runsvr", "run", "/usr/lib/managarm/server/virtio-block.bin", nullptr);
-	}else assert(virtio != -1);
-
-#if defined (__x86_64__)
-	auto block_ata = fork();
-	if(!block_ata) {
-		execl("/usr/bin/runsvr", "/usr/bin/runsvr", "run", "/usr/lib/managarm/server/block-ata.bin", nullptr);
-	}else assert(block_ata != -1);
-#endif
-
-	auto block_ahci = fork();
-	if(!block_ahci) {
-		execl("/usr/bin/runsvr", "/usr/bin/runsvr", "run", "/usr/lib/managarm/server/block-ahci.bin", nullptr);
-	}else assert(block_ahci != -1);
-
-	auto block_nvme = fork();
-	if(!block_nvme) {
-		execl("/usr/bin/runsvr", "/usr/bin/runsvr", "run", "/usr/lib/managarm/server/block-nvme.bin", nullptr);
-	}else assert(block_nvme != -1);
-
-	auto block_usb = fork();
-	if(!block_usb) {
-		execl("/usr/bin/runsvr", "/usr/bin/runsvr", "run", "/usr/lib/managarm/server/usb-storage.bin", nullptr);
-	}else assert(block_usb != -1);
-
-	auto snd_hda = fork();
-	if(!snd_hda) {
-		execl("/usr/bin/runsvr", "/usr/bin/runsvr", "run", "/usr/lib/managarm/server/snd-hda.bin", nullptr);
-	}else assert(snd_hda != -1);
+	for(auto name : earlyServers) {
+		if(auto e = runServer(name); !e)
+			std::println("init: Failed to run {}: {}", name, strerror(e.error()));
+	}
 
 	Cmdline cmdlineHelper{};
 	auto cmdline = async::run(cmdlineHelper.get(), helix::currentDispatcher);
@@ -131,13 +106,10 @@ int main() {
 		}
 	}
 
-	std::string nvmeMbusStr;
+	std::string nvmeMbusId;
 	auto startNvmeOf = [&] {
-		auto nvme = fork();
-		if(!nvme) {
-			const char *env[] = { nvmeMbusStr.c_str(), nullptr };
-			execle("/usr/bin/runsvr", "/usr/bin/runsvr", "--fork", "bind", "/usr/lib/managarm/server/block-nvme.bin", nullptr, env);
-		}else assert(nvme != -1);
+		if(auto e = bindServer("block-nvme", nvmeMbusId); !e)
+			std::println("init: Failed to start NVMe-oF: {}", strerror(e.error()));
 	};
 
 	// netserver's TCP does not retransmit, so a SYN sent before a link is up would be lost.
@@ -151,7 +123,7 @@ int main() {
 		auto [_, events] = async::run(enumerator.nextEvents(), helix::currentDispatcher).unwrap();
 		assert(events.size() == 1);
 
-		nvmeMbusStr = std::format("MBUS_ID={}", events[0].id);
+		nvmeMbusId = std::to_string(events[0].id);
 		std::string serverStr{nvmeServer.data(), nvmeServer.size()};
 		in_addr server{};
 		if(inet_pton(AF_INET, serverStr.c_str(), &server) == 1) {
@@ -232,11 +204,8 @@ int main() {
 		// Only launch one block-nvme per device, even if the device is reported more than once.
 		if(subsystemIt != uevent->end() && subsystemIt->second == "pci" && uevent->contains("PCI_CLASS") && uevent->at("PCI_CLASS") == "10802"
 				&& nvmeDevices.insert(uevent->at("MBUS_ID")).second) {
-			auto nvme_server = fork();
-			if(!nvme_server) {
-				setenv("MBUS_ID", uevent->at("MBUS_ID").c_str(), 1);
-				execl("/usr/bin/runsvr", "/usr/bin/runsvr", "--fork", "bind", "/usr/lib/managarm/server/block-nvme.bin", nullptr);
-			}else assert(nvme_server != -1);
+			if(auto e = bindServer("block-nvme", uevent->at("MBUS_ID")); !e)
+				std::println("init: Failed to bind block-nvme: {}", strerror(e.error()));
 		}
 
 		if (!rootPath && subsystemIt != uevent->end() && subsystemIt->second == "block") {
@@ -269,11 +238,8 @@ int main() {
 
 		if(!uefiNetDevpathResolved && !dpSysfsPath.empty()) {
 			if("/sys" + devpath == dpSysfsPath.string()) {
-				auto netserver = fork();
-				if(!netserver) {
-					setenv("MBUS_ID", uevent->at("MBUS_ID").c_str(), 1);
-					execl("/usr/bin/runsvr", "/usr/bin/runsvr", "--fork", "bind", "/usr/lib/managarm/server/netserver.bin", nullptr);
-				}else assert(netserver != -1);
+				if(auto e = bindServer("netserver", uevent->at("MBUS_ID")); !e)
+					std::println("init: Failed to bind netserver: {}", strerror(e.error()));
 				uefiNetDevpathResolved = true;
 			}
 		}
@@ -281,10 +247,8 @@ int main() {
 
 #if defined (__x86_64__)
 	// Hack: Start UHCI only after EHCI devices are ready.
-	auto uhci = fork();
-	if(!uhci) {
-		execl("/usr/bin/runsvr", "/usr/bin/runsvr", "run", "/usr/lib/managarm/server/uhci.bin", nullptr);
-	}else assert(uhci != -1);
+	if(auto e = runServer("uhci"); !e)
+		std::println("init: Failed to run uhci: {}", strerror(e.error()));
 #endif
 
 	std::println("init: Mounting {}", *rootPath);
@@ -300,12 +264,12 @@ int main() {
 	std::println("init: On /realfs");
 
 	if(access("/etc/machine-id", F_OK)) {
-		auto machineIdPid = fork();
-		if(!machineIdPid) {
-			execl("/usr/bin/systemd-machine-id-setup", "systemd-machine-id-setup", nullptr);
-		}else assert(machineIdPid != -1);
-
-		waitpid(machineIdPid, nullptr, 0);
+		std::string args[] = {"/usr/bin/systemd-machine-id-setup"};
+		auto process = Process::spawn(args, {});
+		if(process)
+			process->wait();
+		else
+			std::println("init: Failed to run systemd-machine-id-setup: {}", strerror(process.error()));
 	}
 
 	execl("/usr/lib/systemd/systemd", "systemd", nullptr);
