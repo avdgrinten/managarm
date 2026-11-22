@@ -1,0 +1,4 @@
+name: kvmserver
+exec: /usr/bin/kvmserver
+files:
+  - /usr/bin/kvmserver

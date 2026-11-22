@@ -1115,3 +1115,33 @@ message KcovResponse 79 {
 head(128):
 	Errors error;
 }
+
+// Messages for the KVM ioctls.
+// Requests are sent after the IoctlRequest; the server replies with a KvmResponse.
+
+message KvmResponse 80 {
+head(128):
+	Errors error;
+	uint64 value;
+}
+
+// KVM_GET_API_VERSION on the system fd.
+// KvmResponse.value is the API version.
+message KvmGetApiVersionRequest 81 {
+head(128):
+}
+
+// KVM_CHECK_EXTENSION on the system or the VM fd.
+// KvmResponse.value is the result.
+message KvmCheckExtensionRequest 82 {
+head(128):
+	uint64 extension;
+}
+
+// KVM_CREATE_VM on the system fd.
+// The client imbues its credentials, the VM fd is installed into the process with these credentials.
+// KvmResponse.value is the fd.
+message KvmCreateVmRequest 83 {
+head(128):
+	uint64 machine_type;
+}

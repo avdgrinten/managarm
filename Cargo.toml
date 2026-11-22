@@ -4,6 +4,7 @@ members = [
     "sif",
     "posix/devserver",
     "servers/kernletcc",
+    "servers/kvmserver",
     "servers/swapserver",
     "drivers/dmalog",
     "utils/hello-rs",

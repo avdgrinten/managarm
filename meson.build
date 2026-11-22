@@ -257,6 +257,7 @@ if build_drivers
 	subdir('sif')
 	subdir('posix/devserver')
 	subdir('servers/kernletcc')
+	subdir('servers/kvmserver')
 	subdir('servers/swapserver')
 	subdir('drivers/dmalog')
 
@@ -277,6 +278,7 @@ if build_drivers
 	units = [
 		'drivers/kbd/runsvr-atkbd.service',
 		'drivers/usb/runsvr-usbhid.service',
+		'servers/kvmserver/runsvr-kvmserver.service',
 		'utils/ci-boot/ci-boot.service',
 		'utils/ci-boot/ci-boot.target',
 	]
