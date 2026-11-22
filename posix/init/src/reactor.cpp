@@ -29,6 +29,14 @@ async::result<std::optional<Uevent>> UeventStream::next(async::cancellation_toke
 	co_return std::move(*uevent);
 }
 
+UeventRule::UeventRule(Reactor &reactor) : reactor_{reactor} {
+	reactor_.rules_.push_back(this);
+}
+
+UeventRule::~UeventRule() {
+	reactor_.rules_.remove(this);
+}
+
 async::result<bool> Reactor::sleepFor(Clock::duration duration, async::cancellation_token ct) {
 	Timer timer{.deadline = Clock::now() + duration};
 	timers_.push_back(&timer);
@@ -102,4 +110,11 @@ void Reactor::wait() {
 
 	for(auto stream : streams_)
 		stream->queue_.put(*uevent);
+
+	for(auto it = rules_.begin(); it != rules_.end(); ) {
+		if((*it)->handle(*uevent))
+			++it;
+		else
+			it = rules_.erase(it);
+	}
 }

@@ -44,9 +44,32 @@ private:
 	async::queue<Uevent, frg::stl_allocator> queue_;
 };
 
-// Runs coroutines on top of poll(): lets them sleep and hands uevents to their UeventStreams.
+// Handles the add uevents that the Reactor receives. All of them carry DEVPATH.
+// Rules need to be constructed before triggerColdplug() to handle the uevents of all devices.
+class UeventRule {
+public:
+	explicit UeventRule(Reactor &reactor);
+
+	UeventRule(const UeventRule &) = delete;
+	UeventRule &operator=(const UeventRule &) = delete;
+
+	// Returns false once the rule is done; the Reactor does not call it again afterwards.
+	// Devices can be reported more than once (e.g., a device that is announced while
+	// triggerColdplug() runs gets both its real and a synthetic add uevent).
+	// Hence, rules need to be idempotent.
+	virtual bool handle(const Uevent &uevent) = 0;
+
+protected:
+	~UeventRule();
+
+	Reactor &reactor_;
+};
+
+// Runs coroutines on top of poll(): lets them sleep and hands uevents to their UeventStreams
+// and to the UeventRules.
 class Reactor {
 	friend class UeventStream;
+	friend class UeventRule;
 
 public:
 	explicit Reactor(UeventSocket &socket) : socket_{socket} {}
@@ -91,4 +114,5 @@ private:
 	RunQueue rq_;
 	std::list<Timer *> timers_;
 	std::list<UeventStream *> streams_;
+	std::list<UeventRule *> rules_;
 };
