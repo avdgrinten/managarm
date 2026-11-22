@@ -1222,7 +1222,7 @@ head(128):
 	int32 fd;
 }
 
-// Sent by servers on the lane that they obtain via OPEN_FD_LANE.
+// Sent by servers on the POSIX lane that they obtain via DEV_OPEN (see FC_POSIX_LANE).
 // Looks up the mapping that contains `address` in the process with the given credentials.
 // On success, the response is followed by the memory object that backs the mapping.
 // The mapping covers [base, base + size) and `base` is at `offset` into the memory object.

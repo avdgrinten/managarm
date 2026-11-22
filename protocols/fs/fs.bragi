@@ -68,8 +68,14 @@ consts FlockFlags uint32 {
 	LOCK_UN = 8
 }
 
+// Capabilities announced in the DEV_OPEN response.
+// After the response and the passthrough lane, one additional descriptor is
+// transferred per announced capability, in the order of the bits below.
 consts FileCaps uint32 {
+	// The server pushes a memory object containing the file's status page.
 	FC_STATUS_PAGE = 1,
+	// The client pushes a lane on which the server can send requests to POSIX
+	// (e.g., AccessProcessMemoryRequest).
 	FC_POSIX_LANE = 2
 }
 
@@ -123,7 +129,6 @@ enum CntReqType {
 
 	NODE_CHMOD = 38,
 
-	OPEN_FD_LANE = 47,
 	PT_GET_SEALS = 48,
 	PT_ADD_SEALS = 49
 }

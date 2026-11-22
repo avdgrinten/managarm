@@ -255,14 +255,15 @@ openExternalDevice(helix::BorrowedLane lane,
 	req.set_flags(open_flags);
 
 	auto ser = req.SerializeAsString();
-	auto [offer, send_req, recv_resp, pull_pt, pull_page] = co_await helix_ng::exchangeMsgs(lane,
+	auto [offer, send_req, recv_resp, pull_pt] = co_await helix_ng::exchangeMsgs(lane,
 		helix_ng::offer(
+			helix_ng::want_lane,
 			helix_ng::sendBuffer(ser.data(), ser.size()),
 			helix_ng::recvInline(),
-			helix_ng::pullDescriptor(kHelRightInvoke | kHelRightManage),
-			helix_ng::pullDescriptor(kHelRightRead | kHelRightAssign))
+			helix_ng::pullDescriptor(kHelRightInvoke | kHelRightManage))
 	);
 	HEL_CHECK(offer.error());
+	auto conversation = offer.descriptor();
 	HEL_CHECK(send_req.error());
 	HEL_CHECK(recv_resp.error());
 	HEL_CHECK(pull_pt.error());
@@ -274,38 +275,27 @@ openExternalDevice(helix::BorrowedLane lane,
 
 	helix::Mapping status_mapping;
 	if(resp.caps() & managarm::fs::FileCaps::FC_STATUS_PAGE) {
-		assert(!pull_page.error());
+		auto [pull_page] = co_await helix_ng::exchangeMsgs(conversation,
+			helix_ng::pullDescriptor(kHelRightRead | kHelRightAssign)
+		);
+		HEL_CHECK(pull_page.error());
 		status_mapping = helix::Mapping{pull_page.descriptor(), 0, kHelPageSize, kHelMapProtRead};
+	}
+
+	if(resp.caps() & managarm::fs::FileCaps::FC_POSIX_LANE) {
+		auto [local_lane, remote_lane] = helix::createStream();
+		auto [push_posix_lane] = co_await helix_ng::exchangeMsgs(conversation,
+			helix_ng::pushDescriptor(remote_lane, kHelRightInvoke | kHelRightManage)
+		);
+		HEL_CHECK(push_posix_lane.error());
+		helix::DispatcherPool::global().detach(serveServerLane(std::move(local_lane)));
 	}
 
 	auto file = smarter::make_shared<DeviceFile>(helix::UniqueLane{},
 			pull_pt.descriptor(), std::move(mount), std::move(link), std::move(status_mapping));
 	file->setupWeakFile(file);
-	helix::UniqueDescriptor file_fd_lane;
-
-	if(resp.caps() & managarm::fs::FileCaps::FC_POSIX_LANE) {
-		managarm::fs::CntRequest fd_req;
-		fd_req.set_req_type(managarm::fs::CntReqType::OPEN_FD_LANE);
-		auto fd_ser = fd_req.SerializeAsString();
-
-		helix::UniqueLane local_lane, remote_lane;
-		std::tie(local_lane, remote_lane) = helix::createStream();
-
-		auto [fd_offer, fd_send_req, fd_lane] = co_await helix_ng::exchangeMsgs(lane,
-			helix_ng::offer(
-				helix_ng::sendBuffer(fd_ser.data(), fd_ser.size()),
-				helix_ng::pushDescriptor(remote_lane, kHelRightInvoke | kHelRightManage)
-			)
-		);
-		HEL_CHECK(fd_offer.error());
-		HEL_CHECK(fd_send_req.error());
-		HEL_CHECK(fd_lane.error());
-
-		helix::DispatcherPool::global().detach(serveServerLane(std::move(std::move(local_lane))));
-	}
 	co_return File::constructHandle(std::move(file));
 }
-
 
 async::result<void> serveServerLane(helix::UniqueDescriptor lane) {
 	while(true) {
