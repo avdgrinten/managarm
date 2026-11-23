@@ -1032,15 +1032,14 @@ struct HandleFileRequest {
 
 		if(!file_ops->readEntries) {
 			managarm::fs::ReadEntriesResponse resp;
-			resp.set_error(managarm::fs::Errors::ILLEGAL_OPERATION_TARGET);
+			resp.set_error(managarm::fs::Errors::NOT_DIRECTORY);
 
-			auto ser = resp.SerializeAsString();
-			auto [send_resp] = co_await helix_ng::exchangeMsgs(
+			auto [send_resp, send_tail] = co_await helix_ng::exchangeMsgs(
 				conversation,
-				helix_ng::sendBuffer(ser.data(), ser.size())
-			);
+				helix_ng::sendBragiHeadTail(resp, frg::stl_allocator{}));
 			HEL_CHECK(send_resp.error());
-			logBragiSerializedReply(ser);
+			HEL_CHECK(send_tail.error());
+			logBragiReply(resp);
 			co_return {};
 		}
 		auto result = co_await file_ops->readEntries(file.get());
