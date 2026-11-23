@@ -74,49 +74,57 @@ static initgraph::Task registerBootSerialTask{&globalInitEngine, "x86.register-b
 void PIOLogHandler::emit(frg::string_view record) {
 	auto [md, msg] = destructureLogRecord(record);
 	auto csiSent = setPriority(md.severity);
-	for (size_t i = 0; i < msg.size(); ++i)
-		printChar(msg[i]);
+	printString(msg);
 	if (csiSent)
 		resetPriority();
 	printChar('\n');
+	flushSerial();
 }
 
 void PIOLogHandler::emitUrgent(frg::string_view record) {
 	auto [md, msg] = destructureLogRecord(record);
 	auto csiSent = setPriority(md.severity);
-	const char *prefix = "URGENT: ";
-	while(*prefix)
-		printChar(*(prefix++));
-	for (size_t i = 0; i < msg.size(); ++i)
-		printChar(msg[i]);
+	printString("URGENT: ");
+	printString(msg);
 	if (csiSent)
 		resetPriority();
 	printChar('\n');
+	flushSerial();
+}
+
+void PIOLogHandler::flushSerial() {
+	if(!serialBufferIndex)
+		return;
+
+	auto count = serialBufferIndex;
+	serialBufferIndex = 0;
+	// Output is lost while the UART is suspended.
+	if (isSuspended())
+		return;
+
+	auto base = arch::global_io.subspace(0x3F8);
+	while(!(base.load(lineStatus) & txReady)) {
+		// do nothing until the UART is ready to transmit.
+	}
+	base.store_iterative(data, serialBuffer.data(), count);
+}
+
+void PIOLogHandler::printString(frg::string_view str) {
+	for (size_t i = 0; i < str.size(); i++)
+		printChar(str[i]);
 }
 
 void PIOLogHandler::printChar(char c) {
-	auto sendByteSerial = [this](uint8_t val) {
-		auto base = arch::global_io.subspace(0x3F8);
-
+	auto bufferSerial = [this](uint8_t val) {
 		serialBuffer[serialBufferIndex++] = val;
-		if (serialBufferIndex == 16) {
-			serialBufferIndex = 0;
-			// Output is lost while the UART is suspended.
-			if (isSuspended())
-				return;
-			while(!(base.load(lineStatus) & txReady)) {
-				// do nothing until the UART is ready to transmit.
-			}
-			base.store_iterative(data, serialBuffer, 16);
-		}
+		if (serialBufferIndex == serialBuffer.size())
+			flushSerial();
 	};
 
 	if(debugToSerial) {
-		if(c == '\n') {
-			sendByteSerial('\r');
-		}
-
-		sendByteSerial(c);
+		if(c == '\n')
+			bufferSerial('\r');
+		bufferSerial(c);
 	}
 
 	if(debugToBochs) {
@@ -145,20 +153,14 @@ bool PIOLogHandler::setPriority(Severity prio) {
 			return false;
 	}
 
-	printChar('\e');
-	printChar('[');
-	printChar('3');
+	printString("\e[3");
 	printChar('0' + c);
 	printChar('m');
 	return true;
 }
 
 void PIOLogHandler::resetPriority() {
-	printChar('\e');
-	printChar('[');
-	printChar('3');
-	printChar('9');
-	printChar('m');
+	printString("\e[39m");
 }
 
 } // namespace thor
