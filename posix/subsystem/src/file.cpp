@@ -153,9 +153,9 @@ async::result<protocols::fs::Error> File::ptConnect(void *object,
 	co_return co_await self->connect(maybeProcess->get(), addr, addr_len);
 }
 
-async::result<size_t> File::ptSockname(void *object, void *addr_ptr, size_t max_addr_length) {
+async::result<frg::expected<protocols::fs::Error, size_t>> File::ptSockname(void *object, void *addr_ptr, size_t max_addr_length) {
 	auto self = static_cast<File *>(object);
-	return self->sockname(addr_ptr, max_addr_length);
+	co_return co_await self->sockname(addr_ptr, max_addr_length);
 }
 
 async::result<void> File::ptIoctl(void *object, uint32_t id, helix_ng::RecvInlineResult msg,

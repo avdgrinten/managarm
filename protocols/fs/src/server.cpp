@@ -457,8 +457,22 @@ struct HandleFileRequest {
 
 			std::vector<char> addr;
 			addr.resize(req.size());
-			auto actual_length = co_await file_ops->sockname(file.get(),
+			auto result = co_await file_ops->sockname(file.get(),
 					addr.data(), req.size());
+			if(!result) {
+				managarm::fs::SvrResponse resp;
+				resp.set_error(result.error() | toFsError);
+
+				auto ser = resp.SerializeAsString();
+				auto [send_resp] = co_await helix_ng::exchangeMsgs(
+					conversation,
+					helix_ng::sendBuffer(ser.data(), ser.size())
+				);
+				HEL_CHECK(send_resp.error());
+				logBragiSerializedReply(ser);
+				co_return {};
+			}
+			auto actual_length = result.value();
 
 			managarm::fs::SvrResponse resp;
 			resp.set_error(managarm::fs::Errors::SUCCESS);

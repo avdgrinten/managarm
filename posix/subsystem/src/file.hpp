@@ -393,7 +393,7 @@ public:
 	ptConnect(void *object, helix_ng::CredentialsView credentials,
 			const void *addr_ptr, size_t addr_length);
 
-	static async::result<size_t>
+	static async::result<frg::expected<protocols::fs::Error, size_t>>
 	ptSockname(void *object, void *addr_ptr, size_t max_addr_length);
 
 	static async::result<void>
