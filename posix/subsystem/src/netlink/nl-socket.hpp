@@ -73,7 +73,7 @@ public:
 	async::result<protocols::fs::Error>
 	bind(Process *, const void *, size_t) override;
 
-	async::result<size_t> sockname(void *, size_t) override;
+	async::result<frg::expected<protocols::fs::Error, size_t>> sockname(void *, size_t) override;
 
 	async::result<frg::expected<protocols::fs::Error>>
 	setSocketOption(int layer, int number, std::vector<char> optbuf) override;

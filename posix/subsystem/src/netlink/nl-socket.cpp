@@ -408,7 +408,7 @@ async::result<protocols::fs::Error> OpenFile::bind(Process *,
 	co_return protocols::fs::Error::none;
 }
 
-async::result<size_t> OpenFile::sockname(void *addr_ptr, size_t max_addr_length) {
+async::result<frg::expected<protocols::fs::Error, size_t>> OpenFile::sockname(void *addr_ptr, size_t max_addr_length) {
 	// TODO: Fill in nl_groups.
 	struct sockaddr_nl sa;
 	memset(&sa, 0, sizeof(struct sockaddr_nl));

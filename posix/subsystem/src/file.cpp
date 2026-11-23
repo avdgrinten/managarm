@@ -155,7 +155,7 @@ async::result<protocols::fs::Error> File::ptConnect(void *object,
 
 async::result<frg::expected<protocols::fs::Error, size_t>> File::ptSockname(void *object, void *addr_ptr, size_t max_addr_length) {
 	auto self = static_cast<File *>(object);
-	co_return co_await self->sockname(addr_ptr, max_addr_length);
+	return self->sockname(addr_ptr, max_addr_length);
 }
 
 async::result<void> File::ptIoctl(void *object, uint32_t id, helix_ng::RecvInlineResult msg,
@@ -451,10 +451,8 @@ async::result<protocols::fs::Error> File::listen() {
 	co_return protocols::fs::Error::none;
 }
 
-async::result<size_t> File::sockname(void *, size_t) {
-	std::cout << "posix \e[1;34m" << structName()
-			<< "\e[0m: Object does not implement sockname()" << std::endl;
-	throw std::runtime_error("posix: Object has no File::sockname()");
+async::result<frg::expected<protocols::fs::Error, size_t>> File::sockname(void *, size_t) {
+	co_return protocols::fs::Error::notSocket;
 }
 
 FutureMaybe<helix::UniqueDescriptor> File::accessMemory() {

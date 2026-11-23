@@ -613,7 +613,7 @@ public:
 
 	virtual async::result<protocols::fs::Error> listen();
 
-	virtual async::result<size_t> sockname(void *addr_ptr, size_t max_addr_length);
+	virtual async::result<frg::expected<protocols::fs::Error, size_t>> sockname(void *addr_ptr, size_t max_addr_length);
 
 	virtual FutureMaybe<helix::UniqueDescriptor> accessMemory();
 
