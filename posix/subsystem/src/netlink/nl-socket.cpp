@@ -423,6 +423,15 @@ async::result<frg::expected<protocols::fs::Error, size_t>> OpenFile::sockname(vo
 	co_return sizeof(struct sockaddr_nl);
 }
 
+async::result<frg::expected<protocols::fs::Error, size_t>> OpenFile::peername(void *addr_ptr, size_t max_addr_length) {
+	// Sockets cannot be connected, so the peer is always the kernel.
+	struct sockaddr_nl sa{};
+	sa.nl_family = AF_NETLINK;
+	memcpy(addr_ptr, &sa, std::min(sizeof(struct sockaddr_nl), max_addr_length));
+
+	co_return sizeof(struct sockaddr_nl);
+}
+
 async::result<frg::expected<protocols::fs::Error>> OpenFile::setSocketOption(int layer, int number,
 		std::vector<char> optbuf) {
 	if(layer == SOL_SOCKET && number == SO_ATTACH_FILTER) {
