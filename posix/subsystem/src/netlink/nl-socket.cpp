@@ -415,7 +415,6 @@ async::result<frg::expected<protocols::fs::Error, size_t>> OpenFile::sockname(vo
 	sa.nl_family = AF_NETLINK;
 	{
 		std::lock_guard lock{globalMutex};
-		assert(_socketPort);
 		sa.nl_pid = _socketPort;
 	}
 	memcpy(addr_ptr, &sa, std::min(sizeof(struct sockaddr_nl), max_addr_length));
