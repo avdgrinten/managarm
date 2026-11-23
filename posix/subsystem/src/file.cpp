@@ -499,9 +499,7 @@ async::result<frg::expected<protocols::fs::Error, size_t>> File::peername(void *
 	(void) addr_ptr;
 	(void) max_addr_length;
 
-	std::cout << "posix \e[1;34m" << structName()
-			<< "\e[0m: Object does not implement getPeerName()" << std::endl;
-	co_return protocols::fs::Error::illegalOperationTarget;
+	co_return protocols::fs::Error::notSocket;
 }
 
 async::result<frg::expected<protocols::fs::Error, int>> File::getSeals() {
