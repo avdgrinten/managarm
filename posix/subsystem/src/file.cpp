@@ -361,9 +361,7 @@ async::result<frg::expected<Error, size_t>> File::pwrite(Process *, int64_t, con
 }
 
 async::result<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>> File::readEntries() {
-	std::cout << "posix \e[1;34m" << structName()
-			<< "\e[0m: Object does not implement readEntries()" << std::endl;
-	throw std::runtime_error("posix: Object has no File::readEntries()");
+	co_return std::unexpected{managarm::fs::Errors::NOT_DIRECTORY};
 }
 
 async::result<protocols::fs::RecvResult>
