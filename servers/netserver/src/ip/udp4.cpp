@@ -272,7 +272,7 @@ struct Udp4Socket {
 		co_return protocols::fs::Error::none;
 	}
 
-	static async::result<size_t> sockname(void *object, void *addr_ptr, size_t max_addr_length) {
+	static async::result<frg::expected<protocols::fs::Error, size_t>> sockname(void *object, void *addr_ptr, size_t max_addr_length) {
 		auto self = static_cast<Udp4Socket *>(object);
 		sockaddr_in sa{};
 		sa.sin_family = self->local_.family;

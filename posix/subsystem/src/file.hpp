@@ -393,7 +393,7 @@ public:
 	ptConnect(void *object, helix_ng::CredentialsView credentials,
 			const void *addr_ptr, size_t addr_length);
 
-	static async::result<size_t>
+	static async::result<frg::expected<protocols::fs::Error, size_t>>
 	ptSockname(void *object, void *addr_ptr, size_t max_addr_length);
 
 	static async::result<void>
@@ -613,7 +613,7 @@ public:
 
 	virtual async::result<protocols::fs::Error> listen();
 
-	virtual async::result<size_t> sockname(void *addr_ptr, size_t max_addr_length);
+	virtual async::result<frg::expected<protocols::fs::Error, size_t>> sockname(void *addr_ptr, size_t max_addr_length);
 
 	virtual FutureMaybe<helix::UniqueDescriptor> accessMemory();
 
@@ -686,6 +686,19 @@ public:
 
 	DummyFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link, DefaultOps default_ops = 0)
 	: FileWithDefaults{FileKind::unknown, StructName::get("dummy-file"), std::move(mount), std::move(link), default_ops | defaultPipeLikeSeek} { }
+
+	// Like Linux, reject these on O_PATH file descriptors with EBADF.
+	async::result<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>> readEntries() override {
+		co_return std::unexpected{managarm::fs::Errors::BAD_FILE_DESCRIPTOR};
+	}
+
+	async::result<frg::expected<protocols::fs::Error, size_t>> sockname(void *, size_t) override {
+		co_return protocols::fs::Error::badFileDescriptor;
+	}
+
+	async::result<frg::expected<protocols::fs::Error, size_t>> peername(void *, size_t) override {
+		co_return protocols::fs::Error::badFileDescriptor;
+	}
 
 	helix::BorrowedDescriptor getPassthroughLane() override {
 		return _passthrough;

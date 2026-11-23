@@ -408,16 +408,24 @@ async::result<protocols::fs::Error> OpenFile::bind(Process *,
 	co_return protocols::fs::Error::none;
 }
 
-async::result<size_t> OpenFile::sockname(void *addr_ptr, size_t max_addr_length) {
+async::result<frg::expected<protocols::fs::Error, size_t>> OpenFile::sockname(void *addr_ptr, size_t max_addr_length) {
 	// TODO: Fill in nl_groups.
 	struct sockaddr_nl sa;
 	memset(&sa, 0, sizeof(struct sockaddr_nl));
 	sa.nl_family = AF_NETLINK;
 	{
 		std::lock_guard lock{globalMutex};
-		assert(_socketPort);
 		sa.nl_pid = _socketPort;
 	}
+	memcpy(addr_ptr, &sa, std::min(sizeof(struct sockaddr_nl), max_addr_length));
+
+	co_return sizeof(struct sockaddr_nl);
+}
+
+async::result<frg::expected<protocols::fs::Error, size_t>> OpenFile::peername(void *addr_ptr, size_t max_addr_length) {
+	// Sockets cannot be connected, so the peer is always the kernel.
+	struct sockaddr_nl sa{};
+	sa.nl_family = AF_NETLINK;
 	memcpy(addr_ptr, &sa, std::min(sizeof(struct sockaddr_nl), max_addr_length));
 
 	co_return sizeof(struct sockaddr_nl);

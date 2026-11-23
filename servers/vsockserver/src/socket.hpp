@@ -145,7 +145,7 @@ private:
 			helix_ng::CredentialsView creds, const void *addrPtr, size_t addrLength);
 	static async::result<frg::expected<protocols::fs::Error, protocols::fs::AcceptResult>>
 	accept(void *object);
-	static async::result<size_t> sockname(void *object, void *addrPtr, size_t maxAddrLength);
+	static async::result<frg::expected<protocols::fs::Error, size_t>> sockname(void *object, void *addrPtr, size_t maxAddrLength);
 	static async::result<int> getFileFlags(void *object);
 	static async::result<void> setFileFlags(void *object, int flags);
 	static async::result<protocols::fs::RecvResult> recvMsg(void *object,

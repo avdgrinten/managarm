@@ -46,7 +46,7 @@ public:
 	static async::result<protocols::fs::Error> bind(void *obj, helix_ng::CredentialsView creds,
 			const void *addr_ptr, size_t addr_length);
 
-	static async::result<size_t> sockname(void *, void *, size_t);
+	static async::result<frg::expected<protocols::fs::Error, size_t>> sockname(void *, void *, size_t);
 
 	static async::result<frg::expected<protocols::fs::Error, protocols::fs::PollWaitResult>>
 	pollWait(void *object, uint64_t sequence, int mask, async::cancellation_token cancellation);

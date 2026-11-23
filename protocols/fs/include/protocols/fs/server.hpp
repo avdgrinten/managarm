@@ -162,7 +162,7 @@ struct FileOperations {
 		connect = f;
 		return *this;
 	}
-	constexpr FileOperations &withSockname(async::result<size_t> (*f)(void *object,
+	constexpr FileOperations &withSockname(async::result<frg::expected<Error, size_t>> (*f)(void *object,
 			void *addr_ptr, size_t max_addr_length)) {
 		sockname = f;
 		return *this;
@@ -212,7 +212,7 @@ struct FileOperations {
 	async::result<Error> (*connect)(void *object, helix_ng::CredentialsView credentials,
 			const void *addr_ptr, size_t addr_length) = nullptr;
 	async::result<frg::expected<Error, AcceptResult>> (*accept)(void *object) = nullptr;
-	async::result<size_t> (*sockname)(void *object, void *addr_ptr, size_t max_addr_length) = nullptr;
+	async::result<frg::expected<Error, size_t>> (*sockname)(void *object, void *addr_ptr, size_t max_addr_length) = nullptr;
 	async::result<int> (*getFileFlags)(void *object) = nullptr;
 	async::result<void> (*setFileFlags)(void *object, int flags) = nullptr;
 	async::result<RecvResult> (*recvMsg)(void *object, helix_ng::CredentialsView creds,

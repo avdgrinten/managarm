@@ -153,7 +153,7 @@ async::result<protocols::fs::Error> File::ptConnect(void *object,
 	co_return co_await self->connect(maybeProcess->get(), addr, addr_len);
 }
 
-async::result<size_t> File::ptSockname(void *object, void *addr_ptr, size_t max_addr_length) {
+async::result<frg::expected<protocols::fs::Error, size_t>> File::ptSockname(void *object, void *addr_ptr, size_t max_addr_length) {
 	auto self = static_cast<File *>(object);
 	return self->sockname(addr_ptr, max_addr_length);
 }
@@ -361,9 +361,7 @@ async::result<frg::expected<Error, size_t>> File::pwrite(Process *, int64_t, con
 }
 
 async::result<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>> File::readEntries() {
-	std::cout << "posix \e[1;34m" << structName()
-			<< "\e[0m: Object does not implement readEntries()" << std::endl;
-	throw std::runtime_error("posix: Object has no File::readEntries()");
+	co_return std::unexpected{managarm::fs::Errors::NOT_DIRECTORY};
 }
 
 async::result<protocols::fs::RecvResult>
@@ -451,10 +449,8 @@ async::result<protocols::fs::Error> File::listen() {
 	co_return protocols::fs::Error::none;
 }
 
-async::result<size_t> File::sockname(void *, size_t) {
-	std::cout << "posix \e[1;34m" << structName()
-			<< "\e[0m: Object does not implement sockname()" << std::endl;
-	throw std::runtime_error("posix: Object has no File::sockname()");
+async::result<frg::expected<protocols::fs::Error, size_t>> File::sockname(void *, size_t) {
+	co_return protocols::fs::Error::notSocket;
 }
 
 FutureMaybe<helix::UniqueDescriptor> File::accessMemory() {
@@ -501,9 +497,7 @@ async::result<frg::expected<protocols::fs::Error, size_t>> File::peername(void *
 	(void) addr_ptr;
 	(void) max_addr_length;
 
-	std::cout << "posix \e[1;34m" << structName()
-			<< "\e[0m: Object does not implement getPeerName()" << std::endl;
-	co_return protocols::fs::Error::illegalOperationTarget;
+	co_return protocols::fs::Error::notSocket;
 }
 
 async::result<frg::expected<protocols::fs::Error, int>> File::getSeals() {

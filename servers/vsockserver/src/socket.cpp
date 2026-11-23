@@ -867,7 +867,7 @@ Socket::accept(void *object) {
 	co_return protocols::fs::AcceptResult{std::move(remoteCtrl), std::move(remotePt)};
 }
 
-async::result<size_t> Socket::sockname(void *object, void *addrPtr, size_t maxAddrLength) {
+async::result<frg::expected<protocols::fs::Error, size_t>> Socket::sockname(void *object, void *addrPtr, size_t maxAddrLength) {
 	auto self = static_cast<Socket *>(object);
 	std::lock_guard lock{self->mutex_};
 	co_return writeAddress(addrPtr, maxAddrLength, self->localCid_, self->localPort_);

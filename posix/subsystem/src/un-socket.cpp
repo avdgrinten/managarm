@@ -1263,7 +1263,7 @@ public:
 		co_return getNameFor(rf.get(), addrPtr, maxAddrLength);
 	}
 
-	async::result<size_t> sockname(void *addrPtr, size_t maxAddrLength) override {
+	async::result<frg::expected<protocols::fs::Error, size_t>> sockname(void *addrPtr, size_t maxAddrLength) override {
 		std::lock_guard lock{unSocketMutex};
 		co_return getNameFor(this, addrPtr, maxAddrLength);
 	}

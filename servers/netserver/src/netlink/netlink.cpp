@@ -31,7 +31,7 @@ void NetlinkSocket::handleClose() {
 	}
 }
 
-async::result<size_t> NetlinkSocket::sockname(void *, void *addr_ptr, size_t max_addr_length) {
+async::result<frg::expected<protocols::fs::Error, size_t>> NetlinkSocket::sockname(void *, void *addr_ptr, size_t max_addr_length) {
 	// TODO: Fill in nl_groups.
 	struct sockaddr_nl sa{};
 	sa.nl_family = AF_NETLINK;

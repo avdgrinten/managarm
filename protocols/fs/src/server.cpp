@@ -455,10 +455,24 @@ struct HandleFileRequest {
 				co_return {};
 			}
 
-			std::vector<char> addr;
-			addr.resize(req.size());
-			auto actual_length = co_await file_ops->sockname(file.get(),
-					addr.data(), req.size());
+			auto maxAddrLength = std::min(size_t(std::max(req.size(), 0)), sizeof(struct sockaddr_storage));
+			std::vector<char> addr(maxAddrLength);
+			auto result = co_await file_ops->sockname(file.get(), addr.data(), maxAddrLength);
+			// Like Linux, a negative length only fails once the operation itself succeeded.
+			if(!result || req.size() < 0) {
+				managarm::fs::SvrResponse resp;
+				resp.set_error(result ? managarm::fs::Errors::ILLEGAL_ARGUMENT : result.error() | toFsError);
+
+				auto ser = resp.SerializeAsString();
+				auto [send_resp] = co_await helix_ng::exchangeMsgs(
+					conversation,
+					helix_ng::sendBuffer(ser.data(), ser.size())
+				);
+				HEL_CHECK(send_resp.error());
+				logBragiSerializedReply(ser);
+				co_return {};
+			}
+			auto actual_length = result.value();
 
 			managarm::fs::SvrResponse resp;
 			resp.set_error(managarm::fs::Errors::SUCCESS);
@@ -468,8 +482,7 @@ struct HandleFileRequest {
 			auto [send_resp, send_data] = co_await helix_ng::exchangeMsgs(
 				conversation,
 				helix_ng::sendBuffer(ser.data(), ser.size()),
-				helix_ng::sendBuffer(addr.data(),
-						std::min(size_t(req.size()), actual_length))
+				helix_ng::sendBuffer(addr.data(), std::min(maxAddrLength, actual_length))
 			);
 			HEL_CHECK(send_resp.error());
 			HEL_CHECK(send_data.error());
@@ -482,13 +495,13 @@ struct HandleFileRequest {
 				co_return {};
 			}
 
-			std::vector<char> addr;
-			addr.resize(req.size());
-			auto result = co_await file_ops->peername(file.get(), addr.data(), req.size());
-
-			if (!result) {
+			auto maxAddrLength = std::min(size_t(std::max(req.size(), 0)), sizeof(struct sockaddr_storage));
+			std::vector<char> addr(maxAddrLength);
+			auto result = co_await file_ops->peername(file.get(), addr.data(), maxAddrLength);
+			// Like Linux, a negative length only fails once the operation itself succeeded.
+			if(!result || req.size() < 0) {
 				managarm::fs::SvrResponse resp;
-				resp.set_error(result.error() | toFsError);
+				resp.set_error(result ? managarm::fs::Errors::ILLEGAL_ARGUMENT : result.error() | toFsError);
 
 				auto ser = resp.SerializeAsString();
 				auto [send_resp] = co_await helix_ng::exchangeMsgs(
@@ -511,8 +524,7 @@ struct HandleFileRequest {
 			auto [send_resp, send_data] = co_await helix_ng::exchangeMsgs(
 				conversation,
 				helix_ng::sendBuffer(ser.data(), ser.size()),
-				helix_ng::sendBuffer(addr.data(),
-						std::min(size_t(req.size()), actual_length))
+				helix_ng::sendBuffer(addr.data(), std::min(maxAddrLength, actual_length))
 			);
 			HEL_CHECK(send_resp.error());
 			HEL_CHECK(send_data.error());
@@ -1020,15 +1032,14 @@ struct HandleFileRequest {
 
 		if(!file_ops->readEntries) {
 			managarm::fs::ReadEntriesResponse resp;
-			resp.set_error(managarm::fs::Errors::ILLEGAL_OPERATION_TARGET);
+			resp.set_error(managarm::fs::Errors::NOT_DIRECTORY);
 
-			auto ser = resp.SerializeAsString();
-			auto [send_resp] = co_await helix_ng::exchangeMsgs(
+			auto [send_resp, send_tail] = co_await helix_ng::exchangeMsgs(
 				conversation,
-				helix_ng::sendBuffer(ser.data(), ser.size())
-			);
+				helix_ng::sendBragiHeadTail(resp, frg::stl_allocator{}));
 			HEL_CHECK(send_resp.error());
-			logBragiSerializedReply(ser);
+			HEL_CHECK(send_tail.error());
+			logBragiReply(resp);
 			co_return {};
 		}
 		auto result = co_await file_ops->readEntries(file.get());
