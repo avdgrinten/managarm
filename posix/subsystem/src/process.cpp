@@ -27,6 +27,10 @@
 
 #include "debug-options.hpp"
 
+#ifdef POSIX_HAS_KCOV
+#include "coverage.hpp"
+#endif
+
 static bool logFileAttach = false;
 static bool logCleanup_ = false;
 
@@ -35,6 +39,17 @@ async::result<void> serve(std::shared_ptr<Process> self, std::shared_ptr<Generat
 std::shared_ptr<ThreadGroup> initThreadGroup = nullptr;
 
 namespace {
+
+void detachServe(std::shared_ptr<Process> process, std::shared_ptr<Generation> generation) {
+#ifdef POSIX_HAS_KCOV
+	if(process->threadGroup()->usesKcov()) {
+		auto serveTree = serve(process, std::move(generation));
+		detachServeOnPcovThread(std::move(process), std::move(serveTree));
+		return;
+	}
+#endif
+	helix::DispatcherPool::global().detach(serve(std::move(process), std::move(generation)));
+}
 
 template<typename Id>
 bool isNoChangeSetIdRequest(uint64_t requested) {
@@ -1442,7 +1457,7 @@ HelError Process::getAffinity(uint8_t *mask, size_t size, size_t *actualSize) {
 }
 
 void Process::startServe() {
-	helix::DispatcherPool::global().detach(serve(shared_from_this(), _currentGeneration));
+	detachServe(shared_from_this(), _currentGeneration);
 }
 
 void Process::cancelPosixRequest(uint64_t cancelId) {
@@ -1695,6 +1710,10 @@ bool Process::publishChild_(Process *original, std::shared_ptr<Process> process,
 		parent->_children.push_back(newGroup);
 		originalGroup->pgPointer_->reassociateProcessLocked(newGroup.get());
 		newGroup->getHull()->initializeThreadGroup(newGroup.get());
+#ifdef POSIX_HAS_KCOV
+		if(originalGroup->usesKcov())
+			newGroup->setUsesKcov();
+#endif
 	}
 	process->threadGroup()->associateProcessLocked(std::move(process));
 	return true;
@@ -2049,7 +2068,7 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 	helResume(process->_threadDescriptor.getHandle());
 	// The new generation may run on another pool member while the old one unwinds; the old one
 	// only erases the credentials of the old thread after this point and touches no other state.
-	helix::DispatcherPool::global().detach(serve(process, std::move(generation)));
+	detachServe(process, std::move(generation));
 
 	co_return Error::success;
 }

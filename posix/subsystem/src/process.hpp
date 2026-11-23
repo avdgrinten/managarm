@@ -27,6 +27,7 @@
 #include "procfs.hpp"
 
 struct Generation;
+struct PcovContext;
 struct Process;
 struct ThreadGroup;
 struct ProcessGroup;
@@ -772,6 +773,11 @@ public:
 	// Forces terminate() to be called on next kHelObserveInterrupt.
 	std::atomic<bool> forceTermination = false;
 
+#ifdef POSIX_HAS_KCOV
+	// Context of the posix thread that runs the serve().
+	std::atomic<PcovContext *> pcovContext = nullptr;
+#endif
+
 	SignalQueue signalQueue;
 
 	// A signal that was accepted for delivery while the thread was inside a SignalGuard.
@@ -879,6 +885,16 @@ struct ThreadGroup : std::enable_shared_from_this<ThreadGroup> {
 	bool didExecute() {
 		return didExecute_;
 	}
+
+#ifdef POSIX_HAS_KCOV
+	bool usesKcov() {
+		return usesKcov_.load(std::memory_order_relaxed);
+	}
+
+	void setUsesKcov() {
+		usesKcov_.store(true, std::memory_order_relaxed);
+	}
+#endif
 
 	// Returns null for init and once the group was reaped.
 	std::shared_ptr<ThreadGroup> getParent();
@@ -1165,6 +1181,10 @@ private:
 	std::shared_ptr<SignalContext> _signalContext;
 
 	std::atomic<bool> didExecute_ = false;
+
+#ifdef POSIX_HAS_KCOV
+	std::atomic<bool> usesKcov_ = false;
+#endif
 
 	// Protected by processGraphMutex.
 	std::shared_ptr<ProcessGroup> pgPointer_;

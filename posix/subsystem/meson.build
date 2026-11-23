@@ -66,8 +66,11 @@ src = [
 
 posix_args = []
 if kcov
-	src += files('src/devices/kcov.cpp')
-	posix_args += [ '-DPOSIX_HAS_KCOV' ]
+	src += files('src/coverage.cpp', 'src/devices/kcov.cpp')
+	posix_args += [
+		'-DPOSIX_HAS_KCOV',
+		'-fsanitize-coverage=trace-pc,trace-cmp'
+	]
 endif
 
 executable('posix-subsystem', src,
