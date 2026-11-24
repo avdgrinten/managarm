@@ -210,7 +210,41 @@ struct FileDescriptor {
 	bool closeOnExec;
 };
 
+struct FileContext;
+
+// The handles of the files of a FileContext, as they are visible in one address space.
+struct FileTableView {
+	friend struct FileContext;
+
+	FileTableView(std::shared_ptr<FileContext> fileContext, std::shared_ptr<VmContext> vmContext);
+
+	FileTableView(const FileTableView &) = delete;
+
+	~FileTableView();
+
+	FileTableView &operator= (const FileTableView &) = delete;
+
+	// Address of the handle table in the address space.
+	void *clientTable() {
+		return clientTable_;
+	}
+
+private:
+	HelHandle *table_() {
+		return reinterpret_cast<HelHandle *>(window_.get());
+	}
+
+	std::shared_ptr<FileContext> fileContext_;
+	std::shared_ptr<VmContext> vmContext_;
+	helix::UniqueDescriptor memory_;
+	// Contents protected by FileContext::_mutex.
+	helix::Mapping window_;
+	void *clientTable_ = nullptr;
+};
+
 struct FileContext {
+	friend struct FileTableView;
+
 public:
 	static std::shared_ptr<FileContext> create();
 	static std::shared_ptr<FileContext> clone(std::shared_ptr<FileContext> original);
@@ -221,9 +255,9 @@ public:
 		return _universe;
 	}
 
-	helix::BorrowedDescriptor fileTableMemory() {
-		return _fileTableMemory;
-	}
+	// Makes the files of the context available in an address space.
+	static async::result<std::shared_ptr<FileTableView>> createView(
+			std::shared_ptr<FileContext> context, std::shared_ptr<VmContext> vmContext);
 
 	std::expected<int, Error> attachFile(smarter::shared_ptr<File, FileHandle> file, bool close_on_exec = false, int start_at = 0);
 
@@ -253,9 +287,9 @@ public:
 	}
 
 private:
-	HelHandle *fileTableWindow() {
-		return reinterpret_cast<HelHandle *>(fileTableWindow_.get());
-	}
+	// Sets the handle of a FD in all views; the handle is removed if file is null.
+	// Called with _mutex held.
+	void updateViews_(int fd, File *file);
 
 	helix::UniqueDescriptor _universe;
 
@@ -266,9 +300,8 @@ private:
 	// Protected by _mutex.
 	std::unordered_map<int, FileDescriptor> _fileTable;
 
-	helix::UniqueDescriptor _fileTableMemory;
-	// Contents protected by _mutex.
-	helix::Mapping fileTableWindow_;
+	// Protected by _mutex.
+	std::vector<FileTableView *> views_;
 
 	// Keep the FD limit in sync with mlibc; the table occupies one native page.
 	static constexpr uint64_t maxFileDescriptors = 512;
@@ -693,7 +726,7 @@ public:
 
 	HelHandle clientPosixLane() { return _clientPosixLane; }
 	posix::ThreadPage *clientThreadPage() { return _clientThreadPage; }
-	void *clientFileTable() { return _clientFileTable; }
+	void *clientFileTable() { return _fileTableView->clientTable(); }
 	void *clientClkTrackerPage() { return _clientClkTrackerPage; }
 	HelHandle clientHierarchyHandle() { return _clientHierarchyHandle; }
 	void *clientAuxBegin() { return _clientAuxBegin; }
@@ -833,6 +866,8 @@ private:
 	std::shared_ptr<FsContext> _fsContext;
 	// Protected by taskMutex_.
 	std::shared_ptr<FileContext> _fileContext;
+	// Only accessed by the thread's own serve tree.
+	std::shared_ptr<FileTableView> _fileTableView;
 
 	// Unlinks /proc/[pid]/task/[tid].
 	void unlinkProcfsTask_();
@@ -848,7 +883,6 @@ private:
 	HelHandle _clientPosixLane = kHelNullHandle;
 	HelHandle _clientHierarchyHandle = kHelNullHandle;
 	posix::ThreadPage *_clientThreadPage;
-	void *_clientFileTable = nullptr;
 	void *_clientClkTrackerPage;
 	// Pointers to the aux vector in the client.
 	void *_clientAuxBegin = nullptr;

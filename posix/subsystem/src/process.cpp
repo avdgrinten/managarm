@@ -134,6 +134,20 @@ namespace {
 		if(error != kHelErrNoDescriptor)
 			HEL_CHECK(error);
 	}
+
+	// Attaches the passthrough lane of a file to the universe of a process.
+	HelHandle transferPassthroughLane(File *file, helix::BorrowedDescriptor universe) {
+		HelHandle handle;
+		HEL_CHECK(helTransferDescriptor(
+			file->getPassthroughLane().getHandle(),
+			universe.getHandle(),
+			kHelTransferDescriptorOut,
+			kHelRightInvoke,
+			kHelRightInvoke,
+			&handle
+		));
+		return handle;
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -588,17 +602,39 @@ static HelHandle posixMbusClient = [] {
 	return data.mbusLane;
 }();
 
+FileTableView::FileTableView(std::shared_ptr<FileContext> fileContext,
+		std::shared_ptr<VmContext> vmContext)
+: fileContext_{std::move(fileContext)}, vmContext_{std::move(vmContext)} {
+	HelHandle memory;
+	HEL_CHECK(helAllocateMemory(core::getProcessHierarchy(), kHelPageSize, 0, nullptr, &memory));
+	memory_ = helix::UniqueDescriptor(memory);
+	window_ = helix::Mapping{memory_, 0, kHelPageSize};
+}
+
+FileTableView::~FileTableView() {
+	{
+		std::lock_guard lock{fileContext_->_mutex};
+		std::erase(fileContext_->views_, this);
+	}
+
+	// Other users of the universe and of the address space may remain.
+	for(uint64_t fd = 0; fd < FileContext::maxFileDescriptors; fd++) {
+		if(table_()[fd])
+			closeClientDescriptor(fileContext_->_universe, table_()[fd]);
+	}
+	if(clientTable_) {
+		async::detach([] (std::shared_ptr<VmContext> vmContext, void *table) -> async::result<void> {
+			co_await vmContext->unmapFile(table, kHelPageSize);
+		}(std::move(vmContext_), clientTable_));
+	}
+}
+
 std::shared_ptr<FileContext> FileContext::create() {
 	auto context = std::make_shared<FileContext>();
 
 	HelHandle universe;
 	HEL_CHECK(helCreateUniverse(&universe));
 	context->_universe = helix::UniqueDescriptor(universe);
-
-	HelHandle memory;
-	HEL_CHECK(helAllocateMemory(core::getProcessHierarchy(), kHelPageSize, 0, nullptr, &memory));
-	context->_fileTableMemory = helix::UniqueDescriptor(memory);
-	context->fileTableWindow_ = helix::Mapping{context->_fileTableMemory, 0, kHelPageSize};
 
 	HEL_CHECK(helTransferDescriptor(
 	    posixMbusClient,
@@ -619,17 +655,10 @@ std::shared_ptr<FileContext> FileContext::clone(std::shared_ptr<FileContext> ori
 	HEL_CHECK(helCreateUniverse(&universe));
 	context->_universe = helix::UniqueDescriptor(universe);
 
-	HelHandle memory;
-	HEL_CHECK(helAllocateMemory(core::getProcessHierarchy(), kHelPageSize, 0, nullptr, &memory));
-	context->_fileTableMemory = helix::UniqueDescriptor(memory);
-	context->fileTableWindow_ = helix::Mapping{context->_fileTableMemory, 0, kHelPageSize};
-
-	for(auto entry : original->snapshotFileTable()) {
-		//std::cout << "Clone FD " << entry.first << std::endl;
-
-		// the new number of fd in the file context is always <= the number of fd in the original
-		auto attachRes = context->attachFile(entry.first, entry.second.file, entry.second.closeOnExec);
-		assert(attachRes);
+	auto fileTable = original->snapshotFileTable();
+	{
+		std::lock_guard lock{context->_mutex};
+		context->_fileTable = std::move(fileTable);
 	}
 
 	HEL_CHECK(helTransferDescriptor(
@@ -644,75 +673,72 @@ std::shared_ptr<FileContext> FileContext::clone(std::shared_ptr<FileContext> ori
 	return context;
 }
 
+async::result<std::shared_ptr<FileTableView>> FileContext::createView(
+		std::shared_ptr<FileContext> context, std::shared_ptr<VmContext> vmContext) {
+	auto view = std::make_shared<FileTableView>(context, vmContext);
+	view->clientTable_ = co_await vmContext->mapSystemArea(view->memory_,
+			kHelPageSize, kHelMapProtRead);
+
+	std::lock_guard lock{context->_mutex};
+	for(auto &[fd, descriptor] : context->_fileTable)
+		view->table_()[fd] = transferPassthroughLane(descriptor.file.get(), context->_universe);
+	context->views_.push_back(view.get());
+	co_return view;
+}
+
 FileContext::~FileContext() {
 	if(logCleanup_)
 		std::cout << "\e[33mposix: FileContext is destructed\e[39m" << std::endl;
 }
 
+void FileContext::updateViews_(int fd, File *file) {
+	for(auto view : views_) {
+		HelHandle handle = kHelNullHandle;
+		if(file)
+			handle = transferPassthroughLane(file, _universe);
+		// The process never sees an empty entry when a file is replaced.
+		auto replaced = std::exchange(view->table_()[fd], handle);
+		if(replaced)
+			closeClientDescriptor(_universe, replaced);
+	}
+}
+
 std::expected<int, Error> FileContext::attachFile(smarter::shared_ptr<File, FileHandle> file,
 		bool closeOnExec, int startAt) {
-	HelHandle handle;
-	HEL_CHECK(helTransferDescriptor(
-	    file->getPassthroughLane().getHandle(),
-		_universe.getHandle(),
-		kHelTransferDescriptorOut,
-		kHelRightInvoke,
-		kHelRightInvoke,
-		&handle
-	));
-
 	std::lock_guard lock{_mutex};
 	for(int fd = startAt; ; fd++) {
 		if(_fileTable.find(fd) != _fileTable.end())
 			continue;
 
-		if (static_cast<uint64_t>(fd) >= fdLimit_) {
-			closeClientDescriptor(_universe, handle);
+		if (static_cast<uint64_t>(fd) >= fdLimit_)
 			return std::unexpected{Error::noFileDescriptorsAvailable};
-		}
 
 		if(logFileAttach)
 			std::cout << "posix: Attaching FD " << fd << std::endl;
 
+		updateViews_(fd, file.get());
 		_fileTable.insert({fd, {std::move(file), closeOnExec}});
-		fileTableWindow()[fd] = handle;
 		return fd;
 	}
 }
 
 std::expected<void, Error> FileContext::attachFile(int fd, smarter::shared_ptr<File, FileHandle> file,
 		bool close_on_exec) {
-	{
-		std::lock_guard lock{_mutex};
-		if (static_cast<uint64_t>(fd) >= fdLimit_)
-			return std::unexpected{Error::noFileDescriptorsAvailable};
-	}
-
-	HelHandle handle;
-	HEL_CHECK(helTransferDescriptor(
-	    file->getPassthroughLane().getHandle(),
-		_universe.getHandle(),
-		kHelTransferDescriptorOut,
-		kHelRightInvoke,
-		kHelRightInvoke,
-		&handle
-	));
-
 	if(logFileAttach)
 		std::cout << "posix: Attaching fixed FD " << fd << std::endl;
 
 	FileDescriptor displaced;
 	std::lock_guard lock{_mutex};
+	if (static_cast<uint64_t>(fd) >= fdLimit_)
+		return std::unexpected{Error::noFileDescriptorsAvailable};
+
+	updateViews_(fd, file.get());
 	auto it = _fileTable.find(fd);
 	if(it != _fileTable.end()) {
 		displaced = std::exchange(it->second, {std::move(file), close_on_exec});
 	}else{
 		_fileTable.insert({fd, {std::move(file), close_on_exec}});
 	}
-	// The process never sees an empty entry when a file is replaced.
-	auto replaced = std::exchange(fileTableWindow()[fd], handle);
-	if(replaced)
-		closeClientDescriptor(_universe, replaced);
 
 	return {};
 }
@@ -753,9 +779,7 @@ Error FileContext::closeFile(int fd) {
 		return Error::noSuchFile;
 	}
 
-	closeClientDescriptor(_universe, fileTableWindow()[fd]);
-
-	fileTableWindow()[fd] = 0;
+	updateViews_(fd, nullptr);
 	closed = std::move(it->second);
 	_fileTable.erase(it);
 	return Error::success;
@@ -767,9 +791,7 @@ void FileContext::closeOnExec() {
 	auto it = _fileTable.begin();
 	while(it != _fileTable.end()) {
 		if(it->second.closeOnExec) {
-			closeClientDescriptor(_universe, fileTableWindow()[it->first]);
-
-			fileTableWindow()[it->first] = 0;
+			updateViews_(it->first, nullptr);
 			closed.push_back(std::move(it->second));
 			it = _fileTable.erase(it);
 		}else{
@@ -1683,8 +1705,8 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 	process->_clientThreadPage = static_cast<posix::ThreadPage *>(
 			co_await process->_vmContext->mapSystemArea(process->_threadPageMemory,
 					kHelPageSize, kHelMapProtRead | kHelMapProtWrite));
-	process->_clientFileTable = co_await process->_vmContext->mapSystemArea(
-			process->_fileContext->fileTableMemory(), kHelPageSize, kHelMapProtRead);
+	process->_fileTableView = co_await FileContext::createView(
+			process->_fileContext, process->_vmContext);
 	process->_clientClkTrackerPage = co_await process->_vmContext->mapSystemArea(
 			clk::trackerPageMemory(), kHelPageSize, kHelMapProtRead);
 
@@ -1791,8 +1813,8 @@ Process::fork(std::shared_ptr<Process> original) {
 	process->_clientThreadPage = static_cast<posix::ThreadPage *>(
 			co_await process->_vmContext->mapSystemArea(process->_threadPageMemory,
 					kHelPageSize, kHelMapProtRead | kHelMapProtWrite));
-	process->_clientFileTable = co_await process->_vmContext->mapSystemArea(
-			process->_fileContext->fileTableMemory(), kHelPageSize, kHelMapProtRead);
+	process->_fileTableView = co_await FileContext::createView(
+			process->_fileContext, process->_vmContext);
 	process->_clientClkTrackerPage = co_await process->_vmContext->mapSystemArea(
 			clk::trackerPageMemory(), kHelPageSize, kHelMapProtRead);
 
@@ -1939,7 +1961,12 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 			co_await process->_vmContext->mapSystemArea(process->_threadPageMemory,
 					kHelPageSize, kHelMapProtRead | kHelMapProtWrite));
 
-	process->_clientFileTable = original->_clientFileTable;
+	if ((args->flags & CLONE_VM) && (args->flags & CLONE_FILES)) {
+		process->_fileTableView = original->_fileTableView;
+	} else {
+		process->_fileTableView = co_await FileContext::createView(
+				process->_fileContext, process->_vmContext);
+	}
 	if (args->flags & CLONE_VM) {
 		process->_clientClkTrackerPage = original->_clientClkTrackerPage;
 	} else {
@@ -2028,14 +2055,13 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 
 	posix::ThreadPage *exec_thread_page;
 	void *exec_clk_tracker_page;
-	void *exec_client_table;
 	exec_thread_page = static_cast<posix::ThreadPage *>(
 			co_await exec_vm_context->mapSystemArea(process->_threadPageMemory,
 					kHelPageSize, kHelMapProtRead | kHelMapProtWrite));
 	exec_clk_tracker_page = co_await exec_vm_context->mapSystemArea(
 			clk::trackerPageMemory(), kHelPageSize, kHelMapProtRead);
-	exec_client_table = co_await exec_vm_context->mapSystemArea(
-			process->_fileContext->fileTableMemory(), kHelPageSize, kHelMapProtRead);
+	auto execFileTableView = co_await FileContext::createView(
+			process->_fileContext, exec_vm_context);
 
 	// Kill the old thread.
 	// After this is done, we cannot roll back the exec() operation.
@@ -2065,6 +2091,8 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 		std::swap(process->_vmContext, exec_vm_context);
 	}
 	exec_vm_context = nullptr;
+	std::swap(process->_fileTableView, execFileTableView);
+	execFileTableView = nullptr;
 	process->threadGroup()->_signalContext->resetHandlers();
 	process->setAltStackEnabled(false);
 	process->setAltStackSp(0, 0);
@@ -2076,7 +2104,6 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 	process->_clientThreadPage = exec_thread_page;
 	process->_clientPosixLane = exec_posix_lane;
 	process->_clientHierarchyHandle = exec_client_hierarchy;
-	process->_clientFileTable = exec_client_table;
 	process->_clientClkTrackerPage = exec_clk_tracker_page;
 	process->_clientAuxBegin = execResult.auxBegin;
 	process->_clientAuxEnd = execResult.auxEnd;
@@ -2124,6 +2151,7 @@ async::result<void> Process::terminate(bool *lastInGroup) {
 	std::shared_ptr<VmContext> vmContext;
 	std::shared_ptr<FsContext> fsContext;
 	std::shared_ptr<FileContext> fileContext;
+	auto fileTableView = std::move(_fileTableView);
 	{
 		std::lock_guard lock{taskMutex_};
 		threadDescriptor = std::move(_threadDescriptor);
@@ -2135,6 +2163,7 @@ async::result<void> Process::terminate(bool *lastInGroup) {
 	vmContext = nullptr;
 	fsContext = nullptr;
 	fileContext = nullptr;
+	fileTableView = nullptr;
 	//_signalContext = nullptr; // TODO: Migrate the notifications to PID 1.
 	_currentGeneration = nullptr;
 
