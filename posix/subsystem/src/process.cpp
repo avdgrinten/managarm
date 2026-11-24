@@ -1976,8 +1976,12 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 	process->_currentGeneration = std::make_shared<Generation>();
 
 	// The thread exists before it is published, such that terminateGroup() can interrupt it.
-	if(!publishChild_(original.get(), process, newGroup, args->flags & CLONE_PARENT))
+	if(!publishChild_(original.get(), process, newGroup, args->flags & CLONE_PARENT)) {
+		// terminate() never runs for this thread but others may keep using the address space.
+		closeClientDescriptor(process->_vmContext->getUniverse(), process->_clientPosixLane);
+		co_await process->_vmContext->unmapFile(process->_clientThreadPage, kHelPageSize);
 		co_return std::unexpected{Error::interrupted};
+	}
 	process->getTidHull()->initializeProcess(process.get());
 
 	auto procfs_root = smarter::static_pointer_cast<procfs::DirectoryNode>(getProcfs()->getTarget());
@@ -2048,6 +2052,9 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 		process->_threadDescriptor = std::move(execResult.thread);
 		std::swap(process->_vmContext, exec_vm_context);
 	}
+	// exec_vm_context is the previous address space now; other threads may keep using it.
+	closeClientDescriptor(exec_vm_context->getUniverse(), process->_clientPosixLane);
+	co_await exec_vm_context->unmapFile(process->_clientThreadPage, kHelPageSize);
 	exec_vm_context = nullptr;
 	std::swap(process->_fileTableView, execFileTableView);
 	execFileTableView = nullptr;
@@ -2105,6 +2112,9 @@ async::result<void> Process::terminate(bool *lastInGroup) {
 	}
 
 	_posixLane = {};
+	// Other threads may keep using the universe and the address space.
+	closeClientDescriptor(_vmContext->getUniverse(), _clientPosixLane);
+	co_await _vmContext->unmapFile(_clientThreadPage, kHelPageSize);
 	// Dropping the contexts closes files, hence do it after releasing the lock.
 	helix::UniqueDescriptor threadDescriptor;
 	std::shared_ptr<VmContext> vmContext;
