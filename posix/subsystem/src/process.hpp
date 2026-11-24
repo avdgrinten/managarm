@@ -79,9 +79,17 @@ struct VmContext {
 
 	async::result<void> unmapFile(void *pointer, size_t size);
 
+	// Maps memory that posix shares with the process (e.g., the thread page).
+	// In contrast to other areas, the area is neither inherited by clone()
+	// nor returned by findAreaMemory().
+	async::result<void *> mapSystemArea(helix::BorrowedDescriptor memory,
+			size_t size, uint32_t nativeFlags);
+
 private:
 	struct Area {
 		bool copyOnWrite;
+		// Set for areas of mapSystemArea().
+		bool system = false;
 		size_t areaSize;
 		uint32_t nativeFlags;
 		helix::UniqueDescriptor fileView;

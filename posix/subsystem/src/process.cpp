@@ -168,6 +168,8 @@ async::result<std::shared_ptr<VmContext>> VmContext::clone(
 	co_await async::dynamic_scope<async::result<void>>(frg::stl_allocator{}, [&] (auto &spawn) {
 		for(const auto &entry : original->_areaTree) {
 			const auto &[address, area] = entry;
+			if(area.system)
+				continue;
 
 			Area copy;
 			copy.copyOnWrite = area.copyOnWrite;
@@ -231,6 +233,7 @@ auto VmContext::splitAreaOn_(uintptr_t addr, size_t size) ->
 		if (base < addr && (base + area.areaSize) > addr) {
 			Area right;
 			right.copyOnWrite = area.copyOnWrite;
+			right.system = area.system;
 			right.areaSize = area.areaSize - (addr - base);
 			right.nativeFlags = area.nativeFlags;
 			right.fileView = area.fileView.dup();
@@ -371,6 +374,7 @@ async::result<void *> VmContext::remapFile(void *oldPointer,
 	// Construct the new area from the old one.
 	Area area;
 	area.copyOnWrite = it->second.copyOnWrite;
+	area.system = it->second.system;
 	area.areaSize = alignedNewSize;
 	area.nativeFlags = it->second.nativeFlags;
 	area.fileView = std::move(it->second.fileView);
@@ -443,6 +447,22 @@ async::result<void> VmContext::unmapFile(void *pointer, size_t size) {
 	}
 }
 
+async::result<void *> VmContext::mapSystemArea(helix::BorrowedDescriptor memory,
+		size_t size, uint32_t nativeFlags) {
+	std::vector<smarter::shared_ptr<File, FileHandle>> dropped;
+	co_await _mutex.async_lock();
+	frg::unique_lock lock{frg::adopt_lock, _mutex};
+
+	Area area;
+	area.copyOnWrite = false;
+	area.system = true;
+	area.areaSize = size;
+	area.nativeFlags = nativeFlags;
+	area.fileView = memory.dup();
+	area.offset = 0;
+	co_return (co_await mapArea_(0, std::move(area), dropped)).unwrap();
+}
+
 async::result<std::vector<VmContext::AreaSnapshot>> VmContext::snapshotAreas() {
 	co_await _mutex.async_lock_shared();
 	frg::shared_lock lock{frg::adopt_lock, _mutex};
@@ -481,6 +501,8 @@ async::result<std::optional<VmContext::AreaMemory>> VmContext::findAreaMemory(ui
 	--it;
 	auto &area = it->second;
 	if(address >= it->first + area.areaSize)
+		co_return std::nullopt;
+	if(area.system)
 		co_return std::nullopt;
 
 	auto &memory = area.copyOnWrite ? area.copyView : area.fileView;
@@ -1658,18 +1680,13 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 		&process->_clientHierarchyHandle
 	));
 
-	HEL_CHECK(helMapMemory(process->_threadPageMemory.getHandle(),
-			process->_vmContext->getSpace().getHandle(),
-			nullptr, 0, kHelPageSize, kHelMapProtRead | kHelMapProtWrite,
-			reinterpret_cast<void **>(&process->_clientThreadPage)));
-	HEL_CHECK(helMapMemory(process->_fileContext->fileTableMemory().getHandle(),
-			process->_vmContext->getSpace().getHandle(),
-			nullptr, 0, kHelPageSize, kHelMapProtRead,
-			&process->_clientFileTable));
-	HEL_CHECK(helMapMemory(clk::trackerPageMemory().getHandle(),
-			process->_vmContext->getSpace().getHandle(),
-			nullptr, 0, kHelPageSize, kHelMapProtRead,
-			&process->_clientClkTrackerPage));
+	process->_clientThreadPage = static_cast<posix::ThreadPage *>(
+			co_await process->_vmContext->mapSystemArea(process->_threadPageMemory,
+					kHelPageSize, kHelMapProtRead | kHelMapProtWrite));
+	process->_clientFileTable = co_await process->_vmContext->mapSystemArea(
+			process->_fileContext->fileTableMemory(), kHelPageSize, kHelMapProtRead);
+	process->_clientClkTrackerPage = co_await process->_vmContext->mapSystemArea(
+			clk::trackerPageMemory(), kHelPageSize, kHelMapProtRead);
 
 	process->getTidHull()->initializeThreadGroup(threadGroup.get());
 	process->getTidHull()->initializeProcess(process.get());
@@ -1771,18 +1788,13 @@ Process::fork(std::shared_ptr<Process> original) {
 		&process->_clientHierarchyHandle
 	));
 
-	HEL_CHECK(helMapMemory(process->_threadPageMemory.getHandle(),
-			process->_vmContext->getSpace().getHandle(),
-			nullptr, 0, kHelPageSize, kHelMapProtRead | kHelMapProtWrite,
-			reinterpret_cast<void **>(&process->_clientThreadPage)));
-	HEL_CHECK(helMapMemory(process->_fileContext->fileTableMemory().getHandle(),
-			process->_vmContext->getSpace().getHandle(),
-			nullptr, 0, kHelPageSize, kHelMapProtRead,
-			&process->_clientFileTable));
-	HEL_CHECK(helMapMemory(clk::trackerPageMemory().getHandle(),
-			process->_vmContext->getSpace().getHandle(),
-			nullptr, 0, kHelPageSize, kHelMapProtRead,
-			&process->_clientClkTrackerPage));
+	process->_clientThreadPage = static_cast<posix::ThreadPage *>(
+			co_await process->_vmContext->mapSystemArea(process->_threadPageMemory,
+					kHelPageSize, kHelMapProtRead | kHelMapProtWrite));
+	process->_clientFileTable = co_await process->_vmContext->mapSystemArea(
+			process->_fileContext->fileTableMemory(), kHelPageSize, kHelMapProtRead);
+	process->_clientClkTrackerPage = co_await process->_vmContext->mapSystemArea(
+			clk::trackerPageMemory(), kHelPageSize, kHelMapProtRead);
 
 	process->_clientAuxBegin = original->_clientAuxBegin;
 	process->_clientAuxEnd = original->_clientAuxEnd;
@@ -1923,13 +1935,17 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 		));
 	}
 
-	HEL_CHECK(helMapMemory(process->_threadPageMemory.getHandle(),
-			process->_vmContext->getSpace().getHandle(),
-			nullptr, 0, kHelPageSize, kHelMapProtRead | kHelMapProtWrite,
-			reinterpret_cast<void **>(&process->_clientThreadPage)));
+	process->_clientThreadPage = static_cast<posix::ThreadPage *>(
+			co_await process->_vmContext->mapSystemArea(process->_threadPageMemory,
+					kHelPageSize, kHelMapProtRead | kHelMapProtWrite));
 
 	process->_clientFileTable = original->_clientFileTable;
-	process->_clientClkTrackerPage = original->_clientClkTrackerPage;
+	if (args->flags & CLONE_VM) {
+		process->_clientClkTrackerPage = original->_clientClkTrackerPage;
+	} else {
+		process->_clientClkTrackerPage = co_await process->_vmContext->mapSystemArea(
+				clk::trackerPageMemory(), kHelPageSize, kHelMapProtRead);
+	}
 
 	process->_clientAuxBegin = original->_clientAuxBegin;
 	process->_clientAuxEnd = original->_clientAuxEnd;
@@ -2013,18 +2029,13 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 	posix::ThreadPage *exec_thread_page;
 	void *exec_clk_tracker_page;
 	void *exec_client_table;
-	HEL_CHECK(helMapMemory(process->_threadPageMemory.getHandle(),
-			exec_vm_context->getSpace().getHandle(),
-			nullptr, 0, kHelPageSize, kHelMapProtRead | kHelMapProtWrite,
-			reinterpret_cast<void **>(&exec_thread_page)));
-	HEL_CHECK(helMapMemory(clk::trackerPageMemory().getHandle(),
-			exec_vm_context->getSpace().getHandle(),
-			nullptr, 0, kHelPageSize, kHelMapProtRead,
-			&exec_clk_tracker_page));
-	HEL_CHECK(helMapMemory(process->_fileContext->fileTableMemory().getHandle(),
-			exec_vm_context->getSpace().getHandle(),
-			nullptr, 0, kHelPageSize, kHelMapProtRead,
-			&exec_client_table));
+	exec_thread_page = static_cast<posix::ThreadPage *>(
+			co_await exec_vm_context->mapSystemArea(process->_threadPageMemory,
+					kHelPageSize, kHelMapProtRead | kHelMapProtWrite));
+	exec_clk_tracker_page = co_await exec_vm_context->mapSystemArea(
+			clk::trackerPageMemory(), kHelPageSize, kHelMapProtRead);
+	exec_client_table = co_await exec_vm_context->mapSystemArea(
+			process->_fileContext->fileTableMemory(), kHelPageSize, kHelMapProtRead);
 
 	// Kill the old thread.
 	// After this is done, we cannot roll back the exec() operation.
