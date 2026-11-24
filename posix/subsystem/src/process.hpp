@@ -96,6 +96,11 @@ private:
 		std::map<uintptr_t, Area>::iterator
 	> splitAreaOn_(uintptr_t addr, size_t size);
 
+	// Maps the memory of an area and enters the area into the area tree.
+	// The caller holds _mutex and drops the files of replaced areas after releasing it.
+	async::result<frg::expected<Error, void *>> mapArea_(uintptr_t hint, Area area,
+			std::vector<smarter::shared_ptr<File, FileHandle>> &dropped);
+
 	helix::UniqueDescriptor _hierarchy;
 	helix::UniqueDescriptor _space;
 

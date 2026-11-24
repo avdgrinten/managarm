@@ -264,11 +264,8 @@ VmContext::mapFile(uintptr_t hint, helix::UniqueDescriptor memory,
 	co_await _mutex.async_lock();
 	frg::unique_lock lock{frg::adopt_lock, _mutex};
 
-	// Perform the actual mapping.
 	// POSIX specifies that non-page-size mappings are rounded up and filled with zeros.
 	helix::UniqueDescriptor copyView;
-	void *pointer = nullptr;
-	HelError error;
 	if(copyOnWrite) {
 		helix::BorrowedDescriptor memoryDesc;
 		if(memory) {
@@ -278,7 +275,7 @@ VmContext::mapFile(uintptr_t hint, helix::UniqueDescriptor memory,
 		}
 
 		HelHandle handle;
-		error = helCopyOnWrite(_hierarchy.getHandle(),
+		auto error = helCopyOnWrite(_hierarchy.getHandle(),
 				getSwapSpaceHandle().getHandle(),
 				memoryDesc.getHandle(),
 				offset, alignedSize, &handle);
@@ -287,46 +284,8 @@ VmContext::mapFile(uintptr_t hint, helix::UniqueDescriptor memory,
 			co_return Error::illegalArguments;
 		HEL_CHECK(error);
 		copyView = helix::UniqueDescriptor{handle};
-
-		auto mapResult = co_await helix_ng::mapMemory(copyView, _space,
-				reinterpret_cast<void *>(hint),
-				0, alignedSize, nativeFlags);
-		error = mapResult.error();
-		if(!error)
-			pointer = mapResult.pointer();
-	}else{
-		auto mapResult = co_await helix_ng::mapMemory(memory, _space,
-				reinterpret_cast<void *>(hint),
-				offset, alignedSize, nativeFlags);
-		error = mapResult.error();
-		if(!error)
-			pointer = mapResult.pointer();
 	}
 
-	if(error == kHelErrAlreadyExists) {
-		co_return Error::alreadyExists;
-	}else if(error == kHelErrNoMemory)
-		co_return Error::noMemory;
-	HEL_CHECK(error);
-
-	//std::cout << "posix: VM_MAP returns " << pointer
-	//		<< " (size: " << (void *)size << ")" << std::endl;
-
-	auto address = reinterpret_cast<uintptr_t>(pointer);
-
-	auto [startIt, endIt] = splitAreaOn_(address, alignedSize);
-
-	for (auto it = startIt; it != endIt;) {
-		auto &[addr, area] = *it;
-		if (addr >= address && (addr + area.areaSize) <= (address + alignedSize)) {
-			dropped.push_back(std::move(area.file));
-			it = _areaTree.erase(it);
-		} else {
-			++it;
-		}
-	}
-
-	// Construct the new area.
 	Area area;
 	area.copyOnWrite = copyOnWrite;
 	area.areaSize = alignedSize;
@@ -336,6 +295,44 @@ VmContext::mapFile(uintptr_t hint, helix::UniqueDescriptor memory,
 	area.file = std::move(file);
 	area.offset = offset;
 	area.effectiveOffset = copyOnWrite ? 0 : offset;
+	co_return co_await mapArea_(hint, std::move(area), dropped);
+}
+
+async::result<frg::expected<Error, void *>>
+VmContext::mapArea_(uintptr_t hint, Area area,
+		std::vector<smarter::shared_ptr<File, FileHandle>> &dropped) {
+	// Perform the actual mapping.
+	auto mapResult = co_await helix_ng::mapMemory(
+			area.copyOnWrite ? area.copyView : area.fileView, _space,
+			reinterpret_cast<void *>(hint),
+			area.effectiveOffset, area.areaSize, area.nativeFlags);
+	if(mapResult.error() == kHelErrAlreadyExists) {
+		dropped.push_back(std::move(area.file));
+		co_return Error::alreadyExists;
+	}else if(mapResult.error() == kHelErrNoMemory) {
+		dropped.push_back(std::move(area.file));
+		co_return Error::noMemory;
+	}
+	HEL_CHECK(mapResult.error());
+	auto pointer = mapResult.pointer();
+
+	//std::cout << "posix: VM_MAP returns " << pointer
+	//		<< " (size: " << (void *)size << ")" << std::endl;
+
+	auto address = reinterpret_cast<uintptr_t>(pointer);
+
+	auto [startIt, endIt] = splitAreaOn_(address, area.areaSize);
+
+	for (auto it = startIt; it != endIt;) {
+		auto &[addr, replaced] = *it;
+		if (addr >= address && (addr + replaced.areaSize) <= (address + area.areaSize)) {
+			dropped.push_back(std::move(replaced.file));
+			it = _areaTree.erase(it);
+		} else {
+			++it;
+		}
+	}
+
 	_areaTree.emplace(address, std::move(area));
 
 	co_return pointer;
