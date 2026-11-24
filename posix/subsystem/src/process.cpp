@@ -126,6 +126,14 @@ namespace {
 		HEL_CHECK(helExtendHierarchy(rootHierarchy(), &params, &child));
 		return helix::UniqueDescriptor{child};
 	}
+
+	// Closes a descriptor that posix attached to the universe of a process.
+	void closeClientDescriptor(helix::BorrowedDescriptor universe, HelHandle handle) {
+		// The process may have closed the descriptor itself; handles are not reused.
+		auto error = helCloseDescriptor(universe.getHandle(), handle);
+		if(error != kHelErrNoDescriptor)
+			HEL_CHECK(error);
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -721,7 +729,7 @@ Error FileContext::closeFile(int fd) {
 		return Error::noSuchFile;
 	}
 
-	HEL_CHECK(helCloseDescriptor(_universe.getHandle(), fileTableWindow()[fd]));
+	closeClientDescriptor(_universe, fileTableWindow()[fd]);
 
 	fileTableWindow()[fd] = 0;
 	closed = std::move(it->second);
@@ -735,7 +743,7 @@ void FileContext::closeOnExec() {
 	auto it = _fileTable.begin();
 	while(it != _fileTable.end()) {
 		if(it->second.closeOnExec) {
-			HEL_CHECK(helCloseDescriptor(_universe.getHandle(), fileTableWindow()[it->first]));
+			closeClientDescriptor(_universe, fileTableWindow()[it->first]);
 
 			fileTableWindow()[it->first] = 0;
 			closed.push_back(std::move(it->second));
