@@ -204,10 +204,7 @@ async::result<frg::expected<Error, ExecuteResult>>
 execute(ViewPath root, ViewPath workdir,
 		std::string path,
 		std::vector<std::string> args, std::vector<std::string> env,
-		std::shared_ptr<VmContext> vmContext, helix::BorrowedDescriptor universe,
-		HelHandle mbusHandle, Process *self) {
-	(void) mbusHandle;
-
+		std::shared_ptr<VmContext> vmContext, Process *self) {
 	auto execFile = FRG_CO_TRY(co_await open(root, workdir, path, self));
 	assert(execFile); // If open() succeeds, it must return a non-null file.
 
@@ -400,7 +397,8 @@ execute(ViewPath root, ViewPath workdir,
 	HEL_CHECK(store.error());
 
 	HelHandle thread;
-	HEL_CHECK(helCreateThread(vmContext->getHierarchy().getHandle(), universe.getHandle(),
+	HEL_CHECK(helCreateThread(vmContext->getHierarchy().getHandle(),
+			vmContext->getUniverse().getHandle(),
 			vmContext->getSpace().getHandle(),
 			(void *)ldsoInfo.entryIp, (char *)stackBase + d,
 			kHelThreadStopped, &thread));

@@ -17,7 +17,7 @@ void alertRemoteQueue(Process *self) {
 	HelHandle handle;
 	auto err = helTransferDescriptor(
 	    self->accessThreadPage()->queueHandle,
-	    self->fileContext()->getUniverse().getHandle(),
+	    self->vmContext()->getUniverse().getHandle(),
 	    kHelTransferDescriptorIn,
 		kHelRightSignal,
 		kHelRightSignal,
@@ -153,13 +153,14 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 			HEL_CHECK(helStoreRegisters(thread.getHandle(), kHelRegsGeneral, &gprs));
 			HEL_CHECK(helResume(thread.getHandle()));
 		}else if(observe.observation() == kHelObserveSuperCall + posix::superGetProcessData) {
+			auto vmContext = self->vmContext();
 			posix::ManagarmProcessData data = {
 				self->clientPosixLane(),
-				self->fileContext()->clientMbusLane(),
+				vmContext->clientMbusLane(),
 				self->clientThreadPage(),
 				static_cast<HelHandle *>(self->clientFileTable()),
 				self->clientClkTrackerPage(),
-				self->clientHierarchyHandle(),
+				vmContext->clientHierarchyHandle(),
 			};
 
 			if(logRequests)

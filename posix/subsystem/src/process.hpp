@@ -68,6 +68,18 @@ struct VmContext {
 		return _space;
 	}
 
+	helix::BorrowedDescriptor getUniverse() {
+		return _universe;
+	}
+
+	HelHandle clientMbusLane() {
+		return _clientMbusLane;
+	}
+
+	HelHandle clientHierarchyHandle() {
+		return _clientHierarchyHandle;
+	}
+
 	// TODO: Pass abstract instead of hel flags to this function?
 	async::result<frg::expected<Error, void *>> mapFile(uintptr_t hint, helix::UniqueDescriptor memory,
 			smarter::shared_ptr<File, FileHandle> file,
@@ -109,8 +121,15 @@ private:
 	async::result<frg::expected<Error, void *>> mapArea_(uintptr_t hint, Area area,
 			std::vector<smarter::shared_ptr<File, FileHandle>> &dropped);
 
+	// Creates the universe and attaches the descriptors that do not depend on the thread.
+	void createUniverse_();
+
 	helix::UniqueDescriptor _hierarchy;
 	helix::UniqueDescriptor _space;
+	// Handles are stored in memory, hence the universe is shared exactly like the address space.
+	helix::UniqueDescriptor _universe;
+	HelHandle _clientMbusLane = kHelNullHandle;
+	HelHandle _clientHierarchyHandle = kHelNullHandle;
 
 	// Held across the hel calls that change the address space,
 	// such that the area tree stays consistent with the address space.
@@ -251,10 +270,6 @@ public:
 
 	~FileContext();
 
-	helix::BorrowedDescriptor getUniverse() {
-		return _universe;
-	}
-
 	// Makes the files of the context available in an address space.
 	static async::result<std::shared_ptr<FileTableView>> createView(
 			std::shared_ptr<FileContext> context, std::shared_ptr<VmContext> vmContext);
@@ -273,10 +288,6 @@ public:
 
 	void closeOnExec();
 
-	HelHandle clientMbusLane() {
-		return _clientMbusLane;
-	}
-
 	// Returns a copy of the file table.
 	std::unordered_map<int, FileDescriptor> snapshotFileTable();
 
@@ -290,8 +301,6 @@ private:
 	// Sets the handle of a FD in all views; the handle is removed if file is null.
 	// Called with _mutex held.
 	void updateViews_(int fd, File *file);
-
-	helix::UniqueDescriptor _universe;
 
 	// Leaf lock; displaced files are dropped after releasing it since that can close them.
 	std::mutex _mutex;
@@ -308,8 +317,6 @@ private:
 	static_assert(maxFileDescriptors * sizeof(HelHandle) <= kHelPageSize);
 	// Protected by _mutex.
 	uint64_t fdLimit_ = maxFileDescriptors;
-
-	HelHandle _clientMbusLane;
 };
 
 struct UserSignal {
@@ -728,7 +735,6 @@ public:
 	posix::ThreadPage *clientThreadPage() { return _clientThreadPage; }
 	void *clientFileTable() { return _fileTableView->clientTable(); }
 	void *clientClkTrackerPage() { return _clientClkTrackerPage; }
-	HelHandle clientHierarchyHandle() { return _clientHierarchyHandle; }
 	void *clientAuxBegin() { return _clientAuxBegin; }
 	void *clientAuxEnd() { return _clientAuxEnd; }
 
@@ -881,7 +887,6 @@ private:
 	helix::Mapping _threadPageMapping;
 
 	HelHandle _clientPosixLane = kHelNullHandle;
-	HelHandle _clientHierarchyHandle = kHelNullHandle;
 	posix::ThreadPage *_clientThreadPage;
 	void *_clientClkTrackerPage;
 	// Pointers to the aux vector in the client.

@@ -154,6 +154,14 @@ namespace {
 // VmContext.
 // ----------------------------------------------------------------------------
 
+static HelHandle posixMbusClient = [] {
+	posix::ManagarmProcessData data;
+
+	HEL_CHECK(helSyscall1(kHelCallSuper + 1, reinterpret_cast<HelWord>(&data)));
+
+	return data.mbusLane;
+}();
+
 std::shared_ptr<VmContext> VmContext::create(helix::UniqueDescriptor hierarchy) {
 	auto context = std::make_shared<VmContext>();
 	context->_hierarchy = std::move(hierarchy);
@@ -162,7 +170,33 @@ std::shared_ptr<VmContext> VmContext::create(helix::UniqueDescriptor hierarchy) 
 	HEL_CHECK(helCreateSpace(&space));
 	context->_space = helix::UniqueDescriptor(space);
 
+	context->createUniverse_();
+
 	return context;
+}
+
+void VmContext::createUniverse_() {
+	HelHandle universe;
+	HEL_CHECK(helCreateUniverse(&universe));
+	_universe = helix::UniqueDescriptor(universe);
+
+	HEL_CHECK(helTransferDescriptor(
+	    posixMbusClient,
+		_universe.getHandle(),
+		kHelTransferDescriptorOut,
+		kHelRightInvoke,
+		kHelRightInvoke,
+		&_clientMbusLane
+	));
+
+	HEL_CHECK(helTransferDescriptor(
+		_hierarchy.getHandle(),
+		_universe.getHandle(),
+		kHelTransferDescriptorOut,
+		kHelRightDerive | kHelRightProvision,
+		kHelRightDerive | kHelRightProvision,
+		&_clientHierarchyHandle
+	));
 }
 
 async::result<std::shared_ptr<VmContext>> VmContext::clone(
@@ -174,6 +208,8 @@ async::result<std::shared_ptr<VmContext>> VmContext::clone(
 	HelHandle space;
 	HEL_CHECK(helCreateSpace(&space));
 	context->_space = helix::UniqueDescriptor(space);
+
+	context->createUniverse_();
 
 	// The forks borrow the copy views of the original areas.
 	co_await original->_mutex.async_lock_shared();
@@ -594,14 +630,6 @@ mode_t FsContext::setUmask(mode_t mask) {
 // FileContext.
 // ----------------------------------------------------------------------------
 
-static HelHandle posixMbusClient = [] {
-	posix::ManagarmProcessData data;
-
-	HEL_CHECK(helSyscall1(kHelCallSuper + 1, reinterpret_cast<HelWord>(&data)));
-
-	return data.mbusLane;
-}();
-
 FileTableView::FileTableView(std::shared_ptr<FileContext> fileContext,
 		std::shared_ptr<VmContext> vmContext)
 : fileContext_{std::move(fileContext)}, vmContext_{std::move(vmContext)} {
@@ -617,10 +645,13 @@ FileTableView::~FileTableView() {
 		std::erase(fileContext_->views_, this);
 	}
 
-	// Other users of the universe and of the address space may remain.
+	// If nobody else uses the address space, the handles and the table die together with it.
+	if(vmContext_.use_count() == 1)
+		return;
+
 	for(uint64_t fd = 0; fd < FileContext::maxFileDescriptors; fd++) {
 		if(table_()[fd])
-			closeClientDescriptor(fileContext_->_universe, table_()[fd]);
+			closeClientDescriptor(vmContext_->getUniverse(), table_()[fd]);
 	}
 	if(clientTable_) {
 		async::detach([] (std::shared_ptr<VmContext> vmContext, void *table) -> async::result<void> {
@@ -630,45 +661,17 @@ FileTableView::~FileTableView() {
 }
 
 std::shared_ptr<FileContext> FileContext::create() {
-	auto context = std::make_shared<FileContext>();
-
-	HelHandle universe;
-	HEL_CHECK(helCreateUniverse(&universe));
-	context->_universe = helix::UniqueDescriptor(universe);
-
-	HEL_CHECK(helTransferDescriptor(
-	    posixMbusClient,
-		context->_universe.getHandle(),
-		kHelTransferDescriptorOut,
-		kHelRightInvoke,
-		kHelRightInvoke,
-		&context->_clientMbusLane
-	));
-
-	return context;
+	return std::make_shared<FileContext>();
 }
 
 std::shared_ptr<FileContext> FileContext::clone(std::shared_ptr<FileContext> original) {
 	auto context = std::make_shared<FileContext>();
-
-	HelHandle universe;
-	HEL_CHECK(helCreateUniverse(&universe));
-	context->_universe = helix::UniqueDescriptor(universe);
 
 	auto fileTable = original->snapshotFileTable();
 	{
 		std::lock_guard lock{context->_mutex};
 		context->_fileTable = std::move(fileTable);
 	}
-
-	HEL_CHECK(helTransferDescriptor(
-	    posixMbusClient,
-		context->_universe.getHandle(),
-		kHelTransferDescriptorOut,
-		kHelRightInvoke,
-		kHelRightInvoke,
-		&context->_clientMbusLane
-	));
 
 	return context;
 }
@@ -681,7 +684,8 @@ async::result<std::shared_ptr<FileTableView>> FileContext::createView(
 
 	std::lock_guard lock{context->_mutex};
 	for(auto &[fd, descriptor] : context->_fileTable)
-		view->table_()[fd] = transferPassthroughLane(descriptor.file.get(), context->_universe);
+		view->table_()[fd] = transferPassthroughLane(descriptor.file.get(),
+				vmContext->getUniverse());
 	context->views_.push_back(view.get());
 	co_return view;
 }
@@ -693,13 +697,14 @@ FileContext::~FileContext() {
 
 void FileContext::updateViews_(int fd, File *file) {
 	for(auto view : views_) {
+		auto universe = view->vmContext_->getUniverse();
 		HelHandle handle = kHelNullHandle;
 		if(file)
-			handle = transferPassthroughLane(file, _universe);
+			handle = transferPassthroughLane(file, universe);
 		// The process never sees an empty entry when a file is replaced.
 		auto replaced = std::exchange(view->table_()[fd], handle);
 		if(replaced)
-			closeClientDescriptor(_universe, replaced);
+			closeClientDescriptor(universe, replaced);
 	}
 }
 
@@ -1685,22 +1690,13 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 	auto [server_lane, client_lane] = helix::createStream();
 	HEL_CHECK(helTransferDescriptor(
 	    client_lane.getHandle(),
-	    process->_fileContext->getUniverse().getHandle(),
+	    process->_vmContext->getUniverse().getHandle(),
 	    kHelTransferDescriptorOut,
 		kHelRightInvoke,
 		kHelRightInvoke,
 	    &process->_clientPosixLane
 	));
 	client_lane.release();
-
-	HEL_CHECK(helTransferDescriptor(
-		process->_vmContext->getHierarchy().getHandle(),
-		process->_fileContext->getUniverse().getHandle(),
-		kHelTransferDescriptorOut,
-		kHelRightDerive | kHelRightProvision,
-		kHelRightDerive | kHelRightProvision,
-		&process->_clientHierarchyHandle
-	));
 
 	process->_clientThreadPage = static_cast<posix::ThreadPage *>(
 			co_await process->_vmContext->mapSystemArea(process->_threadPageMemory,
@@ -1717,9 +1713,7 @@ async::result<std::shared_ptr<ThreadGroup>> Process::init(std::string path) {
 	auto execOutcome = co_await execute(process->_fsContext->getRoot(),
 			process->_fsContext->getWorkingDirectory(),
 			path, std::vector<std::string>{}, std::vector<std::string>{},
-			process->_vmContext,
-			process->_fileContext->getUniverse(),
-			process->_fileContext->clientMbusLane(), process.get());
+			process->_vmContext, process.get());
 	if(!execOutcome)
 		throw std::logic_error("Could not execute() init process");
 	auto &execResult = execOutcome.value();
@@ -1793,22 +1787,13 @@ Process::fork(std::shared_ptr<Process> original) {
 	auto [server_lane, client_lane] = helix::createStream();
 	HEL_CHECK(helTransferDescriptor(
 	    client_lane.getHandle(),
-	    process->_fileContext->getUniverse().getHandle(),
+	    process->_vmContext->getUniverse().getHandle(),
 	    kHelTransferDescriptorOut,
 		kHelRightInvoke,
 		kHelRightInvoke,
 	    &process->_clientPosixLane
 	));
 	client_lane.release();
-
-	HEL_CHECK(helTransferDescriptor(
-		process->_vmContext->getHierarchy().getHandle(),
-		process->_fileContext->getUniverse().getHandle(),
-		kHelTransferDescriptorOut,
-		kHelRightDerive | kHelRightProvision,
-		kHelRightDerive | kHelRightProvision,
-		&process->_clientHierarchyHandle
-	));
 
 	process->_clientThreadPage = static_cast<posix::ThreadPage *>(
 			co_await process->_vmContext->mapSystemArea(process->_threadPageMemory,
@@ -1825,7 +1810,7 @@ Process::fork(std::shared_ptr<Process> original) {
 
 	HelHandle new_thread;
 	HEL_CHECK(helCreateThread(process->vmContext()->getHierarchy().getHandle(),
-			process->fileContext()->getUniverse().getHandle(),
+			process->vmContext()->getUniverse().getHandle(),
 			process->vmContext()->getSpace().getHandle(),
 			nullptr, nullptr, kHelThreadStopped, &new_thread));
 	process->_threadDescriptor = helix::UniqueDescriptor{new_thread};
@@ -1934,28 +1919,13 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 	auto [server_lane, client_lane] = helix::createStream();
 	HEL_CHECK(helTransferDescriptor(
 	    client_lane.getHandle(),
-	    process->_fileContext->getUniverse().getHandle(),
+	    process->_vmContext->getUniverse().getHandle(),
 	    kHelTransferDescriptorOut,
 		kHelRightInvoke,
 		kHelRightInvoke,
 	    &process->_clientPosixLane
 	));
 	client_lane.release();
-
-	// The hierarchy is owned by the VmContext but the universe is owned by the FileContext.
-	// Share the hierarchy handle only if both contexts are shared.
-	if ((args->flags & CLONE_VM) && (args->flags & CLONE_FILES)) {
-		process->_clientHierarchyHandle = original->_clientHierarchyHandle;
-	} else {
-		HEL_CHECK(helTransferDescriptor(
-			process->_vmContext->getHierarchy().getHandle(),
-			process->_fileContext->getUniverse().getHandle(),
-			kHelTransferDescriptorOut,
-			kHelRightDerive | kHelRightProvision,
-			kHelRightDerive | kHelRightProvision,
-			&process->_clientHierarchyHandle
-		));
-	}
 
 	process->_clientThreadPage = static_cast<posix::ThreadPage *>(
 			co_await process->_vmContext->mapSystemArea(process->_threadPageMemory,
@@ -1984,7 +1954,7 @@ Process::clone(std::shared_ptr<Process> original, void *ip, void *sp, posix::sup
 
 	HelHandle new_thread;
 	HEL_CHECK(helCreateThread(process->vmContext()->getHierarchy().getHandle(),
-			process->fileContext()->getUniverse().getHandle(),
+			process->vmContext()->getUniverse().getHandle(),
 			process->vmContext()->getSpace().getHandle(),
 			ip, sp, kHelThreadStopped, &new_thread));
 	process->_threadDescriptor = helix::UniqueDescriptor{new_thread};
@@ -2026,32 +1996,20 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 	// can catch errors before trashing the calling process.
 	auto execResult = FRG_CO_TRY(co_await execute(process->_fsContext->getRoot(),
 			process->_fsContext->getWorkingDirectory(),
-			path, std::move(args), std::move(env), exec_vm_context,
-			process->_fileContext->getUniverse(),
-			process->_fileContext->clientMbusLane(), process.get()));
+			path, std::move(args), std::move(env), exec_vm_context, process.get()));
 
 	// Allocate resources.
 	HelHandle exec_posix_lane;
 	auto [server_lane, client_lane] = helix::createStream();
 	HEL_CHECK(helTransferDescriptor(
 	    client_lane.getHandle(),
-	    process->_fileContext->getUniverse().getHandle(),
+	    exec_vm_context->getUniverse().getHandle(),
 	    kHelTransferDescriptorOut,
 		kHelRightInvoke,
 		kHelRightInvoke,
 	    &exec_posix_lane
 	));
 	client_lane.release();
-
-	HelHandle exec_client_hierarchy;
-	HEL_CHECK(helTransferDescriptor(
-		exec_vm_context->getHierarchy().getHandle(),
-		process->_fileContext->getUniverse().getHandle(),
-		kHelTransferDescriptorOut,
-		kHelRightDerive | kHelRightProvision,
-		kHelRightDerive | kHelRightProvision,
-		&exec_client_hierarchy
-	));
 
 	posix::ThreadPage *exec_thread_page;
 	void *exec_clk_tracker_page;
@@ -2103,7 +2061,8 @@ async::result<Error> Process::exec(std::shared_ptr<Process> process,
 
 	process->_clientThreadPage = exec_thread_page;
 	process->_clientPosixLane = exec_posix_lane;
-	process->_clientHierarchyHandle = exec_client_hierarchy;
+	// The queue handle of the previous image is meaningless in the new universe.
+	process->accessThreadPage()->queueHandle = kHelNullHandle;
 	process->_clientClkTrackerPage = exec_clk_tracker_page;
 	process->_clientAuxBegin = execResult.auxBegin;
 	process->_clientAuxEnd = execResult.auxEnd;
