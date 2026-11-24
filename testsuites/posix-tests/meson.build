@@ -35,4 +35,12 @@ src = [
 	'src/uid-gid.cpp',
 ]
 
-executable('posix-tests', src, dependencies: [cli11_dep, frigg], install : true)
+deps = [cli11_dep, frigg]
+
+# These tests inspect hel handles.
+if host_machine.system() == 'managarm'
+	src += 'src/client-handles.cpp'
+	deps += [hel_dep, posix_extra_dep]
+endif
+
+executable('posix-tests', src, dependencies: deps, install : true)
