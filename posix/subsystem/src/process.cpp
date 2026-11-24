@@ -647,8 +647,10 @@ std::expected<int, Error> FileContext::attachFile(smarter::shared_ptr<File, File
 		if(_fileTable.find(fd) != _fileTable.end())
 			continue;
 
-		if (static_cast<uint64_t>(fd) >= fdLimit_)
+		if (static_cast<uint64_t>(fd) >= fdLimit_) {
+			closeClientDescriptor(_universe, handle);
 			return std::unexpected{Error::noFileDescriptorsAvailable};
+		}
 
 		if(logFileAttach)
 			std::cout << "posix: Attaching FD " << fd << std::endl;
@@ -688,7 +690,10 @@ std::expected<void, Error> FileContext::attachFile(int fd, smarter::shared_ptr<F
 	}else{
 		_fileTable.insert({fd, {std::move(file), close_on_exec}});
 	}
-	fileTableWindow()[fd] = handle;
+	// The process never sees an empty entry when a file is replaced.
+	auto replaced = std::exchange(fileTableWindow()[fd], handle);
+	if(replaced)
+		closeClientDescriptor(_universe, replaced);
 
 	return {};
 }
