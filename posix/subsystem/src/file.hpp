@@ -737,6 +737,17 @@ public:
 		co_return protocols::fs::Error::badFileDescriptor;
 	}
 
+	async::result<protocols::fs::RecvResult>
+	recvMsg(Process *, uint32_t, void *, size_t, void *, size_t, size_t) override {
+		co_return protocols::fs::Error::badFileDescriptor;
+	}
+
+	async::result<frg::expected<protocols::fs::Error, size_t>>
+	sendMsg(Process *, uint32_t, const void *, size_t, const void *, size_t,
+			std::vector<smarter::shared_ptr<File, FileHandle>>, struct ucred) override {
+		co_return protocols::fs::Error::badFileDescriptor;
+	}
+
 	helix::BorrowedDescriptor getPassthroughLane() override {
 		return _passthrough;
 	}
