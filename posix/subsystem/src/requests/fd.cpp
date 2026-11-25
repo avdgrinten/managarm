@@ -468,7 +468,7 @@ HandleRequest::operator()(managarm::posix::EpollCtlRequest &&req,
 		);
 	} else if (req.op() == managarm::posix::EpollCtlOp::EPOLL_DELETE) {
 		resp.set_error(
-		    epoll::deleteItem(epfile.get(), file.get(), req.newfd(), req.flags())
+		    epoll::deleteItem(epfile.get(), file.get(), req.newfd())
 		    | toPosixProtoError
 		);
 	} else {
