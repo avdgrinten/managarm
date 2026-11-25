@@ -221,12 +221,6 @@ File::ptSendMsg(void *object, helix_ng::CredentialsView creds, uint32_t flags,
 		co_return Error::badProcessCredentials | protocols::fs::toFsProtoError;
 	}
 
-	if(flags & ~(MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_NOSIGNAL)) {
-		std::cout << "\e[31mposix: Unknown SENDMSG flags: 0x" << std::hex << flags
-			<< std::dec << "\e[39m" << std::endl;
-		assert(!"Flags not implemented");
-	}
-
 	std::vector<smarter::shared_ptr<File, FileHandle>> files;
 	{
 		// The sending thread may have exited; do not keep its files open across sendMsg().

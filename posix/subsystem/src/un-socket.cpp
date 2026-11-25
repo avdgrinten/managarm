@@ -332,6 +332,12 @@ public:
 			std::lock_guard lock{unSocketMutex};
 			if(socktype_ == SOCK_STREAM && _currentState != State::connected && _currentState != State::remoteShutDown)
 				co_return protocols::fs::Error::notConnected;
+			if(flags & MSG_OOB) {
+				if(socktype_ == SOCK_SEQPACKET && _currentState != State::connected
+						&& _currentState != State::remoteShutDown)
+					co_return protocols::fs::Error::notConnected;
+				co_return protocols::fs::Error::notSupported;
+			}
 			timeout = receiveTimeout_;
 		}
 
@@ -484,7 +490,18 @@ public:
 	sendMsg(Process *process, uint32_t flags, const void *data, size_t max_length,
 			const void *addr_ptr, size_t addr_length,
 			std::vector<smarter::shared_ptr<File, FileHandle>> files, struct ucred ucreds) override {
-		assert(!(flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL)));
+		if(flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL | MSG_OOB)) {
+			std::cout << "posix: Unimplemented sendMsg() flag in un-socket " << std::hex << flags << std::dec << " for pid: " << process->pid() << std::endl;
+		}
+
+		// Like Linux built without CONFIG_AF_UNIX_OOB.
+		if(flags & MSG_OOB) {
+			std::lock_guard lock{unSocketMutex};
+			if(socktype_ == SOCK_SEQPACKET && _currentState != State::connected
+					&& _currentState != State::remoteShutDown)
+				co_return protocols::fs::Error::notConnected;
+			co_return protocols::fs::Error::notSupported;
+		}
 
 		bool shutDown;
 		{

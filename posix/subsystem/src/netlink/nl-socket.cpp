@@ -188,6 +188,8 @@ OpenFile::recvMsg(Process *, uint32_t flags, void *data, size_t max_length,
 	using namespace protocols::fs;
 	if(logSockets)
 		std::cout << "posix: Recv from socket \e[1;34m" << structName() << "\e[0m" << std::endl;
+	if(flags & MSG_OOB)
+		co_return RecvResult { protocols::fs::Error::notSupported };
 	if(flags & ~(MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_PEEK | MSG_TRUNC)) {
 		std::cout << std::format("posix: Unsupported flags 0x{:x} in recvMsg", flags) << std::endl;
 	}
@@ -273,7 +275,12 @@ OpenFile::sendMsg(Process *process, uint32_t flags, const void *data, size_t max
 		std::vector<smarter::shared_ptr<File, FileHandle>> files, struct ucred) {
 	if(logSockets)
 		std::cout << "posix: Send to socket \e[1;34m" << structName() << "\e[0m" << std::endl;
-	assert(!flags);
+	if(flags & MSG_OOB)
+		co_return protocols::fs::Error::notSupported;
+	// sendMsg() never blocks and never raises SIGPIPE.
+	if(flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL)) {
+		std::cout << std::format("posix: Unsupported flags 0x{:x} in sendMsg", flags) << std::endl;
+	}
 	// Like Linux' __scm_send(), only unix sockets accept SCM_RIGHTS.
 	if(!files.empty())
 		co_return protocols::fs::Error::illegalArguments;
