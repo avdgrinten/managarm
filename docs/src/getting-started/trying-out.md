@@ -6,13 +6,15 @@ OS yourself.
 
 ## Nightly builds
 
-The latest nightly build can be downloaded [here](https://builds.managarm.org/projects/managarm/success/repo/files/x86_64/image.xz).
+The latest nightly build can be downloaded [here](https://repos.managarm.org/images/image-nightly-x86_64.zst).
+Images for other architectures, as well as stable images, are available at [https://repos.managarm.org/images/](https://repos.managarm.org/images/).
+These images are generated daily from the packages built by our build server.
 
 Our build server, named `xbbs`, the xbstrap build server, which builds all of our packages automatically can be viewed at [https://builds.managarm.org](https://builds.managarm.org).
 
 ### Running the nightly builds manually
 
-Before running the downloaded nightly build you have to **uncompress** it.
+Before running the downloaded nightly build you have to **uncompress** it, for example using `zstd -d image-nightly-x86_64.zst -o image`.
 
 To run the nightly builds we recommend using [QEMU](https://www.qemu.org/) with the following options:
 

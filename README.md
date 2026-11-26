@@ -41,8 +41,9 @@ managarm does not share any source code (or binaries) with the Linux kernel.
 ## Trying out managarm
 
 If you want to try out managarm without building the whole OS, you can download a
-xz-compressed [nightly image](https://builds.managarm.org/projects/managarm/success/repo/files/x86_64/image.zst);
-these images are automatically compiled on [our build server](https://builds.managarm.org)
+zstd-compressed [nightly image](https://repos.managarm.org/images/image-nightly-x86_64.zst)
+(or the [stable image](https://repos.managarm.org/images/image-stable-x86_64.zst));
+these images are generated daily from the packages built by [our build server](https://builds.managarm.org)
 and reflect the current state of Managarm development.
 To run the (uncompressed) image using qemu, we recommend the following flags:
 
