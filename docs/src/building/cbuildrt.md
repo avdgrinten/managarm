@@ -7,8 +7,7 @@ This guide shows how to build a managarm distribution from source utilising the 
 ### Build environment
 To make sure that all build environments work properly, it is recommended to
 setup a build environment with our lightweight containerized build runtime [cbuildrt](https://github.com/managarm/cbuildrt) (see below for instructions).
-It is also possible to build with [Docker](https://www.docker.com/) 
-(see [here](with-docker.md)), or by installing the dependencies manually (see [here](without-containers.md)), but these methods are no longer recommended.
+It is also possible to build by installing the dependencies manually (see [here](without-containers.md)), but this method is no longer recommended.
 
 Make sure that you have at least 20 - 30 GiB of free disk space.
 

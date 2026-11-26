@@ -9,7 +9,6 @@
 
 - [Building](building/index.md)
 	- [With `cbuildrt` (recommended)](building/cbuildrt.md)
-	- [With Docker](building/with-docker.md)
 	- [Without Containers](building/without-containers.md)
 	- [Updating Packages](building/updating.md)
 

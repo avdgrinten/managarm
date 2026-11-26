@@ -36,7 +36,6 @@ For [bootstrap-managarm](https://github.com/managarm/bootstrap-managarm), the co
 - `<port name>`, when making changes to a port, we use the name of the port as a module specifier.
 - `host-<tool name>`, when making changes to host tools used during the build.
 - `<gentoo package category>`, where the category is something like `sys-apps` (see [here](https://packages.gentoo.org/categories) for more examples). This is only used when moving ports around.
-- `docker`, used when updating the `Dockerfile`.
 - `meta`, used for meta changes, for example a readme update.
 - `ci`, when making changes to the ci scripts that reside in this repo.
 - `.github`, used when modifying files found in the `.github` directory.
