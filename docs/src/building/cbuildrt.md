@@ -40,11 +40,6 @@ source and build directories. Here we use `~/managarm`, but it can be any direct
 
     `cbuildrt` runs builds in a user namespace, which requires a range of subordinate user and group IDs for your user and the `newuidmap` and `newgidmap` programs (in the `uidmap` package on Debian and Ubuntu). Most distributions set up subordinate IDs when a user is created; if they are missing they can be added via `usermod`.
 
-1.  Download and unpack the latest Managarm `rootfs` somewhere:
-    ```bash
-    curl https://repos.managarm.org/buildenv/managarm-buildenv.tar.gz -o managarm-rootfs.tar.gz
-    tar xvf managarm-rootfs.tar.gz
-    ```
 1.  **Inside the `build` directory**, create a file named `bootstrap-site.yml` with the following contents:
     ```yml
     auto_pull: true
@@ -54,7 +49,6 @@ source and build directories. Here we use `~/managarm`, but it can be any direct
 
     container:
       runtime: cbuildrt
-      rootfs:  /path/to/your/rootfs
       uid: 1000
       gid: 1000
       src_mount: /var/lib/managarm-buildenv/src
@@ -62,7 +56,6 @@ source and build directories. Here we use `~/managarm`, but it can be any direct
       allow_containerless: true
     ```
     > Note: you must keep the `src_mount` and `build_mount` values as shown above if you want to be able to use pre-built tools from our build server. These paths refer to locations on the *container*, not on your host machine. Also note that these paths cannot be changed after starting the build; doing so will likely result in a broken directory tree.
-1.  In the `build/bootstrap-site.yml` file you just created, replace the `container.rootfs` key with the path to your `rootfs`.
 1.  If you want this build directory to be used for building for an architecture other than the default (x86_64), you can define the `arch` and `arch-triple` options. For instance, if you want to build for `riscv64`:
     ```yml
     define_options:
