@@ -13,6 +13,7 @@ jobs:
             bootstrap-commit: ${{ steps.head.outputs.bootstrap-commit }}
             mlibc-commit: ${{ steps.head.outputs.mlibc-commit }}
             caching-key: ${{ steps.head.outputs.caching-key }}
+            rootfs-key: ${{ steps.rootfs.outputs.rootfs-key }}
             corresponding-bootstrap: ${{ steps.bootstrap-check.outputs.corresponding-bootstrap }}
         steps:
           - id: head
@@ -27,19 +28,6 @@ jobs:
                 echo "git ls-remote on mlibc: $mlibc_head"
                 echo "mlibc-commit=$mlibc_head" > "$GITHUB_OUTPUT"
                 echo "caching-key=$head-$mlibc_head" > "$GITHUB_OUTPUT"
-          - id: cache-rootfs
-            name: Cache rootfs
-            uses: actions/cache@v5
-            with:
-                key: "rootfs-${{ steps.head.outputs.caching-key }}"
-                # Note: must be kept in sync with the restore action (effectively part of the key).
-                path: rootfs/
-          - name: Download rootfs
-            if: steps.cache-rootfs.outputs.cache-hit != 'true'
-            run: |
-                set -x
-                curl -o rootfs.tar.gz https://repos.managarm.org/buildenv/managarm-buildenv.tar.gz
-                tar -xzf rootfs.tar.gz
           - id: bootstrap-check
             name: Check for corresponding bootstrap-managarm PR
             env:
@@ -51,6 +39,45 @@ jobs:
                 pr_ref="refs/pull/$pr_num/head"
               fi
               echo "corresponding-bootstrap=${pr_ref}" > "$GITHUB_OUTPUT"
+          - name: Install prerequisites
+            run: |
+                set -x
+                pip3 install xbstrap y4
+          - name: Checkout bootstrap-managarm
+            uses: actions/checkout@v6
+            with:
+                repository: managarm/bootstrap-managarm
+                ref: ${{ steps.bootstrap-check.outputs.corresponding-bootstrap }}
+                path: src/
+          - name: Checkout Managarm
+            uses: actions/checkout@v6
+            with:
+                path: src/managarm/
+          - id: rootfs
+            name: Determine rootfs versions
+            run: |
+                set -x
+                mkdir build/
+                cp src/managarm/ci/bootstrap-site-x86_64.yml build/bootstrap-site.yml
+                cd build/
+                xbstrap init ../src
+                rootfses="$(xbstrap list-rootfses)"
+                echo "rootfs-key=$(tr ' ' '-' <<< "$rootfses" | paste -sd+)" > "$GITHUB_OUTPUT"
+          - id: cache-rootfs
+            name: Cache rootfses
+            uses: actions/cache@v5
+            with:
+                key: "rootfs-${{ steps.rootfs.outputs.rootfs-key }}"
+                # Note: must be kept in sync with the restore action (effectively part of the key).
+                path: |
+                    ~/.xbstrap/rootfs_cache/
+                    build/rootfses/
+          - name: Pull rootfses
+            if: steps.cache-rootfs.outputs.cache-hit != 'true'
+            run: |
+                set -x
+                xbstrap pull-rootfs --all
+            working-directory: build/
 
     cache-arch:
         strategy:
@@ -131,9 +158,11 @@ jobs:
           - name: Restore rootfs cache
             uses: actions/cache/restore@v5
             with:
-                key: "rootfs-${{ needs.cache-generic.outputs.caching-key }}"
+                key: "rootfs-${{ needs.cache-generic.outputs.rootfs-key }}"
                 # Note: must be kept in sync with the cache action (effectively part of the key).
-                path: rootfs/
+                path: |
+                    ~/.xbstrap/rootfs_cache/
+                    build/rootfses/
                 fail-on-cache-miss: true
           - name: Restore xbps cache
             uses: actions/cache/restore@v5
@@ -228,9 +257,11 @@ jobs:
           - name: Restore rootfs cache
             uses: actions/cache/restore@v5
             with:
-                key: "rootfs-${{ needs.cache-generic.outputs.caching-key }}"
+                key: "rootfs-${{ needs.cache-generic.outputs.rootfs-key }}"
                 # Note: must be kept in sync with the cache action (effectively part of the key).
-                path: rootfs/
+                path: |
+                    ~/.xbstrap/rootfs_cache/
+                    build/rootfses/
                 fail-on-cache-miss: true
           - name: Restore xbps cache
             uses: actions/cache/restore@v5
@@ -298,9 +329,11 @@ jobs:
           - name: Restore rootfs cache
             uses: actions/cache/restore@v5
             with:
-                key: "rootfs-${{ needs.cache-generic.outputs.caching-key }}"
+                key: "rootfs-${{ needs.cache-generic.outputs.rootfs-key }}"
                 # Note: must be kept in sync with the cache action (effectively part of the key).
-                path: rootfs/
+                path: |
+                    ~/.xbstrap/rootfs_cache/
+                    build/rootfses/
                 fail-on-cache-miss: true
           - name: Checkout bootstrap-managarm
             uses: actions/checkout@v6
@@ -317,7 +350,6 @@ jobs:
             run: |
                 set -x
                 touch src/managarm/checkedout.xbstrap
-                mkdir build/
                 cp src/managarm/ci/bootstrap-site-x86_64.yml build/bootstrap-site.yml
           - name: Build host-managarm-tools
             run: |
@@ -370,9 +402,11 @@ jobs:
           - name: Restore rootfs cache
             uses: actions/cache/restore@v5
             with:
-                key: "rootfs-${{ needs.cache-generic.outputs.caching-key }}"
+                key: "rootfs-${{ needs.cache-generic.outputs.rootfs-key }}"
                 # Note: must be kept in sync with the cache action (effectively part of the key).
-                path: rootfs/
+                path: |
+                    ~/.xbstrap/rootfs_cache/
+                    build/rootfses/
                 fail-on-cache-miss: true
           - name: Restore xbps cache
             uses: actions/cache/restore@v5
