@@ -332,18 +332,12 @@ async::result<frg::expected<protocols::fs::Error, void>> PathResolver::resolve(R
 				auto result = co_await _currentPath.second->getTarget()->traverseLinks(_currentPath.second.get(), _components);
 
 				if (!result) {
-					assert(result.error() == Error::illegalOperationTarget
-							|| result.error() == Error::noSuchFile
-							|| result.error() == Error::notDirectory);
 					_currentPath = ViewPath{_currentPath.first, nullptr};
 					if(result.error() == Error::illegalOperationTarget) {
 						std::cout << "\e[33mposix: Illegal operation target in PathResolver::resolve\e[39m" << std::endl;
 						co_return protocols::fs::Error::fileNotFound;
-					} else if(result.error() == Error::noSuchFile) {
-						co_return protocols::fs::Error::fileNotFound;
-					} else if(result.error() == Error::notDirectory) {
-						co_return protocols::fs::Error::notDirectory;
 					}
+					co_return result.error() | protocols::fs::toFsProtoError;
 				}
 
 				auto [child, nLinks] = result.value();
@@ -408,18 +402,12 @@ async::result<frg::expected<protocols::fs::Error, void>> PathResolver::resolve(R
 			} else {
 				auto childResult = co_await _currentPath.second->getTarget()->getLink(_currentPath.second.get(), std::move(name));
 				if(!childResult) {
-					assert(childResult.error() == Error::notDirectory
-							|| childResult.error() == Error::illegalOperationTarget
-							|| childResult.error() == Error::noSuchFile);
 					_currentPath = ViewPath{_currentPath.first, nullptr};
-					if(childResult.error() == Error::notDirectory) {
-						co_return protocols::fs::Error::notDirectory;
-					} else if(childResult.error() == Error::illegalOperationTarget) {
+					if(childResult.error() == Error::illegalOperationTarget) {
 						std::cout << "\e[33mposix: Illegal operation target in PathResolver::resolve\e[39m" << std::endl;
 						co_return protocols::fs::Error::fileNotFound;
-					} else if(childResult.error() == Error::noSuchFile) {
-						co_return protocols::fs::Error::fileNotFound;
 					}
+					co_return childResult.error() | protocols::fs::toFsProtoError;
 				}
 				auto child = childResult.value();
 
@@ -553,15 +541,8 @@ async::result<frg::expected<protocols::fs::Error, ViewPath>> resolve(ViewPath ro
 	PathResolver resolver;
 	resolver.setup(std::move(root), std::move(workdir), std::move(name), process);
 	auto result = co_await resolver.resolve(flags);
-	if (!result) {
-		assert(result.error() == protocols::fs::Error::fileNotFound
-				|| result.error() == protocols::fs::Error::notDirectory);
-		if(result.error() == protocols::fs::Error::fileNotFound) {
-			co_return protocols::fs::Error::fileNotFound;
-		} else if(result.error() == protocols::fs::Error::notDirectory) {
-			co_return protocols::fs::Error::notDirectory;
-		}
-	}
+	if (!result)
+		co_return result.error();
 	co_return ViewPath(resolver.currentView(), resolver.currentLink());
 }
 
@@ -570,15 +551,8 @@ async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>> open(
 		SemanticFlags semantic_flags) {
 	auto resolveResult = co_await resolve(std::move(root), std::move(workdir),
 			std::move(name), process, resolve_flags);
-	if (!resolveResult) {
-		assert(resolveResult.error() == protocols::fs::Error::fileNotFound
-				|| resolveResult.error() == protocols::fs::Error::notDirectory);
-		if(resolveResult.error() == protocols::fs::Error::fileNotFound) {
-			co_return Error::noSuchFile;
-		} else if(resolveResult.error() == protocols::fs::Error::notDirectory) {
-			co_return Error::notDirectory;
-		}
-	}
+	if (!resolveResult)
+		co_return resolveResult.error() | toPosixError;
 	ViewPath current = resolveResult.value();
 
 	auto file = co_await current.second->getTarget()->open(process, current.first, current.second,
