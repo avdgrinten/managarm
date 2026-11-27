@@ -227,7 +227,8 @@ File::ptSendMsg(void *object, helix_ng::CredentialsView creds, uint32_t flags,
 
 		for(auto fd : fds) {
 			auto file = fileContext->getFile(fd);
-			assert(file && "Illegal FD for SENDMSG cmsg");
+			if(!file)
+				co_return protocols::fs::Error::badFileDescriptor;
 			files.push_back(std::move(file));
 		}
 	}
