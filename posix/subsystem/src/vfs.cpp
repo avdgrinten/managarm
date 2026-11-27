@@ -371,12 +371,15 @@ async::result<frg::expected<protocols::fs::Error, void>> PathResolver::resolve(R
 						&& !(_components.empty() && (flags & resolveDontFollow))) {
 					auto symlinkResult = co_await next.second->getTarget()->readSymlink(next.second.get(), _process);
 					if(auto error = std::get_if<Error>(&symlinkResult); error) {
-						assert(*error == Error::illegalOperationTarget);
 						_currentPath = ViewPath{_currentPath.first, nullptr};
 						if(*error == Error::illegalOperationTarget) {
 							std::cout << "\e[33mposix: Illegal operation target in PathResolver::resolve\e[39m" << std::endl;
 							co_return protocols::fs::Error::fileNotFound;
 						}
+						// Like Linux, links of processes that are gone resolve to ENOENT.
+						if(*error == Error::noSuchProcess)
+							co_return protocols::fs::Error::fileNotFound;
+						co_return *error | protocols::fs::toFsProtoError;
 					}
 					auto link = Path::decompose(std::get<std::string>(symlinkResult));
 
@@ -431,12 +434,15 @@ async::result<frg::expected<protocols::fs::Error, void>> PathResolver::resolve(R
 						&& !(_components.empty() && (flags & resolveDontFollow))) {
 					auto symlinkResult = co_await next.second->getTarget()->readSymlink(next.second.get(), _process);
 					if(auto error = std::get_if<Error>(&symlinkResult); error) {
-						assert(*error == Error::illegalOperationTarget);
 						_currentPath = ViewPath{_currentPath.first, nullptr};
 						if(*error == Error::illegalOperationTarget) {
 							std::cout << "\e[33mposix: Illegal operation target in PathResolver::resolve\e[39m" << std::endl;
 							co_return protocols::fs::Error::fileNotFound;
 						}
+						// Like Linux, links of processes that are gone resolve to ENOENT.
+						if(*error == Error::noSuchProcess)
+							co_return protocols::fs::Error::fileNotFound;
+						co_return *error | protocols::fs::toFsProtoError;
 					}
 					auto link = Path::decompose(std::get<std::string>(symlinkResult));
 
