@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <helix/ipc.hpp>
 #include "file.hpp"
+#include "fs.hpp"
 #include "process.hpp"
 
 namespace {
@@ -563,3 +564,7 @@ async::result<protocols::fs::Error> FileWithDefaults::flock(int flags) {
 	assert(node);
 	return node->flockManager.lock(&flock_, flags);
 }
+
+PassthroughFile::PassthroughFile(helix::UniqueLane lane)
+: File{FileKind::unknown, StructName::get("passthrough"), nullptr,
+		SpecialLink::makeSpecialLink(VfsType::regular, 0777)}, _file{std::move(lane)} { }

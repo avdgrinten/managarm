@@ -751,8 +751,7 @@ private:
 };
 
 struct PassthroughFile : File {
-	PassthroughFile(helix::UniqueLane lane)
-	: File{FileKind::unknown, StructName::get("passthrough")}, _file{std::move(lane)} { }
+	PassthroughFile(helix::UniqueLane lane);
 
 
 	FutureMaybe<helix::UniqueDescriptor> accessMemory() override {
