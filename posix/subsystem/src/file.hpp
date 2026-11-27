@@ -476,8 +476,6 @@ public:
 
 	static async::result<protocols::fs::Error> ptShutdown(void *obj, int how);
 
-	static async::result<helix::BorrowedDescriptor> ptAccessMemory(void *object);
-
 	static async::result<protocols::fs::Error> ptFlock(void *object, int flags);
 
 	static constexpr auto fileOperations = protocols::fs::FileOperations{
@@ -489,7 +487,6 @@ public:
 		.write = &ptWrite,
 		.pwrite = &ptPwrite,
 		.readEntries = &ptReadEntries,
-		.accessMemory = &ptAccessMemory,
 		.truncate = &ptTruncate,
 		.fallocate = &ptAllocate,
 		.ioctl = &ptIoctl,

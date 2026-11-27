@@ -243,12 +243,6 @@ File::ptSendMsg(void *object, helix_ng::CredentialsView creds, uint32_t flags,
 			std::move(files), ucreds);
 }
 
-async::result<helix::BorrowedDescriptor>
-File::ptAccessMemory(void *object) {
-	auto self = static_cast<File *>(object);
-	co_return co_await self->accessMemory();
-}
-
 async::result<frg::expected<protocols::fs::Error>> File::ptSetSocketOption(void *object,
 		int layer, int number, std::vector<char> optbuf) {
 	auto self = static_cast<File *>(object);
