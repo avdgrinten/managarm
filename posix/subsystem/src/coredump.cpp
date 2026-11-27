@@ -57,7 +57,7 @@ size_t ntFileSize(Process *p, const std::vector<VmContext::AreaSnapshot> &areas,
 			continue;
 		noteSize += 3 * sizeof(long);
 		auto file = area.backingFile();
-		if(file->associatedMount() && file->associatedLink()) {
+		if(file->associatedMount()) {
 			ViewPath path{file->associatedMount(), file->associatedLink()};
 			noteFiles.push_back(path.getPath(p->fsContext()->getRoot()));
 		}else{

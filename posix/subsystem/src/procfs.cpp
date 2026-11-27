@@ -733,7 +733,7 @@ async::result<std::expected<std::string, Error>> MapNode::show(Process *) {
 		stream << (area.isPrivate() ? "p" : "-");
 		stream << " ";
 		auto backingFile = area.backingFile();
-		if(backingFile && backingFile->associatedLink() && backingFile->associatedMount()) {
+		if(backingFile && backingFile->associatedMount()) {
 			stream << std::setfill('0') << std::setw(8) << area.backingFileOffset();
 			stream << " ";
 			auto fsNode = backingFile->associatedLink()->getTarget();

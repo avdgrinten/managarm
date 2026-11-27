@@ -301,10 +301,6 @@ execute(ViewPath root, ViewPath workdir,
 	auto ldsoInfo = FRG_CO_TRY(co_await loadElfImage(ldsoFile, vmContext.get(), ldsoBaseAddress));
 
 	auto link = execFile->associatedLink();
-	if(!link) {
-		co_return Error::badExecutable;
-	}
-
 	auto stats = FRG_CO_TRY(co_await link->getTarget()->getStats());
 	bool hasSetuid = stats.mode & S_ISUID;
 	bool hasSetgid = stats.mode & S_ISGID;

@@ -867,13 +867,6 @@ HandleRequest::operator()(managarm::posix::FstatAtRequest &&req,
 		target_link = resolver.currentLink();
 	}
 
-	// This catches cases where associatedLink is called on a file, but the file doesn't implement that.
-	// Instead of blowing up, return ENOENT.
-	if(!target_link) {
-		co_await sendErrorResponse<managarm::posix::FstatAtResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-		co_return {};
-	}
-
 	auto statsResult = co_await target_link->getTarget()->getStats();
 	managarm::posix::FstatAtResponse resp;
 
@@ -978,14 +971,6 @@ HandleRequest::operator()(managarm::posix::FstatfsRequest &&req,
 		}
 
 		targetLink = file->associatedLink();
-
-		// This catches cases where associatedLink is called on a file, but the file doesn't implement that.
-		// Instead of blowing up, return ENOENT.
-		// TODO: fstatfs can't return ENOENT, verify this is needed
-		if(!targetLink) {
-			co_await sendErrorResponse<managarm::posix::FstatfsResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-			co_return {};
-		}
 	} else {
 		PathResolver resolver;
 		resolver.setup(self->fsContext()->getRoot(), self->fsContext()->getWorkingDirectory(),
@@ -1064,7 +1049,7 @@ HandleRequest::operator()(managarm::posix::SynchronizeRequest &&req,
 			result = co_await file->synchronize(flags);
 		} else {
 			auto link = file->associatedLink();
-			if(!link || !link->getTarget()) {
+			if(!link->getTarget()) {
 				co_await sendErrorResponse<managarm::posix::SynchronizeResponse>(
 					conversation, managarm::posix::Errors::ILLEGAL_OPERATION_TARGET);
 				co_return {};

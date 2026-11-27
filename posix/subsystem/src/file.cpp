@@ -559,7 +559,6 @@ async::result<Error> File::synchronize(protocols::fs::SynchronizeFlags) {
 }
 
 async::result<protocols::fs::Error> FileWithDefaults::flock(int flags) {
-	assert(_link);
 	auto node = _link->getTarget();
 	assert(node);
 	return node->flockManager.lock(&flock_, flags);
