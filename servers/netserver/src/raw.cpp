@@ -35,8 +35,9 @@ static async::result<void> serveLanes(
 managarm::fs::Errors Raw::serveSocket(helix::UniqueLane ctrlLane, helix::UniqueLane ptLane, int type, int proto, int flags) {
 	(void) type;
 
-	assert(proto == htons(ETH_P_ALL));
-	auto raw_socket = smarter::make_shared<RawSocket>(this, flags);
+	(void) flags;
+
+	auto raw_socket = smarter::make_shared<RawSocket>(this, ntohs(static_cast<uint16_t>(proto)));
 	raw_socket->holder_ = raw_socket;
 	sockets_.push_back(raw_socket);
 	async::detach(serveLanes(std::move(ctrlLane), std::move(ptLane), raw_socket));
@@ -44,8 +45,19 @@ managarm::fs::Errors Raw::serveSocket(helix::UniqueLane ctrlLane, helix::UniqueL
 	return managarm::fs::Errors::SUCCESS;
 }
 
-void Raw::feedPacket(arch::dma_buffer_view frame) {
+void Raw::feedPacket(uint16_t ethertype, arch::dma_buffer_view frame) {
+	// Like Linux, 802.3 frames carry a length here and are classified as raw 802.3 or 802.2 LLC.
+	if(ethertype < ETH_P_802_3_MIN) {
+		auto data = static_cast<const uint8_t *>(frame.data());
+		bool raw8023 = frame.size() >= nic::ethernetHeaderSize + 2
+				&& data[14] == 0xFF && data[15] == 0xFF;
+		ethertype = raw8023 ? ETH_P_802_3 : ETH_P_802_2;
+	}
+
 	for(auto s = sockets_.begin(); s != sockets_.end(); s++) {
+		if(!(*s)->accepts(ethertype))
+			continue;
+
 		size_t accept_bytes = SIZE_MAX;
 
 		if((*s)->filter_) {
@@ -69,6 +81,13 @@ void Raw::feedPacket(arch::dma_buffer_view frame) {
 	}
 }
 
+bool RawSocket::accepts(uint16_t ethertype) const {
+	// Like Linux, protocol 0 does not receive anything until bind() sets a protocol.
+	if(!proto)
+		return false;
+	return proto == ETH_P_ALL || proto == ethertype;
+}
+
 void RawSocket::handleClose() {
 	std::erase_if(parent->sockets_, [this](const auto &s) { return s.get() == this; });
 }
@@ -88,7 +107,8 @@ async::result<protocols::fs::Error> RawSocket::bind(void* obj,
 		co_return protocols::fs::Error::illegalArguments;
 	auto sa_ll = reinterpret_cast<const sockaddr_ll *>(addr_ptr);
 
-	assert(sa_ll->sll_protocol == htons(ETH_P_ALL));
+	if(sa_ll->sll_protocol)
+		self->proto = ntohs(sa_ll->sll_protocol);
 	if(sa_ll->sll_ifindex == 0) {
 		self->link = nic::Link::getLinks().begin()->second;
 	} else {

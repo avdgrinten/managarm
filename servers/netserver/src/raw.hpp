@@ -14,7 +14,7 @@ struct RawSocket;
 
 struct Raw {
 	managarm::fs::Errors serveSocket(helix::UniqueLane ctrlLane, helix::UniqueLane ptLane, int type, int proto, int flags);
-	void feedPacket(arch::dma_buffer_view frame);
+	void feedPacket(uint16_t ethertype, arch::dma_buffer_view frame);
 
 private:
 	friend RawSocket;
@@ -24,7 +24,9 @@ private:
 };
 
 struct RawSocket {
-	explicit RawSocket(Raw *parent, int proto) : parent{parent}, proto(proto) {}
+	explicit RawSocket(Raw *parent, uint16_t proto) : parent{parent}, proto(proto) {}
+
+	bool accepts(uint16_t ethertype) const;
 
 	void handleClose();
 
@@ -62,7 +64,8 @@ private:
 	Raw *parent;
 	smarter::weak_ptr<RawSocket> holder_;
 
-	int proto [[maybe_unused]];
+	// In host byte order.
+	uint16_t proto;
 	bool filterLocked_ = false;
 	bool packetAuxData_ = false;
 	std::optional<std::vector<char>> filter_ = std::nullopt;
