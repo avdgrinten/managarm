@@ -1362,6 +1362,8 @@ std::expected<smarter::shared_ptr<HardwareMemory>, Error> HardwareMemory::create
 		PhysicalAddr base, size_t length, CachingMode cache_mode) {
 	if((base & (kPageSize - 1)) || (length & (kPageSize - 1)))
 		return std::unexpected{Error::illegalArgs};
+	if(base + length < base)
+		return std::unexpected{Error::illegalArgs};
 
 	auto ptr = allocate_rcu_shared<HardwareMemory>(*kernelAlloc, CtorToken{},
 			base, length, cache_mode);

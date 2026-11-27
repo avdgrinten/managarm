@@ -39,6 +39,8 @@ std::expected<smarter::shared_ptr<MemorySlice>, Error> MemorySlice::create(
 		CachingFlags cachingFlags) {
 	if((view_offset & (kPageSize - 1)) || (view_size & (kPageSize - 1)))
 		return std::unexpected{Error::illegalArgs};
+	if(static_cast<uintptr_t>(view_offset) + view_size < static_cast<uintptr_t>(view_offset))
+		return std::unexpected{Error::illegalArgs};
 
 	auto ptr = allocate_rcu_shared<MemorySlice>(*kernelAlloc, CtorToken{},
 			std::move(view), view_offset, view_size, cachingFlags);
