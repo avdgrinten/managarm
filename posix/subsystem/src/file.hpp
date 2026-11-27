@@ -375,6 +375,7 @@ enum class FileKind {
 	timerfd,
 	inotify,
 	epoll,
+	signalfd,
 };
 
 struct File {
