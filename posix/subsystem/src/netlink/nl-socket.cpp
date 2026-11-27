@@ -274,7 +274,9 @@ OpenFile::sendMsg(Process *process, uint32_t flags, const void *data, size_t max
 	if(logSockets)
 		std::cout << "posix: Send to socket \e[1;34m" << structName() << "\e[0m" << std::endl;
 	assert(!flags);
-	assert(files.empty());
+	// Like Linux' __scm_send(), only unix sockets accept SCM_RIGHTS.
+	if(!files.empty())
+		co_return protocols::fs::Error::illegalArguments;
 
 	struct sockaddr_nl sa;
 	if(addr_length >= sizeof(struct sockaddr_nl) && addr_ptr) {
