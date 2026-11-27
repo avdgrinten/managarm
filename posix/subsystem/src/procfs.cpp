@@ -504,9 +504,14 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> Directo
 }
 
 async::result<frg::expected<Error>> DirectoryNode::unlink(std::string name) {
-	if(auto e = directUnlink(std::move(name)); e != Error::success)
-		co_return e;
-	co_return frg::expected<Error>{};
+	// Like on Linux, procfs entries cannot be unlinked; they disappear with their processes.
+	std::shared_lock lock{treeMutex};
+	auto it = _entries.find(name);
+	if(it == _entries.end())
+		co_return Error::noSuchFile;
+	if((*it)->getTarget()->getType() == VfsType::directory)
+		co_return Error::isDirectory;
+	co_return Error::insufficientPermissions;
 }
 
 Error DirectoryNode::directUnlink(std::string name) {
