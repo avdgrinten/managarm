@@ -78,13 +78,20 @@ async::result<frg::expected<Error, off_t>> RegularFile::seek(off_t offset, VfsSe
 	co_await _mutex.async_lock();
 	frg::unique_lock lock{frg::adopt_lock, _mutex};
 
-	if(whence == VfsSeek::relative)
-		_offset = _offset + offset;
-	else if(whence == VfsSeek::absolute)
+	// Like Linux' seq_lseek(), reject negative file positions.
+	if(whence == VfsSeek::relative) {
+		int64_t result;
+		if(__builtin_add_overflow(static_cast<int64_t>(_offset), offset, &result) || result < 0)
+			co_return Error::illegalArguments;
+		_offset = result;
+	} else if(whence == VfsSeek::absolute) {
+		if(offset < 0)
+			co_return Error::illegalArguments;
 		_offset = offset;
-	else if(whence == VfsSeek::eof)
+	} else if(whence == VfsSeek::eof) {
 		// TODO: Unimplemented!
 		assert(whence == VfsSeek::eof);
+	}
 
 	// rewinding all the way invalidates caching; this is necessary for propagating errors like ESRCH
 	if (_offset == 0)
@@ -101,13 +108,13 @@ async::result<frg::expected<Error, off_t>> RegularFile::getPosition() {
 
 async::result<std::expected<size_t, Error>>
 RegularFile::readSome(Process *process, void *data, size_t max_length, async::cancellation_token) {
-	assert(max_length > 0);
+	if(!max_length)
+		co_return 0;
 
 	co_await _mutex.async_lock();
 	frg::unique_lock lock{frg::adopt_lock, _mutex};
 
 	if(!_cached) {
-		assert(!_offset);
 		auto node = static_cast<RegularNode *>(associatedLink()->getTarget().get());
 		// TODO(geert): We assume this can't block (probably wrong).
 		auto result = co_await node->show(process);
@@ -118,7 +125,8 @@ RegularFile::readSome(Process *process, void *data, size_t max_length, async::ca
 		_cached = true;
 	}
 
-	assert(_offset <= _buffer.size());
+	if(_offset >= _buffer.size())
+		co_return 0;
 	size_t chunk = std::min(_buffer.size() - _offset, max_length);
 	memcpy(data, _buffer.data() + _offset, chunk);
 	_offset += chunk;
@@ -127,7 +135,8 @@ RegularFile::readSome(Process *process, void *data, size_t max_length, async::ca
 
 async::result<frg::expected<Error, size_t>>
 RegularFile::writeAll(Process *, const void *data, size_t length) {
-	assert(length > 0);
+	if(!length)
+		co_return 0;
 
 	auto node = static_cast<RegularNode *>(associatedLink()->getTarget().get());
 	co_await node->store(std::string{reinterpret_cast<const char *>(data), length});
