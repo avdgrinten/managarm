@@ -525,9 +525,6 @@ HelError helAlertQueue(HelHandle handle) {
 
 HelError helAllocateMemory(HelHandle hierarchyHandle, size_t size, uint32_t flags,
 		const HelAllocRestrictions *restrictions, HelHandle *handle) {
-	if(!size)
-		return kHelErrIllegalArgs;
-
 	auto thisThread = getCurrentThread();
 	auto thisUniverse = thisThread->getUniverse();
 
@@ -761,8 +758,6 @@ HelError helCreateSwapSpace(HelHandle hierarchyHandle, uint32_t flags,
 HelError helAllocateSwappableMemory(HelHandle hierarchyHandle, HelHandle swapSpaceHandle,
 		size_t size, uint32_t flags, HelHandle *handle) {
 	if(flags)
-		return kHelErrIllegalArgs;
-	if(!size)
 		return kHelErrIllegalArgs;
 
 	auto thisThread = getCurrentThread();

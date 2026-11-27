@@ -4129,7 +4129,6 @@ CopyOnWriteMemory::CopyOnWriteMemory(CtorToken, smarter::shared_ptr<Hierarchy> h
 		_hierarchy{std::move(hierarchy)}, _view{std::move(view)},
 		_viewOffset{offset}, _length{length}, _space{std::move(space)},
 		_ownedPages{*kernelAlloc}, _sharedPages{*kernelAlloc} {
-	assert(length);
 	assert(!(offset & (kPageSize - 1)));
 	assert(!(length & (kPageSize - 1)));
 }
