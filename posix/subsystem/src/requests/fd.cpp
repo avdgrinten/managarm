@@ -252,8 +252,12 @@ HandleRequest::operator()(managarm::posix::EpollCallRequest &&req,
 	};
 	std::unordered_map<int, PollEvents> fdsToEvents;
 
+	if(req.fds_size() != req.events_size()) {
+		co_await sendErrorResponse<managarm::posix::EpollCallResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
+
 	auto epfile = epoll::createFile();
-	assert(req.fds_size() == req.events_size());
 
 	auto timeout = req.timeout();
 
