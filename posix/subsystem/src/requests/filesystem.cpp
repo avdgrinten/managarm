@@ -845,9 +845,9 @@ HandleRequest::operator()(managarm::posix::FstatAtRequest &&req,
 		relative_to = {file->associatedMount(), file->associatedLink()};
 	}
 
-	if (req.flags() & AT_EMPTY_PATH) {
-		target_link = file->associatedLink();
-		target_mount = file->associatedMount();
+	if (req.path().empty() && (req.flags() & AT_EMPTY_PATH)) {
+		target_link = relative_to.second;
+		target_mount = relative_to.first;
 	} else {
 		PathResolver resolver;
 		resolver.setup(self->fsContext()->getRoot(),
@@ -1130,8 +1130,8 @@ HandleRequest::operator()(managarm::posix::FchmodAtRequest &&req,
 		co_return {};
 	}
 
-	if(req.flags() & AT_EMPTY_PATH) {
-		target_link = file->associatedLink();
+	if(req.path().empty() && (req.flags() & AT_EMPTY_PATH)) {
+		target_link = relative_to.second;
 	} else {
 		PathResolver resolver;
 		resolver.setup(self->fsContext()->getRoot(),
@@ -1193,8 +1193,8 @@ HandleRequest::operator()(managarm::posix::FchownAtRequest &&req,
 		co_return {};
 	}
 
-	if(req.flags() & AT_EMPTY_PATH) {
-		targetLink = file->associatedLink();
+	if(req.path().empty() && (req.flags() & AT_EMPTY_PATH)) {
+		targetLink = relativeTo.second;
 	} else {
 		PathResolver resolver;
 		resolver.setup(self->fsContext()->getRoot(),
