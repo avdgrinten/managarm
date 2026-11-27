@@ -174,8 +174,9 @@ inline protocols::fs::Error operator|(Error e, protocols::fs::ToFsProtoError) {
 		case Error::directoryNotEmpty: return protocols::fs::Error::directoryNotEmpty;
 		case Error::fileClosed: return protocols::fs::Error::internalError;
 		case Error::badExecutable: return protocols::fs::Error::internalError;
-		case Error::noMemory: return protocols::fs::Error::noSpaceLeft;
-		case Error::ioError: return protocols::fs::Error::internalError;
+		case Error::noMemory: return protocols::fs::Error::noMemory;
+		case Error::nameTooLong: return protocols::fs::Error::nameTooLong;
+		case Error::ioError: return protocols::fs::Error::ioError;
 		case Error::noChildProcesses: return protocols::fs::Error::internalError;
 		case Error::alreadyConnected: return protocols::fs::Error::alreadyConnected;
 		case Error::notSocket: return protocols::fs::Error::notSocket;
@@ -186,10 +187,11 @@ inline protocols::fs::Error operator|(Error e, protocols::fs::ToFsProtoError) {
 		case Error::notSupported: return protocols::fs::Error::notSupported;
 		case Error::badFileDescriptor: return protocols::fs::Error::badFileDescriptor;
 		case Error::badProcessCredentials: return protocols::fs::Error::internalError;
-		default:
-			std::cout << std::format("posix: unmapped Error {}", static_cast<int>(e)) << std::endl;
-			return protocols::fs::Error::internalError;
+		case Error::unsupportedSocketType:
+			break;
 	}
+	std::cout << std::format("posix: unmapped Error {}", static_cast<int>(e)) << std::endl;
+	return protocols::fs::Error::internalError;
 }
 
 struct ToPosixProtoError {
@@ -226,6 +228,7 @@ inline managarm::posix::Errors operator|(Error e, ToPosixProtoError) {
 		case Error::noSuchProcess: return managarm::posix::Errors::NO_SUCH_RESOURCE;
 		case Error::noFileDescriptorsAvailable: return managarm::posix::Errors::NO_FILE_DESCRIPTORS_AVAILABLE;
 		case Error::notSupported: return managarm::posix::Errors::NOT_SUPPORTED;
+		case Error::badFileDescriptor: return managarm::posix::Errors::NO_SUCH_FD;
 		case Error::badProcessCredentials: return managarm::posix::Errors::INTERNAL_ERROR;
 		case Error::fileClosed:
 		case Error::badExecutable:
@@ -233,7 +236,6 @@ inline managarm::posix::Errors operator|(Error e, ToPosixProtoError) {
 		case Error::notConnected:
 		case Error::noSpaceLeft:
 		case Error::notSocket:
-		case Error::badFileDescriptor:
 			std::cout << std::format("posix: unmapped Error {}", static_cast<int>(e)) << std::endl;
 			return managarm::posix::Errors::INTERNAL_ERROR;
 	}
@@ -271,10 +273,25 @@ inline Error operator|(protocols::fs::Error e, ToPosixError) {
 		case protocols::fs::Error::notSupported: return Error::notSupported;
 		case protocols::fs::Error::ioError: return Error::ioError;
 		case protocols::fs::Error::afNotSupported: return Error::addressFamilyNotSupported;
-		default:
-			std::cout << std::format("posix: unmapped protocols::fs::Error {}", static_cast<int>(e)) << std::endl;
-			return Error::ioError;
+		case protocols::fs::Error::alreadyConnected: return Error::alreadyConnected;
+		case protocols::fs::Error::notSocket: return Error::notSocket;
+		case protocols::fs::Error::interrupted: return Error::interrupted;
+		case protocols::fs::Error::noFileDescriptorsAvailable: return Error::noFileDescriptorsAvailable;
+		case protocols::fs::Error::badFileDescriptor: return Error::badFileDescriptor;
+		case protocols::fs::Error::noMemory: return Error::noMemory;
+		case protocols::fs::Error::destAddrRequired:
+		case protocols::fs::Error::netUnreachable:
+		case protocols::fs::Error::messageSize:
+		case protocols::fs::Error::hostUnreachable:
+		case protocols::fs::Error::addressInUse:
+		case protocols::fs::Error::addressNotAvailable:
+		case protocols::fs::Error::invalidProtocolOption:
+		case protocols::fs::Error::connectionRefused:
+		case protocols::fs::Error::busy:
+			break;
 	}
+	std::cout << std::format("posix: unmapped protocols::fs::Error {}", static_cast<int>(e)) << std::endl;
+	return Error::ioError;
 }
 
 inline Error operator|(managarm::fs::Errors e, ToPosixError) {
@@ -305,10 +322,23 @@ inline Error operator|(managarm::fs::Errors e, ToPosixError) {
 		case managarm::fs::Errors::IO_ERROR: return Error::ioError;
 		case managarm::fs::Errors::AF_NOT_SUPPORTED: return Error::addressFamilyNotSupported;
 		case managarm::fs::Errors::NO_MEMORY: return Error::noMemory;
-		default:
-			std::println("posix: unmapped managarm::fs::Errors Error {}", static_cast<int>(e));
-			return Error::ioError;
+		case managarm::fs::Errors::NO_SUCH_PROCESS: return Error::noSuchProcess;
+		case managarm::fs::Errors::NAME_TOO_LONG: return Error::nameTooLong;
+		case managarm::fs::Errors::NO_FILE_DESCRIPTORS_AVAILABLE: return Error::noFileDescriptorsAvailable;
+		case managarm::fs::Errors::BAD_FILE_DESCRIPTOR: return Error::badFileDescriptor;
+		case managarm::fs::Errors::DESTINATION_ADDRESS_REQUIRED:
+		case managarm::fs::Errors::NETWORK_UNREACHABLE:
+		case managarm::fs::Errors::MESSAGE_TOO_LARGE:
+		case managarm::fs::Errors::HOST_UNREACHABLE:
+		case managarm::fs::Errors::ADDRESS_IN_USE:
+		case managarm::fs::Errors::ADDRESS_NOT_AVAILABLE:
+		case managarm::fs::Errors::INVALID_PROTOCOL_OPTION:
+		case managarm::fs::Errors::CONNECTION_REFUSED:
+		case managarm::fs::Errors::BUSY:
+			break;
 	}
+	std::println("posix: unmapped managarm::fs::Errors Error {}", static_cast<int>(e));
+	return Error::ioError;
 }
 
 std::ostream& operator<<(std::ostream& os, const Error& err);
