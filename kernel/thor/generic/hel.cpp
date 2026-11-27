@@ -525,11 +525,6 @@ HelError helAlertQueue(HelHandle handle) {
 
 HelError helAllocateMemory(HelHandle hierarchyHandle, size_t size, uint32_t flags,
 		const HelAllocRestrictions *restrictions, HelHandle *handle) {
-	if(!size)
-		return kHelErrIllegalArgs;
-	if(size & (kPageSize - 1))
-		return kHelErrIllegalArgs;
-
 	auto thisThread = getCurrentThread();
 	auto thisUniverse = thisThread->getUniverse();
 
@@ -685,8 +680,6 @@ HelError helCreateManagedMemory(HelHandle hierarchyHandle, size_t size, uint32_t
 		HelHandle *backing_handle, HelHandle *frontal_handle) {
 	if(flags & ~uint32_t{kHelManagedReadahead})
 		return kHelErrIllegalArgs;
-	if(size & (kPageSize - 1))
-		return kHelErrIllegalArgs;
 
 	auto thisThread = getCurrentThread();
 	auto thisUniverse = thisThread->getUniverse();
@@ -765,8 +758,6 @@ HelError helCreateSwapSpace(HelHandle hierarchyHandle, uint32_t flags,
 HelError helAllocateSwappableMemory(HelHandle hierarchyHandle, HelHandle swapSpaceHandle,
 		size_t size, uint32_t flags, HelHandle *handle) {
 	if(flags)
-		return kHelErrIllegalArgs;
-	if(!size || (size & (kPageSize - 1)))
 		return kHelErrIllegalArgs;
 
 	auto thisThread = getCurrentThread();
@@ -873,11 +864,6 @@ HelError helCopyOnWrite(HelHandle hierarchyHandle, HelHandle swapSpaceHandle, He
 HelError helAccessPhysical(
 	HelHandle accessHandle, uintptr_t physical, size_t size, uint32_t cachingMode, HelHandle *handle
 ) {
-	if (physical & (kPageSize - 1))
-		return kHelErrIllegalArgs;
-	if (size & (kPageSize - 1))
-		return kHelErrIllegalArgs;
-
 	CachingMode caching;
 	switch(cachingMode) {
 	case kHelCachingDefault: {
@@ -992,10 +978,6 @@ HelError helAlterMemoryIndirection(HelHandle indirectHandle, size_t slot,
 
 HelError helCreateSliceView(HelHandle memoryHandle,
 		uintptr_t offset, size_t size, uint32_t flags, HelHandle *handle) {
-	if (offset & (kPageSize - 1))
-		return kHelErrIllegalArgs;
-	if (size & (kPageSize - 1))
-		return kHelErrIllegalArgs;
 	if (flags & ~kHelSliceCacheWriteCombine)
 		return kHelErrIllegalArgs;
 

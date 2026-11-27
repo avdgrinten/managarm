@@ -1360,6 +1360,11 @@ ImmediateWindow::~ImmediateWindow() {
 
 std::expected<smarter::shared_ptr<HardwareMemory>, Error> HardwareMemory::create(
 		PhysicalAddr base, size_t length, CachingMode cache_mode) {
+	if((base & (kPageSize - 1)) || (length & (kPageSize - 1)))
+		return std::unexpected{Error::illegalArgs};
+	if(base + length < base)
+		return std::unexpected{Error::illegalArgs};
+
 	auto ptr = allocate_rcu_shared<HardwareMemory>(*kernelAlloc, CtorToken{},
 			base, length, cache_mode);
 	return ptr;
@@ -1439,6 +1444,12 @@ size_t HardwareMemory::getLength() {
 std::expected<smarter::shared_ptr<AllocatedMemory>, Error> AllocatedMemory::create(
 	smarter::shared_ptr<Hierarchy> hierarchy, size_t length, int addressBits, size_t chunkSize, size_t chunkAlign
 ) {
+	if(length & (kPageSize - 1))
+		return std::unexpected{Error::illegalArgs};
+	// The constructor rounds the chunk size up to a power of two, which must not overflow.
+	if(!chunkSize || (chunkSize & (kPageSize - 1)) || chunkSize > (size_t(1) << 63))
+		return std::unexpected{Error::illegalArgs};
+
 	smarter::borrowed_ptr<Hierarchy> hierarchyPtr{hierarchy};
 	auto ptr = allocate_rcu_shared<AllocatedMemory>(HierarchyAllocator{std::move(hierarchy)},
 			CtorToken{}, hierarchyPtr, length, addressBits, chunkSize, chunkAlign);
@@ -1687,7 +1698,7 @@ bool ManagedSpace::ManagedPage::hasUnwrittenData() {
 
 std::expected<smarter::shared_ptr<ManagedSpace>, Error> ManagedSpace::create(
 		smarter::shared_ptr<Hierarchy> hierarchy, size_t length, bool readahead) {
-	if(length > backingMemoryLength)
+	if(length > backingMemoryLength || (length & (kPageSize - 1)))
 		return std::unexpected{Error::illegalArgs};
 	smarter::borrowed_ptr<Hierarchy> hierarchyPtr{hierarchy};
 	auto self = allocate_rcu_shared<ManagedSpace>(HierarchyAllocator{std::move(hierarchy)},
@@ -3692,6 +3703,9 @@ size_t FrontalMemory::getLength() {
 std::expected<smarter::shared_ptr<SwappableMemory>, Error> SwappableMemory::create(
 		smarter::shared_ptr<Hierarchy> hierarchy, smarter::shared_ptr<SwapSpace> space,
 		size_t length) {
+	if(length & (kPageSize - 1))
+		return std::unexpected{Error::illegalArgs};
+
 	smarter::borrowed_ptr<Hierarchy> hierarchyPtr{hierarchy};
 	auto ptr = allocate_rcu_shared<SwappableMemory>(HierarchyAllocator{std::move(hierarchy)},
 			CtorToken{}, hierarchyPtr, std::move(space), length);
@@ -4101,6 +4115,9 @@ CowPage::~CowPage() {
 std::expected<smarter::shared_ptr<CopyOnWriteMemory>, Error> CopyOnWriteMemory::create(
 		smarter::shared_ptr<Hierarchy> hierarchy, smarter::shared_ptr<SwapSpace> space,
 		smarter::shared_ptr<MemoryView> view, uintptr_t offset, size_t length) {
+	if((offset & (kPageSize - 1)) || (length & (kPageSize - 1)))
+		return std::unexpected{Error::illegalArgs};
+
 	auto ptr = allocate_rcu_shared<CopyOnWriteMemory>(*kernelAlloc, CtorToken{},
 			std::move(hierarchy), std::move(space), std::move(view), offset, length);
 	ptr->selfPtr = ptr;
@@ -4114,7 +4131,6 @@ CopyOnWriteMemory::CopyOnWriteMemory(CtorToken, smarter::shared_ptr<Hierarchy> h
 		_hierarchy{std::move(hierarchy)}, _view{std::move(view)},
 		_viewOffset{offset}, _length{length}, _space{std::move(space)},
 		_ownedPages{*kernelAlloc}, _sharedPages{*kernelAlloc} {
-	assert(length);
 	assert(!(offset & (kPageSize - 1)));
 	assert(!(length & (kPageSize - 1)));
 }

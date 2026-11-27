@@ -1520,6 +1520,7 @@ HEL_C_LINKAGE HelError helAlertQueue(HelHandle queueHandle);
 //! @param[in] size
 //!    	Size of the memory object in bytes.
 //!    	Must be aligned to the system's page size.
+//!    	May be zero, except for kHelAllocContinuous allocations.
 //! @param[in] restrictions
 //!    	Specifies restrictions for the kernel's memory allocator.
 //!    	May be @p NULL if there are no restrictions.
@@ -1629,7 +1630,7 @@ HEL_C_LINKAGE HelError helCreateSwapSpace(HelHandle hierarchy, uint32_t flags,
 //!    	Handle to the swap space (from helCreateSwapSpace()).
 //! @param[in] size
 //!    	Size of the memory object in bytes.
-//!    	Must be aligned to the system's page size.
+//!    	Must be aligned to the system's page size. May be zero.
 //! @param[out] handle
 //!    	Handle to the new memory object.
 HEL_C_LINKAGE HelError helAllocateSwappableMemory(HelHandle hierarchy, HelHandle swapSpace,
@@ -1648,9 +1649,10 @@ HEL_C_LINKAGE HelError helAllocateSwappableMemory(HelHandle hierarchy, HelHandle
 //!    	Handle to the source memory object.
 //! @param[in] offset
 //!    	Offset in byte relative to @p memory.
+//!    	Must be aligned to the system's page size.
 //! @param[in] size
 //!    	Size of the memory object in bytes.
-//!    	Must be aligned to the system's page size.
+//!    	Must be aligned to the system's page size. May be zero.
 //! @param[out] handle
 //!    	Handle to the new memory object.
 HEL_C_LINKAGE HelError helCopyOnWrite(HelHandle hierarchy, HelHandle swapSpace, HelHandle memory,
