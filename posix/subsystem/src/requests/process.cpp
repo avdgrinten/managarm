@@ -412,6 +412,11 @@ HandleRequest::operator()(managarm::posix::ParentDeathSignalRequest &&req,
 	id = preamble.id();
 	logBragiRequest(req);
 
+	if(req.signal() < 0 || req.signal() > 64) {
+		co_await sendErrorResponse<managarm::posix::ParentDeathSignalResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
+
 	self->threadGroup()->setParentDeathSignal(req.signal() ? std::optional{req.signal()} : std::nullopt);
 
 	managarm::posix::ParentDeathSignalResponse resp;

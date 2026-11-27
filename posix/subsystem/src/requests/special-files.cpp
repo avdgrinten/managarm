@@ -355,6 +355,11 @@ HandleRequest::operator()(managarm::posix::PidfdSendSignalRequest &&req,
 		co_return {};
 	}
 
+	if(req.signal() < 0 || req.signal() > 64) {
+		co_await sendErrorResponse<managarm::posix::PidfdSendSignalResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
+
 	if(req.signal() > 0) {
 		UserSignal info;
 		info.pid = self->pid();

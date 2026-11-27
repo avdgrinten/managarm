@@ -523,6 +523,13 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 				}
 			}
 
+			if(sn < 0 || sn > 64) {
+				gprs[kHelRegOut0] = EINVAL;
+				HEL_CHECK(helStoreRegisters(thread.getHandle(), kHelRegsGeneral, &gprs));
+				HEL_CHECK(helResume(thread.getHandle()));
+				continue;
+			}
+
 			HEL_CHECK(helStoreRegisters(thread.getHandle(), kHelRegsGeneral, &gprs));
 
 			if(sn) {
