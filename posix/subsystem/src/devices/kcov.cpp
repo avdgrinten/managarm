@@ -192,7 +192,7 @@ public:
 	: FileWithDefaults{FileKind::unknown, StructName::get("kcov-file"),
 			std::move(mount), std::move(link)} { }
 
-	FutureMaybe<helix::UniqueDescriptor> accessMemory() override {
+	FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory() override {
 		std::lock_guard lock{_mutex};
 		co_return _buffer.dup();
 	}

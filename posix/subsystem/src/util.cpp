@@ -21,6 +21,7 @@ std::ostream& operator<<(std::ostream& os, const Error& err) {
 		case Error::alreadyExists: err_string = "alreadyExists"; break;
 		case Error::notTerminal: err_string = "notTerminal"; break;
 		case Error::noBackingDevice: err_string = "noBackingDevice"; break;
+		case Error::noDevice: err_string = "noDevice"; break;
 		case Error::noSpaceLeft: err_string = "noSpaceLeft"; break;
 		case Error::isDirectory: err_string = "isDirectory"; break;
 		case Error::noMemory: err_string = "noMemory"; break;

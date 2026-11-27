@@ -188,7 +188,7 @@ private:
 		co_return PollStatusResult{sequence, status};
 	}
 
-	FutureMaybe<helix::UniqueDescriptor> accessMemory() override {
+	FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory() override {
 		auto memory = co_await _file.accessMemory();
 		co_return std::move(memory);
 	}

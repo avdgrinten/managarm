@@ -243,12 +243,6 @@ File::ptSendMsg(void *object, helix_ng::CredentialsView creds, uint32_t flags,
 			std::move(files), ucreds);
 }
 
-async::result<helix::BorrowedDescriptor>
-File::ptAccessMemory(void *object) {
-	auto self = static_cast<File *>(object);
-	co_return co_await self->accessMemory();
-}
-
 async::result<frg::expected<protocols::fs::Error>> File::ptSetSocketOption(void *object,
 		int layer, int number, std::vector<char> optbuf) {
 	auto self = static_cast<File *>(object);
@@ -451,11 +445,8 @@ async::result<frg::expected<protocols::fs::Error, size_t>> File::sockname(void *
 	co_return protocols::fs::Error::notSocket;
 }
 
-FutureMaybe<helix::UniqueDescriptor> File::accessMemory() {
-	// TODO: Return an error.
-	std::cout << "posix \e[1;34m" << structName()
-			<< "\e[0m: Object does not implement accessMemory()" << std::endl;
-	throw std::runtime_error("posix: Object has no File::accessMemory()");
+FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> File::accessMemory() {
+	co_return std::unexpected{Error::noDevice};
 }
 
 async::result<void> File::ioctl(Process *, uint32_t id, helix_ng::RecvInlineResult msg,

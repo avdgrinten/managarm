@@ -45,7 +45,7 @@ public:
 	async::result<std::expected<size_t, Error>>
 	readSome(Process *process, void *data, size_t max_length, async::cancellation_token ct) override;
 
-	FutureMaybe<helix::UniqueDescriptor> accessMemory() override;
+	FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory() override;
 
 	helix::BorrowedDescriptor getPassthroughLane() override {
 		return _passthrough;

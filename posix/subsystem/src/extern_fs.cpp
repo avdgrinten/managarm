@@ -499,7 +499,7 @@ private:
 		co_return PollStatusResult{1, EPOLLIN | EPOLLOUT | EPOLLRDNORM | EPOLLWRNORM};
 	}
 
-	FutureMaybe<helix::UniqueDescriptor> accessMemory() override {
+	FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory() override {
 		auto memory = co_await _file.accessMemory();
 		co_return std::move(memory);
 	}

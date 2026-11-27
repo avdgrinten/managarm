@@ -349,10 +349,11 @@ async::result<void *> VmContext::remapFile(void *oldPointer,
 	assert(!it->second.copyOnWrite);
 
 	auto memory = co_await it->second.file->accessMemory();
+	assert(memory);
 
 	// Perform the actual mapping.
 	// POSIX specifies that non-page-size mappings are rounded up and filled with zeros.
-	auto mapResult = co_await helix_ng::mapMemory(memory, _space,
+	auto mapResult = co_await helix_ng::mapMemory(*memory, _space,
 			nullptr, it->second.offset, alignedNewSize,
 			it->second.nativeFlags);
 	HEL_CHECK(mapResult.error());

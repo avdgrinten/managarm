@@ -108,6 +108,9 @@ enum class Error {
 	// Corresponds with ENXIO
 	noBackingDevice,
 
+	// Corresponds with ENODEV
+	noDevice,
+
 	// Corresponds with ENOSPC
 	noSpaceLeft,
 
@@ -173,6 +176,7 @@ inline protocols::fs::Error operator|(Error e, protocols::fs::ToFsProtoError) {
 		case Error::noSpaceLeft: return protocols::fs::Error::noSpaceLeft;
 		case Error::notTerminal: return protocols::fs::Error::notTerminal;
 		case Error::noBackingDevice: return protocols::fs::Error::noBackingDevice;
+		case Error::noDevice: return protocols::fs::Error::illegalOperationTarget;
 		case Error::isDirectory: return protocols::fs::Error::isDirectory;
 		case Error::directoryNotEmpty: return protocols::fs::Error::directoryNotEmpty;
 		case Error::fileClosed: return protocols::fs::Error::internalError;
@@ -220,6 +224,7 @@ inline managarm::posix::Errors operator|(Error e, ToPosixProtoError) {
 		case Error::illegalOperationTarget: return managarm::posix::Errors::ILLEGAL_OPERATION_TARGET;
 		case Error::notTerminal: return managarm::posix::Errors::NOT_A_TTY;
 		case Error::noBackingDevice: return managarm::posix::Errors::NO_BACKING_DEVICE;
+		case Error::noDevice: return managarm::posix::Errors::NO_DEVICE;
 		case Error::isDirectory: return managarm::posix::Errors::IS_DIRECTORY;
 		case Error::directoryNotEmpty: return managarm::posix::Errors::DIRECTORY_NOT_EMPTY;
 		case Error::noMemory: return managarm::posix::Errors::NO_MEMORY;
@@ -471,8 +476,6 @@ public:
 
 	static async::result<protocols::fs::Error> ptShutdown(void *obj, int how);
 
-	static async::result<helix::BorrowedDescriptor> ptAccessMemory(void *object);
-
 	static async::result<protocols::fs::Error> ptFlock(void *object, int flags);
 
 	static constexpr auto fileOperations = protocols::fs::FileOperations{
@@ -484,7 +487,6 @@ public:
 		.write = &ptWrite,
 		.pwrite = &ptPwrite,
 		.readEntries = &ptReadEntries,
-		.accessMemory = &ptAccessMemory,
 		.truncate = &ptTruncate,
 		.fallocate = &ptAllocate,
 		.ioctl = &ptIoctl,
@@ -651,7 +653,7 @@ public:
 
 	virtual async::result<frg::expected<protocols::fs::Error, size_t>> sockname(void *addr_ptr, size_t max_addr_length);
 
-	virtual FutureMaybe<helix::UniqueDescriptor> accessMemory();
+	virtual FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory();
 
 	virtual async::result<void> ioctl(Process *process, uint32_t id, helix_ng::RecvInlineResult msg,
 			helix::UniqueLane conversation);
@@ -744,6 +746,10 @@ public:
 		co_return protocols::fs::Error::badFileDescriptor;
 	}
 
+	FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory() override {
+		co_return std::unexpected{Error::badFileDescriptor};
+	}
+
 	helix::BorrowedDescriptor getPassthroughLane() override {
 		return _passthrough;
 	}
@@ -761,7 +767,7 @@ struct PassthroughFile : File {
 	PassthroughFile(helix::UniqueLane lane);
 
 
-	FutureMaybe<helix::UniqueDescriptor> accessMemory() override {
+	FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory() override {
 		auto memory = co_await _file.accessMemory();
 		co_return std::move(memory);
 	}

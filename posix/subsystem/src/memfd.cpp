@@ -52,7 +52,7 @@ MemoryFile::allocate(int64_t offset, size_t size) {
 	co_return (co_await _resizeFile(offset + size)).map_error(protocols::fs::toFsProtoError);
 }
 
-FutureMaybe<helix::UniqueDescriptor>
+FutureMaybe<std::expected<helix::UniqueDescriptor, Error>>
 MemoryFile::accessMemory() {
 	co_await _mutex.async_lock();
 	frg::unique_lock lock{frg::adopt_lock, _mutex};

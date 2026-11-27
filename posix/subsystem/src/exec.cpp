@@ -63,7 +63,10 @@ loadElfImage(SharedFilePtr file, VmContext *vmContext, uintptr_t base) {
 	ImageInfo info;
 
 	// Get a handle to the file's memory.
-	auto fileMemory = co_await file->accessMemory();
+	auto memoryResult = co_await file->accessMemory();
+	if(!memoryResult)
+		co_return memoryResult.error();
+	auto fileMemory = std::move(*memoryResult);
 
 	// Read the elf file header and verify the signature.
 	Elf64_Ehdr ehdr;
