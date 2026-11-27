@@ -42,7 +42,7 @@ initgraph::Stage *getMemoryRegionsKnownStage() {
 }
 
 initgraph::Stage *getInitrdDecompressableStage() {
-	static initgraph::Stage s{&globalInitEngine, "generic.initrd-available"};
+	static initgraph::Stage s{&globalInitEngine, "generic.initrd-decompressable"};
 	return &s;
 }
 
