@@ -445,11 +445,8 @@ async::result<frg::expected<protocols::fs::Error, size_t>> File::sockname(void *
 	co_return protocols::fs::Error::notSocket;
 }
 
-FutureMaybe<helix::UniqueDescriptor> File::accessMemory() {
-	// TODO: Return an error.
-	std::cout << "posix \e[1;34m" << structName()
-			<< "\e[0m: Object does not implement accessMemory()" << std::endl;
-	throw std::runtime_error("posix: Object has no File::accessMemory()");
+FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> File::accessMemory() {
+	co_return std::unexpected{Error::noDevice};
 }
 
 async::result<void> File::ioctl(Process *, uint32_t id, helix_ng::RecvInlineResult msg,

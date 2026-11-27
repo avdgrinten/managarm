@@ -653,7 +653,7 @@ public:
 
 	virtual async::result<frg::expected<protocols::fs::Error, size_t>> sockname(void *addr_ptr, size_t max_addr_length);
 
-	virtual FutureMaybe<helix::UniqueDescriptor> accessMemory();
+	virtual FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory();
 
 	virtual async::result<void> ioctl(Process *process, uint32_t id, helix_ng::RecvInlineResult msg,
 			helix::UniqueLane conversation);
@@ -746,6 +746,10 @@ public:
 		co_return protocols::fs::Error::badFileDescriptor;
 	}
 
+	FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory() override {
+		co_return std::unexpected{Error::badFileDescriptor};
+	}
+
 	helix::BorrowedDescriptor getPassthroughLane() override {
 		return _passthrough;
 	}
@@ -763,7 +767,7 @@ struct PassthroughFile : File {
 	PassthroughFile(helix::UniqueLane lane);
 
 
-	FutureMaybe<helix::UniqueDescriptor> accessMemory() override {
+	FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory() override {
 		auto memory = co_await _file.accessMemory();
 		co_return std::move(memory);
 	}

@@ -148,11 +148,12 @@ async::result<void> Process::coredump(TerminationState state) {
 		co_return;
 	}
 
-	auto memory = co_await file->accessMemory();
-	if (!memory) {
+	auto memoryResult = co_await file->accessMemory();
+	if (!memoryResult || !*memoryResult) {
 		co_await removeCoreFile(file->associatedLink().get());
 		co_return;
 	}
+	auto memory = std::move(*memoryResult);
 
 	// Headers and notes are built locally and written into the file's memory in one go.
 	std::vector<std::byte> headers(memoryDumpOffset);

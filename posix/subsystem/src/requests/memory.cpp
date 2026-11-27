@@ -113,11 +113,16 @@ HandleRequest::operator()(managarm::posix::VmMapRequest &&req,
 	}else{
 		auto memory = co_await file->accessMemory();
 		if(!memory) {
+			co_await sendErrorResponse<managarm::posix::VmMapResponse>(conversation,
+					memory.error() | toPosixProtoError);
+			co_return {};
+		}
+		if(!*memory) {
 			co_await sendErrorResponse<managarm::posix::VmMapResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 			co_return {};
 		}
 		result = co_await self->vmContext()->mapFile(hint,
-				std::move(memory), std::move(file),
+				std::move(*memory), std::move(file),
 				req.rel_offset(), req.size(), copyOnWrite, nativeFlags);
 	}
 

@@ -513,7 +513,7 @@ public:
 
 	async::result<int> getFileFlags() override;
 
-	FutureMaybe<helix::UniqueDescriptor> accessMemory() override;
+	FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> accessMemory() override;
 
 	helix::BorrowedDescriptor getPassthroughLane() override {
 		return _passthrough;
@@ -933,7 +933,7 @@ async::result<int> MemoryFile::getFileFlags() {
 	co_return ret;
 }
 
-FutureMaybe<helix::UniqueDescriptor>
+FutureMaybe<std::expected<helix::UniqueDescriptor, Error>>
 MemoryFile::accessMemory() {
 	auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
 
