@@ -1351,6 +1351,8 @@ FutureMaybe<smarter::shared_ptr<FsNode>> Superblock::createRegular(Process *proc
 
 async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>>
 		Superblock::rename(FsLink *source, FsLink *directory, std::string name) {
+	if(directory->getTarget()->getType() != VfsType::directory)
+		co_return Error::notDirectory;
 
 	managarm::fs::RenameRequest req;
 	Link *slink = static_cast<Link *>(source);
