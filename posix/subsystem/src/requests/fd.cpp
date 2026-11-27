@@ -1,3 +1,4 @@
+#include <climits>
 #include <fcntl.h>
 #include <sys/poll.h>
 
@@ -489,6 +490,11 @@ HandleRequest::operator()(managarm::posix::EpollWaitRequest &&req,
 	logRequest(logRequests, self, "EPOLL_WAIT", "epollfd={}", req.fd());
 
 	uint64_t former = self->signalMask();
+
+	if(!req.size() || req.size() > INT_MAX / sizeof(struct epoll_event)) {
+		co_await sendErrorResponse<managarm::posix::EpollWaitResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
 
 	auto epfile = self->fileContext()->getFile(req.fd());
 	if(!epfile) {
