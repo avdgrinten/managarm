@@ -96,15 +96,8 @@ async::result<frg::expected<protocols::fs::Error, size_t>> File::ptPwrite(void *
 		co_return Error::badProcessCredentials | protocols::fs::toFsProtoError;
 	}
 	auto result = co_await self->pwrite(maybeProcess->get(), offset, buffer, length);
-	if(!result) {
-		switch(result.error()) {
-		case Error::noSpaceLeft:
-			co_return protocols::fs::Error::noSpaceLeft;
-		default:
-			assert(!"Unexpected error from pwrite()");
-			__builtin_unreachable();
-		}
-	}
+	if(!result)
+		co_return result.error() | protocols::fs::toFsProtoError;
 	co_return result.value();
 }
 

@@ -1754,9 +1754,8 @@ async::result<frg::expected<Error, FsStats>> Superblock::getFsStats() {
 	resp.ParseFromArray(recv_resp.data(), recv_resp.length());
 	recv_resp.reset();
 
-	if(resp.error() != managarm::fs::Errors::SUCCESS) {
-		co_return Error::illegalOperationTarget;
-	}
+	if(resp.error() != managarm::fs::Errors::SUCCESS)
+		co_return resp.error() | toPosixError;
 
 	FsStats stats{};
 	stats.fsType = resp.fs_type();

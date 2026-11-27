@@ -37,6 +37,7 @@ std::ostream& operator<<(std::ostream& os, const Error& err) {
 		case Error::noFileDescriptorsAvailable: err_string = "noFileDescriptorsAvailable"; break;
 		case Error::notSupported: err_string = "notSupported"; break;
 		case Error::badFileDescriptor: err_string = "badFileDescriptor"; break;
+		case Error::busy: err_string = "busy"; break;
 		case Error::badProcessCredentials: err_string = "badProcessCredentials"; break;
 	}
 

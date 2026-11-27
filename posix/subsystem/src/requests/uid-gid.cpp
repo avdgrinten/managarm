@@ -133,13 +133,7 @@ HandleRequest::operator()(managarm::posix::SetUidRequest &&req,
 	logRequest(logRequests, self, "SET_UID", "uid={}", req.uid());
 
 	Error err = self->threadGroup()->setUid(req.uid());
-	if(err == Error::accessDenied) {
-		co_await sendErrorResponse<managarm::posix::SetUidResponse>(conversation, managarm::posix::Errors::ACCESS_DENIED);
-	} else if(err == Error::illegalArguments) {
-		co_await sendErrorResponse<managarm::posix::SetUidResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
-	} else {
-		co_await sendErrorResponse<managarm::posix::SetUidResponse>(conversation, managarm::posix::Errors::SUCCESS);
-	}
+	co_await sendErrorResponse<managarm::posix::SetUidResponse>(conversation, err | toPosixProtoError);
 	co_return {};
 }
 
@@ -247,13 +241,7 @@ HandleRequest::operator()(managarm::posix::SetEuidRequest &&req,
 	logRequest(logRequests, self, "SET_EUID", "euid={}", req.uid());
 
 	Error err = self->threadGroup()->setEuid(req.uid());
-	if(err == Error::accessDenied) {
-		co_await sendErrorResponse<managarm::posix::SetEuidResponse>(conversation, managarm::posix::Errors::ACCESS_DENIED);
-	} else if(err == Error::illegalArguments) {
-		co_await sendErrorResponse<managarm::posix::SetEuidResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
-	} else {
-		co_await sendErrorResponse<managarm::posix::SetEuidResponse>(conversation, managarm::posix::Errors::SUCCESS);
-	}
+	co_await sendErrorResponse<managarm::posix::SetEuidResponse>(conversation, err | toPosixProtoError);
 	co_return {};
 }
 
@@ -311,13 +299,7 @@ HandleRequest::operator()(managarm::posix::SetGidRequest &&req,
 	logRequest(logRequests, self, "SET_GID");
 
 	Error err = self->threadGroup()->setGid(req.uid());
-	if(err == Error::accessDenied) {
-		co_await sendErrorResponse<managarm::posix::SetGidResponse>(conversation, managarm::posix::Errors::ACCESS_DENIED);
-	} else if(err == Error::illegalArguments) {
-		co_await sendErrorResponse<managarm::posix::SetGidResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
-	} else {
-		co_await sendErrorResponse<managarm::posix::SetGidResponse>(conversation, managarm::posix::Errors::SUCCESS);
-	}
+	co_await sendErrorResponse<managarm::posix::SetGidResponse>(conversation, err | toPosixProtoError);
 	co_return {};
 }
 
@@ -331,13 +313,7 @@ HandleRequest::operator()(managarm::posix::SetEgidRequest &&req,
 	logRequest(logRequests, self, "SET_EGID");
 
 	Error err = self->threadGroup()->setEgid(req.uid());
-	if(err == Error::accessDenied) {
-		co_await sendErrorResponse<managarm::posix::SetEgidResponse>(conversation, managarm::posix::Errors::ACCESS_DENIED);
-	} else if(err == Error::illegalArguments) {
-		co_await sendErrorResponse<managarm::posix::SetEgidResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
-	} else {
-		co_await sendErrorResponse<managarm::posix::SetEgidResponse>(conversation, managarm::posix::Errors::SUCCESS);
-	}
+	co_await sendErrorResponse<managarm::posix::SetEgidResponse>(conversation, err | toPosixProtoError);
 	co_return {};
 }
 
