@@ -1444,6 +1444,9 @@ std::expected<smarter::shared_ptr<AllocatedMemory>, Error> AllocatedMemory::crea
 ) {
 	if(length & (kPageSize - 1))
 		return std::unexpected{Error::illegalArgs};
+	// The constructor rounds the chunk size up to a power of two, which must not overflow.
+	if(!chunkSize || (chunkSize & (kPageSize - 1)) || chunkSize > (size_t(1) << 63))
+		return std::unexpected{Error::illegalArgs};
 
 	smarter::borrowed_ptr<Hierarchy> hierarchyPtr{hierarchy};
 	auto ptr = allocate_rcu_shared<AllocatedMemory>(HierarchyAllocator{std::move(hierarchy)},
