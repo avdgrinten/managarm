@@ -1648,6 +1648,7 @@ HEL_C_LINKAGE HelError helAllocateSwappableMemory(HelHandle hierarchy, HelHandle
 //!    	Handle to the source memory object.
 //! @param[in] offset
 //!    	Offset in byte relative to @p memory.
+//!    	Must be aligned to the system's page size.
 //! @param[in] size
 //!    	Size of the memory object in bytes.
 //!    	Must be aligned to the system's page size.

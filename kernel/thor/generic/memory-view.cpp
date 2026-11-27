@@ -4110,6 +4110,9 @@ CowPage::~CowPage() {
 std::expected<smarter::shared_ptr<CopyOnWriteMemory>, Error> CopyOnWriteMemory::create(
 		smarter::shared_ptr<Hierarchy> hierarchy, smarter::shared_ptr<SwapSpace> space,
 		smarter::shared_ptr<MemoryView> view, uintptr_t offset, size_t length) {
+	if((offset & (kPageSize - 1)) || (length & (kPageSize - 1)))
+		return std::unexpected{Error::illegalArgs};
+
 	auto ptr = allocate_rcu_shared<CopyOnWriteMemory>(*kernelAlloc, CtorToken{},
 			std::move(hierarchy), std::move(space), std::move(view), offset, length);
 	ptr->selfPtr = ptr;
