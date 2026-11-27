@@ -518,13 +518,14 @@ public:
 		return smarter::shared_ptr<File, FileHandle>{smarter::adopt_rc, file, FileHandle{file}};
 	}
 
-	File(FileKind kind, StructName struct_name, DefaultOps default_ops = 0)
-	: kind_{kind}, _structName{struct_name}, _defaultOps{default_ops}, _isOpen{true} { }
-
+	// Every File has a non-null link; files that are not opened through the VFS
+	// (pipes, sockets, eventfd, memfd, ...) pass a link without a VFS path and a null mount.
 	File(FileKind kind, StructName struct_name, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			DefaultOps default_ops = 0)
 	: _link{std::move(link)}, kind_{kind}, _structName{struct_name}, _mount{std::move(mount)},
-			_defaultOps{default_ops}, _isOpen{true} { }
+			_defaultOps{default_ops}, _isOpen{true} {
+		assert(_link);
+	}
 
 	virtual ~File();
 
@@ -561,7 +562,7 @@ private:
 
 public:
 	// MountView that was used to open the file.
-	// See associatedLink().
+	// Null for files that are not opened through the VFS (see associatedLink()).
 	std::shared_ptr<MountView> associatedMount() {
 		return _mount;
 	}
@@ -569,10 +570,8 @@ public:
 	// This is the link that was used to open the file.
 	// Note that this might not be the only link that can be used
 	// to reach the file's inode.
+	// Never null: files that are not opened through the VFS have a link without a VFS path.
 	smarter::shared_ptr<FsLink, LinkRc> associatedLink() {
-		if(!_link)
-			std::cout << "posix \e[1;34m" << structName()
-					<< "\e[0m: Object does not support associatedLink()" << std::endl;
 		return _link;
 	}
 
@@ -697,9 +696,6 @@ private:
 };
 
 struct FileWithDefaults : File {
-	FileWithDefaults(FileKind kind, StructName struct_name, DefaultOps default_ops = 0)
-	: File{kind, struct_name, default_ops} { }
-
 	FileWithDefaults(FileKind kind, StructName struct_name, std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
 			DefaultOps default_ops = 0)
 	: File{kind, struct_name, std::move(mount), std::move(link), default_ops} { }
@@ -751,8 +747,7 @@ private:
 };
 
 struct PassthroughFile : File {
-	PassthroughFile(helix::UniqueLane lane)
-	: File{FileKind::unknown, StructName::get("passthrough")}, _file{std::move(lane)} { }
+	PassthroughFile(helix::UniqueLane lane);
 
 
 	FutureMaybe<helix::UniqueDescriptor> accessMemory() override {

@@ -1,4 +1,5 @@
 #include "extern_socket.hpp"
+#include "fs.hpp"
 
 #include "fs.bragi.hpp"
 #include "protocols/fs/client.hpp"
@@ -6,7 +7,8 @@
 namespace {
 struct Socket : File {
 	Socket(helix::UniqueLane ctrlLane, helix::UniqueLane ptLane)
-	: File{FileKind::unknown, StructName::get("extern-socket")},
+	: File{FileKind::unknown, StructName::get("extern-socket"), nullptr,
+			SpecialLink::makeSpecialLink(VfsType::socket, 0777)},
 		_control{std::move(ctrlLane)},
 		_file{std::move(ptLane)} { }
 

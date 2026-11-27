@@ -845,9 +845,9 @@ HandleRequest::operator()(managarm::posix::FstatAtRequest &&req,
 		relative_to = {file->associatedMount(), file->associatedLink()};
 	}
 
-	if (req.flags() & AT_EMPTY_PATH) {
-		target_link = file->associatedLink();
-		target_mount = file->associatedMount();
+	if (req.path().empty() && (req.flags() & AT_EMPTY_PATH)) {
+		target_link = relative_to.second;
+		target_mount = relative_to.first;
 	} else {
 		PathResolver resolver;
 		resolver.setup(self->fsContext()->getRoot(),
@@ -865,13 +865,6 @@ HandleRequest::operator()(managarm::posix::FstatAtRequest &&req,
 
 		target_mount = resolver.currentView();
 		target_link = resolver.currentLink();
-	}
-
-	// This catches cases where associatedLink is called on a file, but the file doesn't implement that.
-	// Instead of blowing up, return ENOENT.
-	if(!target_link) {
-		co_await sendErrorResponse<managarm::posix::FstatAtResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-		co_return {};
 	}
 
 	auto statsResult = co_await target_link->getTarget()->getStats();
@@ -978,14 +971,6 @@ HandleRequest::operator()(managarm::posix::FstatfsRequest &&req,
 		}
 
 		targetLink = file->associatedLink();
-
-		// This catches cases where associatedLink is called on a file, but the file doesn't implement that.
-		// Instead of blowing up, return ENOENT.
-		// TODO: fstatfs can't return ENOENT, verify this is needed
-		if(!targetLink) {
-			co_await sendErrorResponse<managarm::posix::FstatfsResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-			co_return {};
-		}
 	} else {
 		PathResolver resolver;
 		resolver.setup(self->fsContext()->getRoot(), self->fsContext()->getWorkingDirectory(),
@@ -1064,7 +1049,7 @@ HandleRequest::operator()(managarm::posix::SynchronizeRequest &&req,
 			result = co_await file->synchronize(flags);
 		} else {
 			auto link = file->associatedLink();
-			if(!link || !link->getTarget()) {
+			if(!link->getTarget()) {
 				co_await sendErrorResponse<managarm::posix::SynchronizeResponse>(
 					conversation, managarm::posix::Errors::ILLEGAL_OPERATION_TARGET);
 				co_return {};
@@ -1145,8 +1130,8 @@ HandleRequest::operator()(managarm::posix::FchmodAtRequest &&req,
 		co_return {};
 	}
 
-	if(req.flags() & AT_EMPTY_PATH) {
-		target_link = file->associatedLink();
+	if(req.path().empty() && (req.flags() & AT_EMPTY_PATH)) {
+		target_link = relative_to.second;
 	} else {
 		PathResolver resolver;
 		resolver.setup(self->fsContext()->getRoot(),
@@ -1208,8 +1193,8 @@ HandleRequest::operator()(managarm::posix::FchownAtRequest &&req,
 		co_return {};
 	}
 
-	if(req.flags() & AT_EMPTY_PATH) {
-		targetLink = file->associatedLink();
+	if(req.path().empty() && (req.flags() & AT_EMPTY_PATH)) {
+		targetLink = relativeTo.second;
 	} else {
 		PathResolver resolver;
 		resolver.setup(self->fsContext()->getRoot(),

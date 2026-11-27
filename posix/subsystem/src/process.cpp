@@ -1527,8 +1527,7 @@ void Process::dumpRegisters() {
 		uintptr_t end = start + mapping.size();
 
 		std::string path;
-		if(mapping.backingFile().get() && !(mapping.backingFile()->associatedMount()
-				&& mapping.backingFile()->associatedLink())) {
+		if(mapping.backingFile().get() && !mapping.backingFile()->associatedMount()) {
 			// Files without a path (e.g., files that servers install via ServeFdRequest).
 			path = "anon_inode:" + mapping.backingFile()->structName().type();
 		}else if(mapping.backingFile().get()) {
