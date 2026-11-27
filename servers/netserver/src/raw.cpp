@@ -33,9 +33,11 @@ static async::result<void> serveLanes(
 }
 
 managarm::fs::Errors Raw::serveSocket(helix::UniqueLane ctrlLane, helix::UniqueLane ptLane, int type, int proto, int flags) {
-	(void) type;
-
 	(void) flags;
+
+	// TODO: Support SOCK_DGRAM, which strips the link-layer header on receive.
+	if(type != SOCK_RAW)
+		return managarm::fs::Errors::ILLEGAL_ARGUMENT;
 
 	auto raw_socket = smarter::make_shared<RawSocket>(this, ntohs(static_cast<uint16_t>(proto)));
 	raw_socket->holder_ = raw_socket;
