@@ -609,8 +609,7 @@ Error modifyItem(File *epfile, File *file, int fd, int flags, uint64_t cookie) {
 	return epoll->modifyItem(file, fd, flags, cookie);
 }
 
-Error deleteItem(File *epfile, File *file, int fd, int flags) {
-	assert(!flags);
+Error deleteItem(File *epfile, File *file, int fd) {
 	auto epoll = static_cast<OpenFile *>(epfile);
 	return epoll->deleteItem(file, fd);
 }

@@ -222,12 +222,6 @@ File::ptSendMsg(void *object, helix_ng::CredentialsView creds, uint32_t flags,
 		co_return Error::badProcessCredentials | protocols::fs::toFsProtoError;
 	}
 
-	if(flags & ~(MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_NOSIGNAL)) {
-		std::cout << "\e[31mposix: Unknown SENDMSG flags: 0x" << std::hex << flags
-			<< std::dec << "\e[39m" << std::endl;
-		assert(!"Flags not implemented");
-	}
-
 	std::vector<smarter::shared_ptr<File, FileHandle>> files;
 	{
 		// The sending thread may have exited; do not keep its files open across sendMsg().
@@ -373,7 +367,7 @@ File::recvMsg(Process *, uint32_t, void *, size_t,
 		void *, size_t, size_t) {
 	std::cout << "posix \e[1;34m" << structName()
 			<< "\e[0m: Object does not implement recvMsg()" << std::endl;
-	co_return protocols::fs::Error::illegalOperationTarget;
+	co_return protocols::fs::Error::notSocket;
 }
 
 async::result<frg::expected<protocols::fs::Error, size_t>>
@@ -383,7 +377,7 @@ File::sendMsg(Process *, uint32_t,
 		std::vector<smarter::shared_ptr<File, FileHandle>>, struct ucred) {
 	std::cout << "posix \e[1;34m" << structName()
 			<< "\e[0m: Object does not implement sendMsg()" << std::endl;
-	co_return protocols::fs::Error::illegalOperationTarget;
+	co_return protocols::fs::Error::notSocket;
 }
 
 async::result<frg::expected<protocols::fs::Error>> File::truncate(size_t) {

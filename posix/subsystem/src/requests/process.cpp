@@ -531,11 +531,11 @@ HandleRequest::operator()(managarm::posix::SigactionRequest &&req,
 	id = preamble.id();
 	logRequest(logRequests, self, "SIG_ACTION");
 
+	// Like Linux, drop unknown flags instead of rejecting them.
 	if(req.flags() & ~(SA_ONSTACK | SA_SIGINFO | SA_RESETHAND | SA_NODEFER | SA_RESTART | SA_NOCLDSTOP | SA_NOCLDWAIT)) {
 		std::cout << "\e[31mposix: Unknown SIG_ACTION flags: 0x"
 				<< std::hex << req.flags()
 				<< std::dec << "\e[39m" << std::endl;
-		assert(!"Flags not implemented");
 	}
 
 	managarm::posix::SigactionResponse resp;

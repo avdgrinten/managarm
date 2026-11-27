@@ -228,7 +228,10 @@ HandleRequest::operator()(managarm::posix::SockpairRequest &&req,
 
 	logRequest(logRequests, self, "SOCKPAIR");
 
-	assert(!(req.flags() & ~(SOCK_NONBLOCK | SOCK_CLOEXEC)));
+	if(req.flags() & ~(SOCK_NONBLOCK | SOCK_CLOEXEC)) {
+		co_await sendErrorResponse<managarm::posix::SockpairResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
 
 	if(req.domain() != AF_UNIX) {
 		std::cout << "\e[31mposix: socketpair() with domain " << req.domain() <<
