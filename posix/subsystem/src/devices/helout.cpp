@@ -12,14 +12,6 @@ namespace {
 
 struct HeloutFile final : FileWithDefaults {
 private:
-	async::result<std::expected<size_t, Error>>
-	readSome(Process *, void *data, size_t max_length, async::cancellation_token) override {
-		(void)data;
-		(void)max_length;
-		assert(!"Not implemented");
-		__builtin_unreachable();
-	}
-
 	async::result<frg::expected<Error, PollWaitResult>>
 	pollWait(Process *, uint64_t sequence, int mask,
 			async::cancellation_token cancellation) override {
