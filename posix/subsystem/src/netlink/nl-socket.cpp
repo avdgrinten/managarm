@@ -436,7 +436,8 @@ async::result<frg::expected<protocols::fs::Error, size_t>> OpenFile::peername(vo
 async::result<frg::expected<protocols::fs::Error>> OpenFile::setSocketOption(int layer, int number,
 		std::vector<char> optbuf) {
 	if(layer == SOL_SOCKET && number == SO_ATTACH_FILTER) {
-		assert(optbuf.size() % sizeof(struct sock_filter) == 0);
+		if(optbuf.size() % sizeof(struct sock_filter))
+			co_return protocols::fs::Error::illegalArguments;
 
 		Bpf bpf{optbuf};
 		if(!bpf.validate())
