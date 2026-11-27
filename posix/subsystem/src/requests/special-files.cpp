@@ -82,16 +82,8 @@ HandleRequest::operator()(managarm::posix::InotifyAddRequest &&req,
 			self->fsContext()->getWorkingDirectory(), req.path(), self.get());
 	auto resolveResult = co_await resolver.resolve(flags);
 	if(!resolveResult) {
-		if(resolveResult.error() == protocols::fs::Error::fileNotFound) {
-			co_await sendErrorResponse<managarm::posix::InotifyAddResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-			co_return {};
-		} else if(resolveResult.error() == protocols::fs::Error::notDirectory) {
-			co_await sendErrorResponse<managarm::posix::InotifyAddResponse>(conversation, managarm::posix::Errors::NOT_A_DIRECTORY);
-			co_return {};
-		} else {
-			std::cout << "posix: Unexpected failure from resolve()" << std::endl;
-			co_return {};
-		}
+		co_await sendErrorResponse<managarm::posix::InotifyAddResponse>(conversation, resolveResult.error() | toPosixError | toPosixProtoError);
+		co_return {};
 	}
 
 	auto wd = inotify::addWatch(ifile.get(), resolver.currentLink()->getTarget(),

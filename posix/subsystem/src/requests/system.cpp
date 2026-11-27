@@ -79,16 +79,8 @@ HandleRequest::operator()(managarm::posix::MountRequest &&req,
 	auto resolveResult = co_await resolve(self->fsContext()->getRoot(),
 			self->fsContext()->getWorkingDirectory(), req.target_path(), self.get());
 	if(!resolveResult) {
-		if(resolveResult.error() == protocols::fs::Error::fileNotFound) {
-			co_await sendErrorResponse<managarm::posix::MountResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-			co_return {};
-		} else if(resolveResult.error() == protocols::fs::Error::notDirectory) {
-			co_await sendErrorResponse<managarm::posix::MountResponse>(conversation, managarm::posix::Errors::NOT_A_DIRECTORY);
-			co_return {};
-		} else {
-			std::cout << "posix: Unexpected failure from resolve()" << std::endl;
-			co_return {};
-		}
+		co_await sendErrorResponse<managarm::posix::MountResponse>(conversation, resolveResult.error() | toPosixError | toPosixProtoError);
+		co_return {};
 	}
 	auto target = resolveResult.value();
 
@@ -119,16 +111,8 @@ HandleRequest::operator()(managarm::posix::MountRequest &&req,
 		auto sourceResult = co_await resolve(self->fsContext()->getRoot(),
 				self->fsContext()->getWorkingDirectory(), req.path(), self.get());
 		if(!sourceResult) {
-			if(sourceResult.error() == protocols::fs::Error::fileNotFound) {
-				co_await sendErrorResponse<managarm::posix::MountResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-				co_return {};
-			} else if(sourceResult.error() == protocols::fs::Error::notDirectory) {
-				co_await sendErrorResponse<managarm::posix::MountResponse>(conversation, managarm::posix::Errors::NOT_A_DIRECTORY);
-				co_return {};
-			} else {
-				std::cout << "posix: Unexpected failure from resolve()" << std::endl;
-				co_return {};
-			}
+			co_await sendErrorResponse<managarm::posix::MountResponse>(conversation, sourceResult.error() | toPosixError | toPosixProtoError);
+			co_return {};
 		}
 		auto source = sourceResult.value();
 		assert(source.second);
@@ -179,16 +163,8 @@ HandleRequest::operator()(managarm::posix::SwaponRequest &&req,
 	auto pathResult = co_await resolve(self->fsContext()->getRoot(),
 			self->fsContext()->getWorkingDirectory(), req.path(), self.get());
 	if(!pathResult) {
-		if(pathResult.error() == protocols::fs::Error::fileNotFound) {
-			co_await sendErrorResponse<managarm::posix::SwaponResponse>(conversation, managarm::posix::Errors::FILE_NOT_FOUND);
-			co_return {};
-		} else if(pathResult.error() == protocols::fs::Error::notDirectory) {
-			co_await sendErrorResponse<managarm::posix::SwaponResponse>(conversation, managarm::posix::Errors::NOT_A_DIRECTORY);
-			co_return {};
-		} else {
-			std::cout << "posix: Unexpected failure from resolve()" << std::endl;
-			co_return {};
-		}
+		co_await sendErrorResponse<managarm::posix::SwaponResponse>(conversation, pathResult.error() | toPosixError | toPosixProtoError);
+		co_return {};
 	}
 	auto node = pathResult.value().second->getTarget();
 
