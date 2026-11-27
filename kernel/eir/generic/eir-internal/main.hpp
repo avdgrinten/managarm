@@ -24,6 +24,7 @@ extern "C" [[noreturn]] void eirMain();
 
 extern "C" void eirRunConstructors();
 
+initgraph::Stage *getInitrdDecompressableStage();
 initgraph::Stage *getInitrdAvailableStage();
 initgraph::Stage *getCmdlineAvailableStage();
 
@@ -50,7 +51,13 @@ initgraph::Stage *getKernelMappableStage();
 // Ordered after getKernelMappableStage().
 initgraph::Stage *getKernelLoadableStage();
 
+extern void *rawInitrd;
+// Size of the initrd as provided by the boot protocol, or zero if unknown.
+extern size_t rawInitrdSize;
+
 extern void *initrd;
+// Size of the decompressed initrd.
+extern size_t initrdSize;
 
 extern frg::array<InitialRegion, 32> reservedRegions;
 extern size_t nReservedRegions;

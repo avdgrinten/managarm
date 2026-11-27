@@ -16,10 +16,17 @@ endif
 
 objcopy = find_program(host_machine.cpu_family() + '-managarm-objcopy')
 
+eir_linux_zstd_lib = static_library('eir-linux-zstd', zstd_decompress_sources,
+	include_directories : eir_includes,
+	c_args : [eir_c_args, eir_zstd_c_args],
+	pic : true,
+)
+
 exe = executable('eir-linux', eir_sources, eir_linux_sources,
 	include_directories : eir_includes,
 	c_args : [eir_c_args, '-DEIR_PIE'], # Assembly is treated as C.
 	cpp_args : [eir_cpp_args, '-DEIR_PIE'],
+	link_with : eir_linux_zstd_lib,
 	link_args : [eir_link_args, '-Wl,-T,' + meson.current_source_dir() + '/link.x', '-static-pie'],
 	dependencies : eir_dependencies,
 	link_depends : files('link.x'),

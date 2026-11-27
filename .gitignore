@@ -1,5 +1,6 @@
-subprojects
+subprojects/*
 !subprojects/*.wrap
+!subprojects/packagefiles/
 *.xbstrap
 .clangd
 compile_commands.json

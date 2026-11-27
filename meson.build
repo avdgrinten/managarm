@@ -157,6 +157,9 @@ if build_kernel
 	uacpi = dependency('uacpi', method: 'pkg-config')
 	cralgo_sources = cralgo.get_variable('sources')
 	cralgo_includes = cralgo.get_variable('includes')
+	zstd = subproject('zstd')
+	zstd_decompress_sources = zstd.get_variable('decompress_sources')
+	zstd_includes = zstd.get_variable('includes')
 	uacpi_includes = include_directories(uacpi.get_variable('includedir'))
 
 	uacpi_sources = files()

@@ -145,7 +145,8 @@ extern "C" void eirMultiboot2Main(uint32_t info, uint32_t magic) {
 				if (n_modules)
 					eir::panicLogger() << "eir: only one module is supported!" << frg::endlog;
 
-				initrd = reinterpret_cast<void *>(module->start);
+				rawInitrd = reinterpret_cast<void *>(module->start);
+				rawInitrdSize = module->end - module->start;
 				reservedRegions[nReservedRegions++] = {module->start, module->end - module->start};
 
 				n_modules++;

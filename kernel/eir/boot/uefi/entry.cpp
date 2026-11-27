@@ -52,8 +52,10 @@ unsigned int gopBpp{0};
 efi_loaded_image_protocol *loadedImage = nullptr;
 efi_device_path_to_text_protocol *devPathToText = nullptr;
 
-frg::string_view initrdPath = "managarm\\initrd.cpio";
-size_t initrdSize = 0;
+constexpr frg::string_view defaultInitrdPath = "managarm\\initrd.cpio";
+constexpr frg::string_view defaultZstdInitrdPath = "managarm\\initrd.cpio.zst";
+
+frg::string_view initrdPath = defaultInitrdPath;
 
 size_t memMapSize = 0;
 size_t mapKey = 0;
@@ -172,6 +174,64 @@ uint32_t convertIp(frg::string_view ip) {
 	}
 
 	return res;
+}
+
+// Loads a file via TFTP into freshly allocated pages.
+// Returns the status of the file size query so that callers can fall back to other files.
+efi_status pxeLoadFile(
+    efi_pxe_base_code_protocol *pxe, frg::string_view filePath, void *&fileData, size_t &fileSize
+) {
+	char *path = nullptr;
+	EFI_CHECK(
+	    bs->allocate_pool(EfiLoaderData, filePath.size() + 1, reinterpret_cast<void **>(&path))
+	);
+	frg::scope_exit freePath{[&] { EFI_CHECK(bs->free_pool(path)); }};
+	memcpy(path, filePath.data(), filePath.size());
+	path[filePath.size()] = '\0';
+
+	// normalize slashes in paths
+	for (size_t i = 0; i < filePath.size(); i++) {
+		if (path[i] == '\\')
+			path[i] = '/';
+	}
+
+	uint64_t size = 0;
+	auto status = pxe->mtftp(
+	    pxe,
+	    EfiPxeBaseCodeTftpGetFileSize,
+	    nullptr,
+	    false,
+	    &size,
+	    nullptr,
+	    &pxeInfo->server_ip,
+	    path,
+	    nullptr,
+	    false
+	);
+	if (status != EFI_SUCCESS)
+		return status;
+
+	size_t pages = (size >> 12) + 1;
+	efi_physical_addr addr = 0;
+	EFI_CHECK(bs->allocate_pages(AllocateAnyPages, EfiLoaderData, pages, &addr));
+
+	uint64_t bufferSize = static_cast<uint64_t>(pages) << 12;
+	EFI_CHECK(pxe->mtftp(
+	    pxe,
+	    EfiPxeBaseCodeTftpReadFile,
+	    reinterpret_cast<void *>(addr),
+	    false,
+	    &bufferSize,
+	    nullptr,
+	    &pxeInfo->server_ip,
+	    path,
+	    nullptr,
+	    false
+	));
+
+	fileData = reinterpret_cast<void *>(addr);
+	fileSize = size;
+	return EFI_SUCCESS;
 }
 
 initgraph::Task preparePxe{
@@ -312,57 +372,16 @@ initgraph::Task preparePxe{
 		    return;
 	    }
 
-	    size_t file_size = 0;
-	    char *path = nullptr;
-	    EFI_CHECK(bs->allocate_pool(
-	        EfiLoaderData, initrdPath.size() + 1, reinterpret_cast<void **>(&path)
-	    ));
-	    memcpy(path, initrdPath.data(), initrdPath.size());
-	    path[initrdPath.size()] = '\0';
+	    // Prefer the zstd-compressed initrd if no explicit path was given
+	    if (initrdPath == defaultInitrdPath) {
+		    if (pxeLoadFile(pxe, defaultZstdInitrdPath, rawInitrd, rawInitrdSize) == EFI_SUCCESS)
+			    return;
 
-	    // normalize slashes in paths
-	    for (size_t i = 0; i < strlen(path); i++) {
-		    if (path[i] == '\\')
-			    path[i] = '/';
+		    eir::infoLogger() << "eir: Failed to load " << defaultZstdInitrdPath
+		                      << " via TFTP, falling back to " << initrdPath << frg::endlog;
 	    }
 
-	    EFI_CHECK(pxe->mtftp(
-	        pxe,
-	        EfiPxeBaseCodeTftpGetFileSize,
-	        nullptr,
-	        false,
-	        &file_size,
-	        nullptr,
-	        &pxeInfo->server_ip,
-	        path,
-	        nullptr,
-	        false
-	    ));
-
-	    initrdSize = file_size;
-	    efi_physical_addr initrd_addr = 0;
-	    EFI_CHECK(
-	        bs->allocate_pages(AllocateAnyPages, EfiLoaderData, (file_size >> 12) + 1, &initrd_addr)
-	    );
-
-	    file_size = ((file_size >> 12) + 1) << 12;
-
-	    EFI_CHECK(pxe->mtftp(
-	        pxe,
-	        EfiPxeBaseCodeTftpReadFile,
-	        (void *)initrd_addr,
-	        false,
-	        &file_size,
-	        nullptr,
-	        &pxeInfo->server_ip,
-	        path,
-	        nullptr,
-	        false
-	    ));
-
-	    bs->free_pool(path);
-
-	    initrd = reinterpret_cast<void *>(initrd_addr);
+	    EFI_CHECK(pxeLoadFile(pxe, initrdPath, rawInitrd, rawInitrdSize));
     }
 };
 
@@ -399,25 +418,25 @@ initgraph::Task readInitrd{
     &globalInitEngine,
     "uefi.read-initrd",
     initgraph::Requires{&preparePxe},
-    initgraph::Entails{getBootservicesDoneStage(), getInitrdAvailableStage()},
+    initgraph::Entails{getBootservicesDoneStage(), getInitrdDecompressableStage()},
     [] {
-	    if (initrd)
+	    if (rawInitrd)
 		    return;
 
 	    infoLogger() << "eir: Trying to read initrd from simple filesystem" << frg::endlog;
 
 	    efi_file_protocol *initrdFile = nullptr;
 	    EFI_CHECK(fsOpen(&initrdFile, asciiToUcs2(initrdPath)));
-	    initrdSize = fsGetSize(initrdFile);
+	    rawInitrdSize = fsGetSize(initrdFile);
 
 	    // Read initrd.
 	    efi_physical_addr initrd_addr = 0;
 	    EFI_CHECK(bs->allocate_pages(
-	        AllocateAnyPages, EfiLoaderData, (initrdSize >> 12) + 1, &initrd_addr
+	        AllocateAnyPages, EfiLoaderData, (rawInitrdSize >> 12) + 1, &initrd_addr
 	    ));
-	    EFI_CHECK(fsRead(initrdFile, initrdSize, 0, initrd_addr));
+	    EFI_CHECK(fsRead(initrdFile, rawInitrdSize, 0, initrd_addr));
 
-	    initrd = reinterpret_cast<void *>(initrd_addr);
+	    rawInitrd = reinterpret_cast<void *>(initrd_addr);
     }
 };
 
@@ -566,7 +585,9 @@ initgraph::Task setupReservedRegions{
 	    reservedRegions[nReservedRegions++] = {
 	        reinterpret_cast<uintptr_t>(loadedImage->image_base), loadedImage->image_size
 	    };
-	    reservedRegions[nReservedRegions++] = {reinterpret_cast<uintptr_t>(initrd), initrdSize};
+	    reservedRegions[nReservedRegions++] = {
+	        reinterpret_cast<uintptr_t>(rawInitrd), rawInitrdSize
+	    };
 
 	    if (eirDtbPtr) {
 		    DeviceTree dt{physToVirt<void>(eirDtbPtr)};
@@ -817,7 +838,8 @@ void handleUki() {
 		} else if (name == ".initrd") {
 			infoLogger() << "eir: Found .initrd in UKI at offset 0x"
 			             << frg::hex_fmt{sectionHeader->VirtualAddress} << frg::endlog;
-			initrd = const_cast<char *>(base + sectionHeader->VirtualAddress);
+			rawInitrd = const_cast<char *>(base + sectionHeader->VirtualAddress);
+			rawInitrdSize = sectionHeader->VirtualSize;
 		}
 	}
 }

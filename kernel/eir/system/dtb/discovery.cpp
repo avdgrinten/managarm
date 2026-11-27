@@ -142,7 +142,8 @@ void discoverMemoryFromDtb() {
 	eir::infoLogger() << "initrd is between 0x" << frg::hex_fmt(initrdStart) << " and 0x"
 	                  << frg::hex_fmt(initrdEnd) << frg::endlog;
 
-	initrd = physToVirt<void>(initrdStart);
+	rawInitrd = physToVirt<void>(initrdStart);
+	rawInitrdSize = initrdEnd - initrdStart;
 
 	if (auto p = chosenNode.findProperty("bootargs")) {
 		extendCmdline(static_cast<const char *>(p->data()));
@@ -237,7 +238,7 @@ void discoverMemoryFromDtb() {
 static initgraph::Task discoverMemory{
     &globalInitEngine,
     "dt.discover-memory",
-    initgraph::Entails{getInitrdAvailableStage(), getCmdlineAvailableStage()},
+    initgraph::Entails{getInitrdDecompressableStage(), getCmdlineAvailableStage()},
     [] {
 	    if (!eirDtbPtr)
 		    return;

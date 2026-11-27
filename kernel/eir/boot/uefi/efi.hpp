@@ -569,7 +569,7 @@ struct efi_boot_services {
 	efi_status (*allocate_pages)(
 	    efi_allocate_type type, efi_memory_type memory_type, size_t pages, efi_physical_addr *memory
 	);
-	void *free_pages;
+	efi_status (*free_pages)(efi_physical_addr memory, size_t pages);
 	efi_status (*get_memory_map)(
 	    size_t *memory_map_size,
 	    efi_memory_descriptor *memory_map,

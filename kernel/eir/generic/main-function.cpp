@@ -41,6 +41,11 @@ initgraph::Stage *getMemoryRegionsKnownStage() {
 	return &s;
 }
 
+initgraph::Stage *getInitrdDecompressableStage() {
+	static initgraph::Stage s{&globalInitEngine, "generic.initrd-available"};
+	return &s;
+}
+
 initgraph::Stage *getInitrdAvailableStage() {
 	static initgraph::Stage s{&globalInitEngine, "generic.initrd-available"};
 	return &s;
@@ -75,11 +80,21 @@ struct GlobalCtorTest {
 	GlobalCtorTest() { infoLogger() << "Hello world from global ctor" << frg::endlog; }
 };
 
+// Runs between the memory map being known and setting up the allocator so that the
+// decompressed initrd can be carved out of the allocatable regions.
+static initgraph::Task decompressInitrdTask{
+    &globalInitEngine,
+    "generic.decompress-initrd",
+    initgraph::Requires{getInitrdDecompressableStage(), getMemoryRegionsKnownStage()},
+    initgraph::Entails{getInitrdAvailableStage()},
+    [] { decompressInitrd(); }
+};
+
 static initgraph::Task parseInitrdInfo{
     &globalInitEngine,
     "generic.parse-initrd",
-    initgraph::Requires{getInitrdAvailableStage()},
-    initgraph::Entails{getReservedRegionsKnownStage(), getKernelLoadableStage()},
+    initgraph::Requires{&decompressInitrdTask},
+    initgraph::Entails{getKernelLoadableStage()},
     [] {
 	    assert(initrd);
 	    parseInitrd(initrd);
@@ -91,7 +106,8 @@ static initgraph::Task parseInitrdInfo{
 static initgraph::Task setupRegions{
     &globalInitEngine,
     "generic.setup-regions",
-    initgraph::Requires{getMemoryRegionsKnownStage()},
+    // Decompressing the initrd might require allocating from memory regions
+    initgraph::Requires{getMemoryRegionsKnownStage(), getInitrdAvailableStage()},
     initgraph::Entails{getAllocationAvailableStage()},
     [] {
 	    setupRegionStructs();
