@@ -68,15 +68,29 @@ HandleRequest::operator()(managarm::posix::VmMapRequest &&req,
 		}
 	}
 
-	// Files such as /dev/zero map like anonymous memory; their offset is ignored.
-	frg::expected<Error, void *> result;
-	if((req.flags() & MAP_ANONYMOUS) || file->mapsAnonymously()) {
-		if(req.size() == 0) {
-			std::cout << "posix: VM_MAP with size 0 is not allowed" << std::endl;
+	if(req.size() == 0) {
+		co_await sendErrorResponse<managarm::posix::VmMapResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
+	// Linux fails with ENOMEM if rounding the size up to pages wraps around.
+	if(req.size() > SIZE_MAX - (kHelPageSize - 1)) {
+		co_await sendErrorResponse<managarm::posix::VmMapResponse>(conversation, managarm::posix::Errors::NO_MEMORY);
+		co_return {};
+	}
+
+	if(req.flags() & (MAP_FIXED | MAP_FIXED_NOREPLACE)) {
+		if(hint & (kHelPageSize - 1)) {
 			co_await sendErrorResponse<managarm::posix::VmMapResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 			co_return {};
 		}
+	}else{
+		// Like Linux, round unaligned hints down instead of failing.
+		hint &= ~uintptr_t(kHelPageSize - 1);
+	}
 
+	// Files such as /dev/zero map like anonymous memory; their offset is ignored.
+	frg::expected<Error, void *> result;
+	if((req.flags() & MAP_ANONYMOUS) || file->mapsAnonymously()) {
 		// We round up to page size
 		size_t size = req.size();
 		if(size & (kHelPageSize - 1)) {

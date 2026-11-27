@@ -501,8 +501,9 @@ public:
 		std::optional<std::string> abstractPath;
 		smarter::shared_ptr<FsNode> pathNode;
 		if(socktype_ == SOCK_DGRAM && addr_length != 0) {
+			if(addr_length > sizeof(struct sockaddr_un))
+				co_return protocols::fs::Error::illegalArguments;
 			struct sockaddr_un sa;
-			assert(addr_length <= sizeof(struct sockaddr_un));
 			memcpy(&sa, addr_ptr, addr_length);
 
 			std::string path;
@@ -747,7 +748,8 @@ public:
 
 	async::result<protocols::fs::Error>
 	bind(Process *process, const void *addr_ptr, size_t addr_length) override {
-		if(addr_length <= offsetof(struct sockaddr_un, sun_path)) {
+		if(addr_length <= offsetof(struct sockaddr_un, sun_path)
+				|| addr_length > sizeof(struct sockaddr_un)) {
 			co_return protocols::fs::Error::illegalArguments;
 		}
 
@@ -761,7 +763,6 @@ public:
 
 		// Create a new socket node in the FS.
 		struct sockaddr_un sa;
-		assert(addr_length <= sizeof(struct sockaddr_un));
 		memcpy(&sa, addr_ptr, addr_length);
 		std::string path;
 		NameType nameType;

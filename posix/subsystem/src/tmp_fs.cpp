@@ -789,16 +789,22 @@ MemoryFile::seek(off_t delta, VfsSeek whence) {
 	co_await _offsetMutex.async_lock();
 	frg::unique_lock offset_lock{frg::adopt_lock, _offsetMutex};
 
+	int64_t base;
 	if(whence == VfsSeek::absolute) {
-		_offset = delta;
+		base = 0;
 	}else if(whence == VfsSeek::relative){
-		_offset += delta;
+		base = _offset;
 	}else if(whence == VfsSeek::eof) {
 		auto node = static_cast<MemoryNode *>(associatedLink()->getTarget().get());
-		_offset = delta + node->_fileSize.load(std::memory_order_relaxed);
+		base = node->_fileSize.load(std::memory_order_relaxed);
 	} else {
 		co_return Error::illegalArguments;
 	}
+	// Like Linux' vfs_setpos(), reject negative and overflowing positions.
+	int64_t offset;
+	if(__builtin_add_overflow(base, delta, &offset) || offset < 0)
+		co_return Error::illegalArguments;
+	_offset = offset;
 	co_return _offset;
 }
 

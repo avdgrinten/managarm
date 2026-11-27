@@ -54,13 +54,18 @@ private:
 
 		assert(resp.error() == managarm::kerncfg::Error::SUCCESS);
 
+		// Like Linux, readers at offset 0 start at the oldest record; others get EPIPE once if theirs was overwritten.
+		if(offset_ && offset_ != resp.effective_dequeue()) {
+			offset_ = resp.effective_dequeue();
+			co_return std::unexpected{Error::brokenPipe};
+		}
+
 		int ret_len = snprintf(reinterpret_cast<char *>(data), length,
 			"%s", reinterpret_cast<char *>(buffer.data()));
 
 		if(ret_len < 0)
 			co_return std::unexpected{Error::ioError};
 
-		assert(offset_ == resp.effective_dequeue());
 		offset_ = resp.new_dequeue();
 
 		co_return static_cast<size_t>(ret_len);

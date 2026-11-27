@@ -1,5 +1,6 @@
 #include <elf.h>
 #include <hel.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -79,6 +80,11 @@ loadElfImage(SharedFilePtr file, VmContext *vmContext, uintptr_t base) {
 	if(ehdr.e_type != ET_EXEC && ehdr.e_type != ET_DYN)
 		co_return Error::badExecutable;
 
+	// Linux rejects the same program header tables in load_elf_phdrs().
+	if(ehdr.e_phentsize != sizeof(Elf64_Phdr) || !ehdr.e_phnum
+			|| ehdr.e_phnum * sizeof(Elf64_Phdr) > 65536)
+		co_return Error::badExecutable;
+
 	info.entryIp = (char *)base + ehdr.e_entry;
 	info.phdrEntrySize = ehdr.e_phentsize;
 	info.phdrCount = ehdr.e_phnum;
@@ -113,6 +119,11 @@ loadElfImage(SharedFilePtr file, VmContext *vmContext, uintptr_t base) {
 
 			if(phdr->p_filesz > phdr->p_memsz) {
 				std::cout << "posix: ELF segment with p_filesz larger than p_memsz" << std::endl;
+				co_return Error::badExecutable;
+			}
+
+			if(mapLength < phdr->p_memsz) {
+				std::cout << "posix: ELF segment with p_memsz that overflows" << std::endl;
 				co_return Error::badExecutable;
 			}
 
@@ -181,6 +192,8 @@ loadElfImage(SharedFilePtr file, VmContext *vmContext, uintptr_t base) {
 		}else if(phdr->p_type == PT_PHDR) {
 			info.phdrPtr = (char *)base + phdr->p_vaddr;
 		}else if(phdr->p_type == PT_INTERP) {
+			if(phdr->p_filesz < 2 || phdr->p_filesz > PATH_MAX)
+				co_return Error::badExecutable;
 			info.interpreter.resize(phdr->p_filesz);
 			FRG_CO_TRY(co_await file->seek(phdr->p_offset, VfsSeek::absolute));
 			FRG_CO_TRY(co_await file->readExactly(nullptr,

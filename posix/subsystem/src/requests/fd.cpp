@@ -1,3 +1,4 @@
+#include <climits>
 #include <fcntl.h>
 #include <sys/poll.h>
 
@@ -251,8 +252,12 @@ HandleRequest::operator()(managarm::posix::EpollCallRequest &&req,
 	};
 	std::unordered_map<int, PollEvents> fdsToEvents;
 
+	if(req.fds_size() != req.events_size()) {
+		co_await sendErrorResponse<managarm::posix::EpollCallResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
+
 	auto epfile = epoll::createFile();
-	assert(req.fds_size() == req.events_size());
 
 	auto timeout = req.timeout();
 
@@ -439,6 +444,10 @@ HandleRequest::operator()(managarm::posix::EpollCtlRequest &&req,
 		co_await sendErrorResponse<managarm::posix::EpollCtlResponse>(conversation, managarm::posix::Errors::NO_SUCH_FD);
 		co_return {};
 	}
+	if(epfile->kind() != FileKind::epoll || epfile.get() == file.get()) {
+		co_await sendErrorResponse<managarm::posix::EpollCtlResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
 
 	managarm::posix::EpollCtlResponse resp;
 	resp.set_error(managarm::posix::Errors::SUCCESS);
@@ -486,9 +495,18 @@ HandleRequest::operator()(managarm::posix::EpollWaitRequest &&req,
 
 	uint64_t former = self->signalMask();
 
+	if(!req.size() || req.size() > INT_MAX / sizeof(struct epoll_event)) {
+		co_await sendErrorResponse<managarm::posix::EpollWaitResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
+
 	auto epfile = self->fileContext()->getFile(req.fd());
 	if(!epfile) {
 		co_await sendErrorResponse<managarm::posix::EpollWaitResponse>(conversation, managarm::posix::Errors::NO_SUCH_FD);
+		co_return {};
+	}
+	if(epfile->kind() != FileKind::epoll) {
+		co_await sendErrorResponse<managarm::posix::EpollWaitResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
 		co_return {};
 	}
 

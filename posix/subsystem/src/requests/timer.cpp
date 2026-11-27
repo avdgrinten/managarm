@@ -76,6 +76,11 @@ HandleRequest::operator()(managarm::posix::TimerCreateRequest &&req,
 
 	logRequest(logRequests, self, "TIMER_CREATE", "clockid={}", req.clockid());
 
+	if(req.sigev_tid() && (req.sigev_signo() <= 0 || req.sigev_signo() > 64)) {
+		co_await sendErrorResponse<managarm::posix::TimerCreateResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
+
 	managarm::posix::TimerCreateResponse resp;
 	if(req.clockid() == CLOCK_MONOTONIC || req.clockid() == CLOCK_REALTIME) {
 		auto timerContext = std::make_shared<ThreadGroup::PosixTimerContext>(

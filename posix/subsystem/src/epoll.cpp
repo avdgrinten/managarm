@@ -142,7 +142,9 @@ private:
 				}
 
 				if(!resultOrError) {
-					assert(resultOrError.error() == Error::fileClosed);
+					if(resultOrError.error() != Error::fileClosed)
+						std::println("posix.epoll \e[1;34m{}\e[0m: Unexpected error {} from pollWait() on \e[1;34m{}\e[0m",
+							self->structName(), std::to_underlying(resultOrError.error()), item->file->structName());
 					item->state &= ~statePolling;
 					return;
 				}
@@ -551,7 +553,7 @@ public:
 	}
 
 	OpenFile()
-	: FileWithDefaults{FileKind::unknown,  StructName::get("epoll"), nullptr, SpecialLink::makeSpecialLink(VfsType::regular, 0777), File::defaultPipeLikeSeek}, _currentSeq{0} { }
+	: FileWithDefaults{FileKind::epoll,  StructName::get("epoll"), nullptr, SpecialLink::makeSpecialLink(VfsType::regular, 0777), File::defaultPipeLikeSeek}, _currentSeq{0} { }
 
 private:
 	helix::UniqueLane _passthrough;

@@ -276,11 +276,17 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 			// Parse both the arguments and the environment areas.
 			size_t k;
 
+			// Linux faults on strings that run past the readable area; do the same for unterminated areas.
+			bool unterminated = false;
+
 			std::vector<std::string> args;
 			k = 0;
 			while(k < args_area.size()) {
 				auto d = args_area.find(char(0), k);
-				assert(d != std::string::npos);
+				if(d == std::string::npos) {
+					unterminated = true;
+					break;
+				}
 				args.push_back(args_area.substr(k, d - k));
 //				std::cout << "arg: " << args.back() << std::endl;
 				k = d + 1;
@@ -290,10 +296,21 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 			k = 0;
 			while(k < env_area.size()) {
 				auto d = env_area.find(char(0), k);
-				assert(d != std::string::npos);
+				if(d == std::string::npos) {
+					unterminated = true;
+					break;
+				}
 				env.push_back(env_area.substr(k, d - k));
 //				std::cout << "env: " << env.back() << std::endl;
 				k = d + 1;
+			}
+
+			if(unterminated) {
+				gprs[kHelRegError] = kHelErrNone;
+				gprs[kHelRegOut0] = EFAULT;
+				HEL_CHECK(helStoreRegisters(thread.getHandle(), kHelRegsGeneral, &gprs));
+				HEL_CHECK(helResume(thread.getHandle()));
+				continue;
 			}
 
 			auto error = co_await Process::exec(self,
@@ -521,6 +538,13 @@ async::result<void> observeThread(std::shared_ptr<Process> self,
 					HEL_CHECK(helResume(thread.getHandle()));
 					continue;
 				}
+			}
+
+			if(sn < 0 || sn > 64) {
+				gprs[kHelRegOut0] = EINVAL;
+				HEL_CHECK(helStoreRegisters(thread.getHandle(), kHelRegsGeneral, &gprs));
+				HEL_CHECK(helResume(thread.getHandle()));
+				continue;
 			}
 
 			HEL_CHECK(helStoreRegisters(thread.getHandle(), kHelRegsGeneral, &gprs));

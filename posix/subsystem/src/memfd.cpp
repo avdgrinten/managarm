@@ -14,14 +14,20 @@ MemoryFile::seek(off_t delta, VfsSeek whence) {
 	co_await _mutex.async_lock();
 	frg::unique_lock lock{frg::adopt_lock, _mutex};
 
+	int64_t base;
 	if(whence == VfsSeek::absolute) {
-		_offset = delta;
+		base = 0;
 	}else if(whence == VfsSeek::relative){
-		_offset += delta;
-	}else if(whence == VfsSeek::eof) {
+		base = _offset;
+	}else{
 		assert(whence == VfsSeek::eof);
-		_offset = _fileSize + delta;
+		base = _fileSize;
 	}
+	// Like Linux' vfs_setpos(), reject negative and overflowing positions.
+	int64_t offset;
+	if(__builtin_add_overflow(base, delta, &offset) || offset < 0)
+		co_return Error::illegalArguments;
+	_offset = offset;
 	co_return _offset;
 }
 
@@ -34,8 +40,6 @@ async::result<frg::expected<protocols::fs::Error>> MemoryFile::truncate(size_t s
 
 async::result<frg::expected<protocols::fs::Error>>
 MemoryFile::allocate(int64_t offset, size_t size) {
-	assert(!offset);
-
 	co_await _mutex.async_lock();
 	frg::unique_lock lock{frg::adopt_lock, _mutex};
 

@@ -257,7 +257,8 @@ private:
 				std::println("posix: VT_ACTIVATE/VT_WAITACTIVE: Activated VT {}", req.vt_mode());
 			}
 
-			if(self->_acqsig != 0) {
+			// Like Linux' kill_pid() in complete_change_console(), drop invalid signals.
+			if(self->_acqsig > 0 && self->_acqsig <= 64) {
 				if(logVTRequests)
 					std::println("\tSending signal {} when acquiring VT", self->_acqsig);
 				// Issue signal

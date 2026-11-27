@@ -355,6 +355,11 @@ HandleRequest::operator()(managarm::posix::PidfdSendSignalRequest &&req,
 		co_return {};
 	}
 
+	if(req.signal() < 0 || req.signal() > 64) {
+		co_await sendErrorResponse<managarm::posix::PidfdSendSignalResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
+	}
+
 	if(req.signal() > 0) {
 		UserSignal info;
 		info.pid = self->pid();
@@ -518,12 +523,14 @@ HandleRequest::operator()(managarm::posix::SignalfdCreateRequest &&req,
 			resp.set_error(fd.error() | toPosixProtoError);
 	} else {
 		auto file = self->fileContext()->getFile(req.fd());
-		if(file) {
+		if(!file) {
+			resp.set_error(managarm::posix::Errors::FILE_NOT_FOUND);
+		} else if(file->kind() != FileKind::signalfd) {
+			resp.set_error(managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		} else {
 			auto signal_file = static_cast<signal_fd::OpenFile *>(file.get());
 			signal_file->setMask(req.sigset());
 			resp.set_fd(req.fd());
-		} else {
-			resp.set_error(managarm::posix::Errors::FILE_NOT_FOUND);
 		}
 	}
 
