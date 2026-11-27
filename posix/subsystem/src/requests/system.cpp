@@ -118,6 +118,10 @@ HandleRequest::operator()(managarm::posix::MountRequest &&req,
 		assert(source.second);
 		assert(source.second->getTarget()->getType() == VfsType::blockDevice);
 		auto device = blockRegistry.get(source.second->getTarget()->readDevice());
+		if(!device) {
+			co_await sendErrorResponse<managarm::posix::MountResponse>(conversation, managarm::posix::Errors::NO_BACKING_DEVICE);
+			co_return {};
+		}
 		auto link = co_await device->mount(req.fs_type());
 		if(!link) {
 			co_await sendErrorResponse<managarm::posix::MountResponse>(conversation, link.error() | toPosixProtoError);
@@ -172,7 +176,10 @@ HandleRequest::operator()(managarm::posix::SwaponRequest &&req,
 	std::expected<void, Error> result;
 	if(node->getType() == VfsType::blockDevice) {
 		auto device = blockRegistry.get(node->readDevice());
-		result = co_await device->swapon();
+		if(device)
+			result = co_await device->swapon();
+		else
+			result = std::unexpected{Error::noBackingDevice};
 	} else if(node->getType() == VfsType::regular) {
 		result = co_await node->swapon();
 	} else {
