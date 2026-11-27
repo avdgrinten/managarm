@@ -1360,6 +1360,9 @@ ImmediateWindow::~ImmediateWindow() {
 
 std::expected<smarter::shared_ptr<HardwareMemory>, Error> HardwareMemory::create(
 		PhysicalAddr base, size_t length, CachingMode cache_mode) {
+	if((base & (kPageSize - 1)) || (length & (kPageSize - 1)))
+		return std::unexpected{Error::illegalArgs};
+
 	auto ptr = allocate_rcu_shared<HardwareMemory>(*kernelAlloc, CtorToken{},
 			base, length, cache_mode);
 	return ptr;
@@ -1439,6 +1442,9 @@ size_t HardwareMemory::getLength() {
 std::expected<smarter::shared_ptr<AllocatedMemory>, Error> AllocatedMemory::create(
 	smarter::shared_ptr<Hierarchy> hierarchy, size_t length, int addressBits, size_t chunkSize, size_t chunkAlign
 ) {
+	if(length & (kPageSize - 1))
+		return std::unexpected{Error::illegalArgs};
+
 	smarter::borrowed_ptr<Hierarchy> hierarchyPtr{hierarchy};
 	auto ptr = allocate_rcu_shared<AllocatedMemory>(HierarchyAllocator{std::move(hierarchy)},
 			CtorToken{}, hierarchyPtr, length, addressBits, chunkSize, chunkAlign);
@@ -1687,7 +1693,7 @@ bool ManagedSpace::ManagedPage::hasUnwrittenData() {
 
 std::expected<smarter::shared_ptr<ManagedSpace>, Error> ManagedSpace::create(
 		smarter::shared_ptr<Hierarchy> hierarchy, size_t length, bool readahead) {
-	if(length > backingMemoryLength)
+	if(length > backingMemoryLength || (length & (kPageSize - 1)))
 		return std::unexpected{Error::illegalArgs};
 	smarter::borrowed_ptr<Hierarchy> hierarchyPtr{hierarchy};
 	auto self = allocate_rcu_shared<ManagedSpace>(HierarchyAllocator{std::move(hierarchy)},
@@ -3692,6 +3698,9 @@ size_t FrontalMemory::getLength() {
 std::expected<smarter::shared_ptr<SwappableMemory>, Error> SwappableMemory::create(
 		smarter::shared_ptr<Hierarchy> hierarchy, smarter::shared_ptr<SwapSpace> space,
 		size_t length) {
+	if(length & (kPageSize - 1))
+		return std::unexpected{Error::illegalArgs};
+
 	smarter::borrowed_ptr<Hierarchy> hierarchyPtr{hierarchy};
 	auto ptr = allocate_rcu_shared<SwappableMemory>(HierarchyAllocator{std::move(hierarchy)},
 			CtorToken{}, hierarchyPtr, std::move(space), length);
