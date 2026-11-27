@@ -210,10 +210,9 @@ HandleRequest::operator()(managarm::posix::CloseRequest &&req,
 		if(closeErr == Error::noSuchFile) {
 			co_await sendErrorResponse<managarm::posix::CloseResponse>(conversation, managarm::posix::Errors::NO_SUCH_FD);
 			co_return {};
-		} else {
-			std::cout << "posix: Unhandled error returned from closeFile" << std::endl;
-			co_return {};
 		}
+		co_await sendErrorResponse<managarm::posix::CloseResponse>(conversation, closeErr | toPosixProtoError);
+		co_return {};
 	}
 
 	managarm::posix::CloseResponse resp;

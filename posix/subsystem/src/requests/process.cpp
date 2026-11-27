@@ -95,8 +95,7 @@ HandleRequest::operator()(managarm::posix::WaitIdRequest &&req,
 		resp.set_error(managarm::posix::Errors::SUCCESS);
 		resp.set_pid(0);
 	} else {
-		assert(wait_result.error() == Error::noChildProcesses);
-		resp.set_error(managarm::posix::Errors::NO_CHILD_PROCESSES);
+		resp.set_error(wait_result.error() | toPosixProtoError);
 	}
 
 	auto [sendResp] = co_await helix_ng::exchangeMsgs(
@@ -153,8 +152,6 @@ HandleRequest::operator()(managarm::posix::WaitRequest &&req,
 			assert(std::holds_alternative<std::monostate>(proc_state.state));
 		}
 		resp.set_status(status);
-	} else if (waitResult.error() == Error::interrupted) {
-		resp.set_error(managarm::posix::Errors::INTERRUPTED);
 	} else if (waitResult.error() == Error::wouldBlock) {
 		resp.set_error(managarm::posix::Errors::SUCCESS);
 		resp.set_pid(0);
