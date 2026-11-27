@@ -20,7 +20,6 @@ private:
 	friend RawSocket;
 
 	std::vector<smarter::shared_ptr<RawSocket>> sockets_;
-	std::vector<smarter::shared_ptr<RawSocket>> binds_;
 };
 
 struct RawSocket {
@@ -62,7 +61,6 @@ private:
 	friend Raw;
 
 	Raw *parent;
-	smarter::weak_ptr<RawSocket> holder_;
 
 	// In host byte order.
 	uint16_t proto;
