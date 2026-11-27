@@ -42,3 +42,5 @@ rawbin = custom_target('eir-linux.bin',
 	install : true,
 	install_dir : get_option('bindir'),
 )
+
+install_data(eir_features, install_dir : eir_features_dir, rename : 'eir-linux.bin.json')

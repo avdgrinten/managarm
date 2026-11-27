@@ -39,3 +39,5 @@ executable(
 	link_depends: files('limine.x'),
 	install: true,
 )
+
+install_data(eir_features, install_dir: eir_features_dir, rename: 'eir-limine.json')

@@ -23,3 +23,5 @@ executable('eir-mb2', eir32_sources, mb2_sources, eir_generic_main,
 	link_depends : [eir32_link_depends, eir32_linker_script],
 	install : true
 )
+
+install_data(eir_features, install_dir : eir_features_dir, rename : 'eir-mb2.json')
