@@ -158,6 +158,12 @@ HandleRequest::operator()(managarm::posix::SocketRequest &&req,
 			co_return {};
 		}
 	} else if (req.domain() == AF_INET || req.domain() == AF_PACKET) {
+		// TODO: Require root for AF_PACKET (Linux: CAP_NET_RAW) and fail with EPERM otherwise.
+		if(req.domain() == AF_PACKET && req.socktype() != SOCK_RAW) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, managarm::posix::Errors::UNSUPPORTED_SOCKET_TYPE);
+			co_return {};
+		}
+
 		auto ext = co_await extern_socket::createSocket(
 			co_await net::getNetLane(),
 			req.domain(),
