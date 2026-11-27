@@ -132,7 +132,10 @@ HandleRequest::operator()(managarm::posix::SocketRequest &&req,
 
 		file = std::move(un.value());
 	}else if(req.domain() == AF_NETLINK) {
-		assert(req.socktype() == SOCK_RAW || req.socktype() == SOCK_DGRAM);
+		if(req.socktype() != SOCK_RAW && req.socktype() != SOCK_DGRAM) {
+			co_await sendErrorResponse<managarm::posix::SocketResponse>(conversation, managarm::posix::Errors::UNSUPPORTED_SOCKET_TYPE);
+			co_return {};
+		}
 		// NL_ROUTE gets handled by the netserver.
 		if(req.protocol() == NETLINK_ROUTE) {
 			auto ext = co_await extern_socket::createSocket(
