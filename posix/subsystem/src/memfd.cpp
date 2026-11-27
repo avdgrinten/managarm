@@ -34,8 +34,6 @@ async::result<frg::expected<protocols::fs::Error>> MemoryFile::truncate(size_t s
 
 async::result<frg::expected<protocols::fs::Error>>
 MemoryFile::allocate(int64_t offset, size_t size) {
-	assert(!offset);
-
 	co_await _mutex.async_lock();
 	frg::unique_lock lock{frg::adopt_lock, _mutex};
 
