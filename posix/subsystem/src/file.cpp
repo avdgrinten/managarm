@@ -66,6 +66,8 @@ File::ptRead(void *object, helix_ng::CredentialsView credentials,
 async::result<protocols::fs::ReadResult>
 File::ptPread(void *object, int64_t offset, helix_ng::CredentialsView credentials, void *buffer, size_t length) {
 	auto self = static_cast<File *>(object);
+	if(offset < 0)
+		co_return std::unexpected{protocols::fs::Error::illegalArguments};
 	auto maybeProcess = findProcessWithCredentials(credentials);
 	if(!maybeProcess) {
 		std::cout << "posix: ptPread with unknown process credentials" << std::endl;
@@ -90,6 +92,8 @@ async::result<frg::expected<protocols::fs::Error, size_t>> File::ptWrite(void *o
 async::result<frg::expected<protocols::fs::Error, size_t>> File::ptPwrite(void *object, int64_t offset, helix_ng::CredentialsView credentials,
 			const void *buffer, size_t length) {
 	auto self = static_cast<File *>(object);
+	if(offset < 0)
+		co_return protocols::fs::Error::illegalArguments;
 	auto maybeProcess = findProcessWithCredentials(credentials);
 	if(!maybeProcess) {
 		std::cout << "posix: ptPwrite with unknown process credentials" << std::endl;
@@ -108,12 +112,17 @@ async::result<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Erro
 
 async::result<frg::expected<protocols::fs::Error>> File::ptTruncate(void *object, size_t size) {
 	auto self = static_cast<File *>(object);
-	return self->truncate(size);
+	// Linux takes the size as a signed loff_t.
+	if(size > INT64_MAX)
+		co_return protocols::fs::Error::illegalArguments;
+	co_return co_await self->truncate(size);
 }
 
 async::result<frg::expected<protocols::fs::Error>> File::ptAllocate(void *object,
 		int64_t offset, size_t size) {
 	auto self = static_cast<File *>(object);
+	if(offset < 0 || !size || size > static_cast<size_t>(INT64_MAX - offset))
+		co_return protocols::fs::Error::illegalArguments;
 
 	co_return co_await self->allocate(offset, size);
 }
