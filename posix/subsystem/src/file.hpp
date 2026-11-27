@@ -147,6 +147,9 @@ enum class Error {
 	// Corresponds with EBADF
 	badFileDescriptor,
 
+	// Corresponds with EBUSY
+	busy,
+
 	// Credentials passed in a request did not match any known process.
 	// Maps to EIO.
 	badProcessCredentials,
@@ -186,6 +189,7 @@ inline protocols::fs::Error operator|(Error e, protocols::fs::ToFsProtoError) {
 		case Error::noFileDescriptorsAvailable: return protocols::fs::Error::noFileDescriptorsAvailable;
 		case Error::notSupported: return protocols::fs::Error::notSupported;
 		case Error::badFileDescriptor: return protocols::fs::Error::badFileDescriptor;
+		case Error::busy: return protocols::fs::Error::busy;
 		case Error::badProcessCredentials: return protocols::fs::Error::internalError;
 		case Error::unsupportedSocketType:
 			break;
@@ -229,6 +233,7 @@ inline managarm::posix::Errors operator|(Error e, ToPosixProtoError) {
 		case Error::noFileDescriptorsAvailable: return managarm::posix::Errors::NO_FILE_DESCRIPTORS_AVAILABLE;
 		case Error::notSupported: return managarm::posix::Errors::NOT_SUPPORTED;
 		case Error::badFileDescriptor: return managarm::posix::Errors::NO_SUCH_FD;
+		case Error::busy: return managarm::posix::Errors::RESOURCE_IN_USE;
 		case Error::badProcessCredentials: return managarm::posix::Errors::INTERNAL_ERROR;
 		case Error::fileClosed:
 		case Error::badExecutable:
@@ -279,6 +284,7 @@ inline Error operator|(protocols::fs::Error e, ToPosixError) {
 		case protocols::fs::Error::noFileDescriptorsAvailable: return Error::noFileDescriptorsAvailable;
 		case protocols::fs::Error::badFileDescriptor: return Error::badFileDescriptor;
 		case protocols::fs::Error::noMemory: return Error::noMemory;
+		case protocols::fs::Error::busy: return Error::busy;
 		case protocols::fs::Error::destAddrRequired:
 		case protocols::fs::Error::netUnreachable:
 		case protocols::fs::Error::messageSize:
@@ -287,7 +293,6 @@ inline Error operator|(protocols::fs::Error e, ToPosixError) {
 		case protocols::fs::Error::addressNotAvailable:
 		case protocols::fs::Error::invalidProtocolOption:
 		case protocols::fs::Error::connectionRefused:
-		case protocols::fs::Error::busy:
 			break;
 	}
 	std::cout << std::format("posix: unmapped protocols::fs::Error {}", static_cast<int>(e)) << std::endl;
@@ -326,6 +331,7 @@ inline Error operator|(managarm::fs::Errors e, ToPosixError) {
 		case managarm::fs::Errors::NAME_TOO_LONG: return Error::nameTooLong;
 		case managarm::fs::Errors::NO_FILE_DESCRIPTORS_AVAILABLE: return Error::noFileDescriptorsAvailable;
 		case managarm::fs::Errors::BAD_FILE_DESCRIPTOR: return Error::badFileDescriptor;
+		case managarm::fs::Errors::BUSY: return Error::busy;
 		case managarm::fs::Errors::DESTINATION_ADDRESS_REQUIRED:
 		case managarm::fs::Errors::NETWORK_UNREACHABLE:
 		case managarm::fs::Errors::MESSAGE_TOO_LARGE:
@@ -334,7 +340,6 @@ inline Error operator|(managarm::fs::Errors e, ToPosixError) {
 		case managarm::fs::Errors::ADDRESS_NOT_AVAILABLE:
 		case managarm::fs::Errors::INVALID_PROTOCOL_OPTION:
 		case managarm::fs::Errors::CONNECTION_REFUSED:
-		case managarm::fs::Errors::BUSY:
 			break;
 	}
 	std::println("posix: unmapped managarm::fs::Errors Error {}", static_cast<int>(e));
