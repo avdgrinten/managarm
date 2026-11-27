@@ -68,3 +68,5 @@ if not native_pe_toolchain
 		install_dir: get_option('bindir')
 	)
 endif
+
+install_data(eir_features, install_dir: eir_features_dir, rename: 'eir-uefi.json')

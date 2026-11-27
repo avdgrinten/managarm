@@ -82,6 +82,12 @@ eir_zstd_c_args = [
 	'-DXXH_NO_STDLIB',
 ]
 
+# Installed as share/eir/<binary>.json for each eir binary.
+# update-boot.py reads it to decide how it may compress
+# the initrd, since it can run against a sysroot with an older eir.
+eir_features = files('features.json')
+eir_features_dir = get_option('datadir') / 'eir'
+
 if arch == 'aarch64'
 	subdir('arch/arm')
 elif arch == 'riscv64'

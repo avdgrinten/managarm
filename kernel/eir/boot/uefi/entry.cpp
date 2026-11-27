@@ -426,7 +426,19 @@ initgraph::Task readInitrd{
 	    infoLogger() << "eir: Trying to read initrd from simple filesystem" << frg::endlog;
 
 	    efi_file_protocol *initrdFile = nullptr;
-	    EFI_CHECK(fsOpen(&initrdFile, asciiToUcs2(initrdPath)));
+
+	    // Prefer the zstd-compressed initrd if no explicit path was given
+	    if (initrdPath == defaultInitrdPath) {
+		    frg::string_view zstdPath = defaultZstdInitrdPath;
+		    if (fsOpen(&initrdFile, asciiToUcs2(zstdPath)) != EFI_SUCCESS) {
+			    infoLogger() << "eir: Failed to open " << zstdPath << ", falling back to "
+			                 << initrdPath << frg::endlog;
+			    initrdFile = nullptr;
+		    }
+	    }
+
+	    if (!initrdFile)
+		    EFI_CHECK(fsOpen(&initrdFile, asciiToUcs2(initrdPath)));
 	    rawInitrdSize = fsGetSize(initrdFile);
 
 	    // Read initrd.

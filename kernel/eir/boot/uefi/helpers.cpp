@@ -29,9 +29,8 @@ efi_status fsOpen(efi_file_protocol **file, char16_t *path) {
 	efi_file_protocol *root = nullptr;
 	EFI_CHECK(fileSystem->open_volume(fileSystem, &root));
 
-	EFI_CHECK(root->open(root, file, path, EFI_FILE_MODE_READ, EFI_FILE_READ_ONLY));
-
-	return EFI_SUCCESS;
+	// Callers may fall back to other files, so a missing file is not fatal here.
+	return root->open(root, file, path, EFI_FILE_MODE_READ, EFI_FILE_READ_ONLY);
 }
 
 efi_status fsRead(efi_file_protocol *file, size_t len, size_t offset, efi_physical_addr buf) {
