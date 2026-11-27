@@ -33,19 +33,32 @@ static async::result<void> serveLanes(
 }
 
 managarm::fs::Errors Raw::serveSocket(helix::UniqueLane ctrlLane, helix::UniqueLane ptLane, int type, int proto, int flags) {
-	(void) type;
+	(void) flags;
 
-	assert(proto == htons(ETH_P_ALL));
-	auto raw_socket = smarter::make_shared<RawSocket>(this, flags);
-	raw_socket->holder_ = raw_socket;
+	// TODO: Support SOCK_DGRAM, which strips the link-layer header on receive.
+	if(type != SOCK_RAW)
+		return managarm::fs::Errors::ILLEGAL_ARGUMENT;
+
+	auto raw_socket = smarter::make_shared<RawSocket>(this, ntohs(static_cast<uint16_t>(proto)));
 	sockets_.push_back(raw_socket);
 	async::detach(serveLanes(std::move(ctrlLane), std::move(ptLane), raw_socket));
 
 	return managarm::fs::Errors::SUCCESS;
 }
 
-void Raw::feedPacket(arch::dma_buffer_view frame) {
+void Raw::feedPacket(uint16_t ethertype, arch::dma_buffer_view frame) {
+	// Like Linux, 802.3 frames carry a length here and are classified as raw 802.3 or 802.2 LLC.
+	if(ethertype < ETH_P_802_3_MIN) {
+		auto data = static_cast<const uint8_t *>(frame.data());
+		bool raw8023 = frame.size() >= nic::ethernetHeaderSize + 2
+				&& data[14] == 0xFF && data[15] == 0xFF;
+		ethertype = raw8023 ? ETH_P_802_3 : ETH_P_802_2;
+	}
+
 	for(auto s = sockets_.begin(); s != sockets_.end(); s++) {
+		if(!(*s)->accepts(ethertype))
+			continue;
+
 		size_t accept_bytes = SIZE_MAX;
 
 		if((*s)->filter_) {
@@ -69,6 +82,13 @@ void Raw::feedPacket(arch::dma_buffer_view frame) {
 	}
 }
 
+bool RawSocket::accepts(uint16_t ethertype) const {
+	// Like Linux, protocol 0 does not receive anything until bind() sets a protocol.
+	if(!proto)
+		return false;
+	return proto == ETH_P_ALL || proto == ethertype;
+}
+
 void RawSocket::handleClose() {
 	std::erase_if(parent->sockets_, [this](const auto &s) { return s.get() == this; });
 }
@@ -77,26 +97,29 @@ async::result<protocols::fs::Error> RawSocket::bind(void* obj,
 		helix_ng::CredentialsView creds, const void *addr_ptr, size_t addr_size) {
 	(void) creds;
 
-	if(!addr_ptr || addr_size < sizeof(sockaddr))
+	if(!addr_ptr || addr_size < sizeof(sockaddr_ll))
 		co_return protocols::fs::Error::illegalArguments;
 
 	auto self = static_cast<RawSocket *>(obj);
-	self->parent->binds_.push_back(self->holder_.lock());
-
-	auto sa = reinterpret_cast<const sockaddr *>(addr_ptr);
-	if(sa->sa_family != PF_PACKET && addr_size < sizeof(sockaddr_ll))
-		co_return protocols::fs::Error::illegalArguments;
 	auto sa_ll = reinterpret_cast<const sockaddr_ll *>(addr_ptr);
+	if(sa_ll->sll_family != AF_PACKET)
+		co_return protocols::fs::Error::illegalArguments;
 
-	assert(sa_ll->sll_protocol == htons(ETH_P_ALL));
+	std::shared_ptr<nic::Link> link;
 	if(sa_ll->sll_ifindex == 0) {
-		self->link = nic::Link::getLinks().begin()->second;
+		auto &links = nic::Link::getLinks();
+		if(!links.empty())
+			link = links.begin()->second;
 	} else {
-		self->link = nic::Link::byIndex(sa_ll->sll_ifindex);
+		link = nic::Link::byIndex(sa_ll->sll_ifindex);
 	}
 
-	if(!self->link)
+	if(!link)
 		co_return protocols::fs::Error::noBackingDevice;
+
+	self->link = std::move(link);
+	if(sa_ll->sll_protocol)
+		self->proto = ntohs(sa_ll->sll_protocol);
 
 	co_return protocols::fs::Error::none;
 }
@@ -106,7 +129,15 @@ async::result<frg::expected<protocols::fs::Error, size_t>> RawSocket::write(void
 	(void) credentials;
 
 	auto self = static_cast<RawSocket *>(obj);
-	assert(self->link);
+	if(!self->link)
+		co_return protocols::fs::Error::noBackingDevice;
+	if(length < nic::ethernetHeaderSize)
+		co_return protocols::fs::Error::illegalArguments;
+	// Like Linux, leave room for an 802.1Q tag if the frame carries one.
+	auto data = static_cast<const uint8_t *>(buffer);
+	size_t vlanTagSize = ((data[12] << 8) | data[13]) == ETH_P_8021Q ? 4 : 0;
+	if(length > self->link->mtu + nic::ethernetHeaderSize + vlanTagSize)
+		co_return protocols::fs::Error::messageSize;
 
 	auto buf = self->link->allocateFrame(length);
 	arch::dma_buffer_view view{ buf.frame };
@@ -157,7 +188,8 @@ async::result<frg::expected<protocols::fs::Error>> RawSocket::setSocketOption(vo
 	auto self = static_cast<RawSocket *>(obj);
 
 	if(layer == SOL_SOCKET && number == SO_ATTACH_FILTER) {
-		assert(optbuf.size() % sizeof(struct sock_filter) == 0);
+		if(optbuf.size() % sizeof(struct sock_filter))
+			co_return protocols::fs::Error::illegalArguments;
 
 		if(self->filterLocked_)
 			co_return protocols::fs::Error::insufficientPermissions;
@@ -173,12 +205,16 @@ async::result<frg::expected<protocols::fs::Error>> RawSocket::setSocketOption(vo
 
 		self->filter_ = std::nullopt;
 	} else if(layer == SOL_SOCKET && number == SO_LOCK_FILTER) {
+		if(optbuf.size() < sizeof(int))
+			co_return protocols::fs::Error::illegalArguments;
 		auto opt = *reinterpret_cast<int *>(optbuf.data());
 		if(!opt && self->filterLocked_)
 			co_return protocols::fs::Error::insufficientPermissions;
 		else
 			self->filterLocked_ = true;
 	} else if(layer == SOL_PACKET && number == PACKET_AUXDATA) {
+		if(optbuf.size() < sizeof(int))
+			co_return protocols::fs::Error::illegalArguments;
 		auto opt = *reinterpret_cast<int *>(optbuf.data());
 		self->packetAuxData_ = (opt != 0);
 	} else {

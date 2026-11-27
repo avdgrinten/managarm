@@ -7,6 +7,8 @@
 #include <string.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <linux/if_ether.h>
+#include <linux/if_packet.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -560,4 +562,46 @@ DEFINE_TEST(socket_tcp_timeouts, ([] {
 	close(server);
 	close(client);
 	close(listener);
+}));
+
+DEFINE_TEST(socket_packet_validation, ([] {
+	// Protocol 0 is valid; the socket receives nothing until bind() sets a protocol.
+	int s = socket(AF_PACKET, SOCK_RAW, 0);
+	if(s < 0 && errno == EPERM)
+		skip_test("AF_PACKET requires CAP_NET_RAW");
+	assert(s >= 0);
+
+	int t = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP));
+	assert(t >= 0);
+	close(t);
+
+	errno = 0;
+	assert(socket(AF_PACKET, SOCK_SEQPACKET, 0) < 0);
+	assert(errno == ESOCKTNOSUPPORT);
+
+	errno = 0;
+	assert(socket(AF_PACKET, SOCK_STREAM, htons(ETH_P_ALL)) < 0);
+	assert(errno == ESOCKTNOSUPPORT);
+
+	struct sockaddr_ll sll;
+	memset(&sll, 0, sizeof(sll));
+	sll.sll_family = AF_PACKET;
+	sll.sll_protocol = htons(ETH_P_ALL);
+
+	errno = 0;
+	assert(bind(s, reinterpret_cast<struct sockaddr *>(&sll), sizeof(struct sockaddr)) < 0);
+	assert(errno == EINVAL);
+
+	sll.sll_family = AF_INET;
+	errno = 0;
+	assert(bind(s, reinterpret_cast<struct sockaddr *>(&sll), sizeof(sll)) < 0);
+	assert(errno == EINVAL);
+
+	// Without bind() there is no device to send on.
+	char frame[ETH_ZLEN] = {};
+	errno = 0;
+	assert(write(s, frame, sizeof(frame)) < 0);
+	assert(errno == ENXIO);
+
+	close(s);
 }));

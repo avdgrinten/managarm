@@ -163,7 +163,7 @@ void Link::feedPacket(arch::dma_buffer_view frame) {
 		std::memcpy(dstsrc, data, sizeof(dstsrc));
 
 		// Packet sockets observe all frames that the device hands to us.
-		raw().feedPacket(frame);
+		raw().feedPacket(ethertype, frame);
 
 		if(dstsrc[0] != deviceMac() && !isGroupMac(dstsrc[0])) {
 			if(logDiscards)
