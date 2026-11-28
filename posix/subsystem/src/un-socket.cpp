@@ -1202,9 +1202,10 @@ public:
 					break;
 				}
 				default: {
-					std::cout << "posix: invalid ioctl 0x"
-						<< std::hex << req.command() << std::dec
-						<< " for un-socket" << std::endl;
+					if(!isTerminalIoctl(req.command()))
+						std::cout << "posix: invalid ioctl 0x"
+							<< std::hex << req.command() << std::dec
+							<< " for un-socket" << std::endl;
 
 					auto [dismissResult] = co_await helix_ng::exchangeMsgs(
 						conversation,

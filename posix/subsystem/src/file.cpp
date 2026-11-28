@@ -3,8 +3,10 @@
 #include <fcntl.h>
 
 #include <sys/socket.h>
+#include <bragi/helpers-std.hpp>
 #include <helix/ipc.hpp>
 #include "file.hpp"
+#include "fs.bragi.hpp"
 #include "fs.hpp"
 #include "process.hpp"
 
@@ -453,11 +455,16 @@ FutureMaybe<std::expected<helix::UniqueDescriptor, Error>> File::accessMemory() 
 
 async::result<void> File::ioctl(Process *, uint32_t id, helix_ng::RecvInlineResult msg,
 		helix::UniqueLane conversation) {
-	(void) id;
+	bool terminalIoctl = false;
+	if(id == bragi::message_id<managarm::fs::GenericIoctlRequest>) {
+		auto req = bragi::parse_head_only<managarm::fs::GenericIoctlRequest>(msg);
+		terminalIoctl = req && isTerminalIoctl(req->command());
+	}
 	msg.reset();
 
-	std::cout << "posix \e[1;34m" << structName()
-			<< "\e[0m: Object does not implement ioctl()" << std::endl;
+	if(!terminalIoctl)
+		std::cout << "posix \e[1;34m" << structName()
+				<< "\e[0m: Object does not implement ioctl()" << std::endl;
 
 	auto [dismiss] = co_await helix_ng::exchangeMsgs(
 		conversation, helix_ng::dismiss());
