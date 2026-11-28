@@ -153,14 +153,11 @@ HandleRequest::operator()(managarm::posix::AccessAtRequest &&req,
 	if(req.flags() & AT_SYMLINK_NOFOLLOW)
 		resolveFlags |= resolveDontFollow;
 
-	if(req.flags() & ~(AT_SYMLINK_NOFOLLOW)) {
-		if(req.flags() & AT_EACCESS) {
-			std::cout << "posix: ACCESSAT flag handling AT_EACCESS is unimplemented" << std::endl;
-		} else {
-			std::cout << "posix: ACCESSAT unknown flag is unimplemented: " << req.flags() << std::endl;
-			co_await sendErrorResponse<managarm::posix::AccessAtResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
-			co_return {};
-		}
+	// AT_EACCESS makes no difference since ACCESSAT does not check permissions (yet).
+	if(req.flags() & ~(AT_SYMLINK_NOFOLLOW | AT_EACCESS | AT_EMPTY_PATH)) {
+		std::cout << "posix: ACCESSAT unknown flag is unimplemented: " << req.flags() << std::endl;
+		co_await sendErrorResponse<managarm::posix::AccessAtResponse>(conversation, managarm::posix::Errors::ILLEGAL_ARGUMENTS);
+		co_return {};
 	}
 
 	if(req.fd() == AT_FDCWD) {
@@ -174,6 +171,11 @@ HandleRequest::operator()(managarm::posix::AccessAtRequest &&req,
 		}
 
 		relative_to = {file->associatedMount(), file->associatedLink()};
+	}
+
+	if(req.path().empty() && (req.flags() & AT_EMPTY_PATH)) {
+		co_await sendErrorResponse<managarm::posix::AccessAtResponse>(conversation, managarm::posix::Errors::SUCCESS);
+		co_return {};
 	}
 
 	auto pathResult = co_await resolve(self->fsContext()->getRoot(),
