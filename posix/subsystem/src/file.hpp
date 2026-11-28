@@ -391,6 +391,8 @@ public:
 	static inline constexpr DefaultOps defaultIsTerminal = 1 << 1;
 	static inline constexpr DefaultOps defaultPipeLikeSeek = 1 << 2;
 	static inline constexpr DefaultOps defaultMapsAnonymously = 1 << 3;
+	// Like Linux's noop_llseek(): seeking succeeds but the position stays at zero.
+	static inline constexpr DefaultOps defaultNoopSeek = 1 << 4;
 
 	// ------------------------------------------------------------------------
 	// File protocol adapters.

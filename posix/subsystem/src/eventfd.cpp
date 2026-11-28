@@ -17,7 +17,7 @@ namespace {
 
 struct OpenFile : FileWithDefaults {
 	OpenFile(unsigned int initval, bool nonBlock, bool semaphore)
-	: FileWithDefaults{FileKind::unknown,  StructName::get("eventfd"), nullptr, SpecialLink::makeSpecialLink(VfsType::regular, 0777)}, _currentSeq{1}, _readableSeq{0},
+	: FileWithDefaults{FileKind::unknown,  StructName::get("eventfd"), nullptr, SpecialLink::makeSpecialLink(VfsType::regular, 0777), File::defaultNoopSeek}, _currentSeq{1}, _readableSeq{0},
 		_writeableSeq{0}, _counter{initval}, _nonBlock{nonBlock}, _semaphore{semaphore} { }
 
 	~OpenFile() override {

@@ -23,7 +23,7 @@ void OpenFile::serve(smarter::shared_ptr<OpenFile> file) {
 }
 
 OpenFile::OpenFile(uint64_t mask, bool nonBlock)
-: FileWithDefaults{FileKind::signalfd,  StructName::get("signalfd"), nullptr, SpecialLink::makeSpecialLink(VfsType::regular, 0777)}, _mask{mask}, _nonBlock{nonBlock} { }
+: FileWithDefaults{FileKind::signalfd,  StructName::get("signalfd"), nullptr, SpecialLink::makeSpecialLink(VfsType::regular, 0777), File::defaultNoopSeek}, _mask{mask}, _nonBlock{nonBlock} { }
 
 async::result<std::expected<size_t, Error>>
 OpenFile::readSome(Process *process, void *data, size_t maxLength, async::cancellation_token ce) {
