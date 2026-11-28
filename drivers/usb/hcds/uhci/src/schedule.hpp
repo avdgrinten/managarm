@@ -43,10 +43,9 @@ struct Controller final : std::enable_shared_from_this<Controller>, proto::BaseC
 			co_return frg::success;
 		}
 
-		// TODO(qookie): Implement this
+		// UHCI has no port power control, hence ports are always powered.
 		async::result<frg::expected<proto::UsbError, bool>> getPortPower(int port) override {
 			(void)port;
-			std::cout << "uhci: getPortPower is unimplemented for UHCI root hubs!" << std::endl;
 			co_return true;
 		}
 

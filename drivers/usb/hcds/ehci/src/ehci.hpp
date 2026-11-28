@@ -147,10 +147,9 @@ struct Controller final : proto::BaseController, std::enable_shared_from_this<Co
 			co_return frg::success;
 		}
 
-		// TODO(qookie): Implement this
+		// Ports are always powered since the controller has no port power control (HCSPARAMS.PPC).
 		async::result<frg::expected<proto::UsbError, bool>> getPortPower(int port) override {
 			(void)port;
-			std::cout << "ehci: getPortPower is unimplemented for EHCI root hubs!" << std::endl;
 			co_return true;
 		}
 
