@@ -171,7 +171,6 @@ async::result<bool> Source::connect() {
 	auto [_, events] = (co_await enumerator.nextEvents()).unwrap();
 	assert(events.size() == 1);
 
-	std::cout << "ostrace: Found ostrace" << std::endl;
 	auto entity = co_await mbus_ng::Instance::global().getEntity(events[0].id);
 	lane_ = (co_await entity.getRemoteLane()).unwrap();
 
