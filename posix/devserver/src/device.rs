@@ -13,6 +13,7 @@
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Deref;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::{Context, Result, bail};
@@ -897,7 +898,9 @@ impl Model {
         extra: &[(String, String)],
     ) -> Result<()> {
         let devpath = device.dir.sysfs_path();
-        println!("devserver: uevent {action}@/{devpath}");
+        if crate::TRACE.load(Ordering::Relaxed) {
+            println!("devserver: uevent {action}@/{devpath}");
+        }
         let env = device.compose_uevent();
         // Take the seqnum lock until posix-subsystem has processed the uevent.
         let mut seqnum_guard = self.uevent_seqnum.lock().await;

@@ -11,6 +11,7 @@ mod subsystem;
 mod sysfs;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, bail};
 use bragi::Message;
@@ -23,6 +24,9 @@ use sysfs::SysfsNode;
 bragi::include_binding!(pub(crate) mod proto = "devserver.rs");
 
 pub(crate) const EXPECT_LOCK: &str = "a devserver mutex was poisoned";
+
+/// Set by the `devserver.trace` kernel command line option.
+pub(crate) static TRACE: AtomicBool = AtomicBool::new(false);
 
 // Statically assert that our device model objects are Send + Sync.
 const _: () = {
@@ -140,6 +144,14 @@ async fn handle_launch(conversation: Handle) -> Result<()> {
 }
 
 async fn run() -> Result<()> {
+    let cmdline = managarm::kerncfg::get_cmdline().await?;
+    TRACE.store(
+        cmdline
+            .split_ascii_whitespace()
+            .any(|opt| opt == "devserver.trace"),
+        Ordering::Relaxed,
+    );
+
     let mut properties = mbus::Properties::new();
     properties.insert(
         "class".to_string(),
