@@ -459,8 +459,6 @@ struct HandleDevice {
 
 async::detached serveDevice(std::shared_ptr<EventDevice> device,
 		helix::UniqueLane lane) {
-	std::cout << "unix device: Connection" << std::endl;
-
 	while(true) {
 		auto res = co_await dispatchRequest<
 			managarm::fs::CntRequest

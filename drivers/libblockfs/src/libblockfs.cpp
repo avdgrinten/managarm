@@ -741,8 +741,6 @@ struct HandlePartition {
 };
 
 async::detached servePartition(helix::UniqueLane lane, gpt::Partition *partition, raw::RawFs *rawFs) {
-	std::cout << "unix device: Connection" << std::endl;
-
 	// TODO(qookie): Generic file system type
 	std::unique_ptr<BaseFileSystem> fs;
 
@@ -863,8 +861,6 @@ struct HandleDevice {
 };
 
 async::detached serveDevice(helix::UniqueLane lane, raw::RawFs *rawFs) {
-	std::cout << "unix device: Connection" << std::endl;
-
 	while(true) {
 		auto res = co_await dispatchRequest<
 			managarm::fs::SynchronizeRequest,

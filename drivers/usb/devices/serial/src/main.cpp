@@ -286,8 +286,6 @@ struct HandleTerminal {
 };
 
 async::detached serveTerminal(helix::UniqueLane lane, smarter::shared_ptr<Controller> controller) {
-	std::cout << "unix device: Connection" << std::endl;
-
 	while(true) {
 		auto res = co_await dispatchRequest<
 			managarm::fs::CntRequest

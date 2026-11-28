@@ -305,8 +305,6 @@ struct HandleRequest {
 };
 
 async::detached serveTerminal(helix::UniqueLane lane) {
-	std::cout << "unix device: Connection" << std::endl;
-
 	while(true) {
 		auto res = co_await dispatchRequest<
 			managarm::fs::CntRequest
