@@ -50,8 +50,6 @@ void KernelFiber::blockCurrent(FiberBlocker *blocker) {
 }
 
 void KernelFiber::exitCurrent() {
-	infoLogger() << "thor: Fix exiting fibers" << frg::endlog;
-
 	FiberBlocker blocker;
 	blocker.setup();
 	KernelFiber::blockCurrent(&blocker);

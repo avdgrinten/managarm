@@ -86,8 +86,6 @@ struct Fortuna {
 		auto generatorLock = frg::guard(&generatorMutex_);
 
 		if(injectedIntoPoolZero_.load(std::memory_order_acquire) >= entropyThreshold) {
-			infoLogger() << "thor: Reseeding PRNG from entropy accumulator" << frg::endlog;
-
 			cralgo::sha2_32_secrets keyHash;
 			cralgo::sha2_32_secrets localHash;
 			uint8_t tempDigest[keySize];
