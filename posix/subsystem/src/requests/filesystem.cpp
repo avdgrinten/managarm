@@ -1496,7 +1496,8 @@ HandleRequest::operator()(managarm::posix::OpenAtRequest &&req,
 		// POSIX 1003.1-2017 11.1.3
 		auto cts = co_await file->getControllingTerminal();
 		if(!cts) {
-			std::cout << "posix: Unable to get controlling terminal (" << (int)cts.error() << ")" << std::endl;
+			if(cts.error() != Error::notTerminal)
+				std::cout << "posix: Unable to get controlling terminal (" << (int)cts.error() << ")" << std::endl;
 		} else {
 			// This re-checks the conditions above since the session may have changed meanwhile.
 			cts.value()->assignSessionOf(self.get(), false);

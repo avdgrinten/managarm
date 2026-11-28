@@ -30,9 +30,17 @@ private:
 		co_return PollStatusResult{1, EPOLLOUT | EPOLLWRNORM};
 	}
 
+	// helout cannot be the controlling terminal of a session.
+	async::result<frg::expected<Error, ControllingTerminalState *>> getControllingTerminal() override {
+		co_return Error::notTerminal;
+	}
+
 	helix::BorrowedDescriptor getPassthroughLane() override {
 		return helix::BorrowedDescriptor(helix::handleForFd(1));
 	}
+
+	// The passthrough lane is posix's own stdout, which must stay open.
+	void handleClose() override { }
 
 public:
 	HeloutFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
