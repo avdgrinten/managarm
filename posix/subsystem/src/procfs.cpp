@@ -470,8 +470,24 @@ async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> Directo
 }
 
 async::result<frg::expected<Error, FileStats>> DirectoryNode::getStats() {
-	std::cout << "\e[31mposix: Fix procfs Directory::getStats()\e[39m" << std::endl;
-	co_return FileStats{};
+	// TODO: Store a file creation time.
+	auto now = clk::getRealtime();
+
+	FileStats stats;
+	stats.inodeNumber = 0; // FIXME
+	stats.numLinks = 1;
+	stats.fileSize = 0; // Same as in Linux.
+	stats.mode = 0555;
+	// TODO: /proc/<pid> directories should be owned by the thread group.
+	stats.uid = 0;
+	stats.gid = 0;
+	stats.atimeSecs = now.tv_sec;
+	stats.atimeNanos = now.tv_nsec;
+	stats.mtimeSecs = now.tv_sec;
+	stats.mtimeNanos = now.tv_nsec;
+	stats.ctimeSecs = now.tv_sec;
+	stats.ctimeNanos = now.tv_nsec;
+	co_return stats;
 }
 
 async::result<frg::expected<Error, smarter::shared_ptr<File, FileHandle>>>
