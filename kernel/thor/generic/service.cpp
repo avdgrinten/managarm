@@ -18,6 +18,7 @@
 #include <protocols/svrctl/supercalls.hpp>
 
 #define __MLIBC_ABI_ONLY
+#include <fcntl.h>
 #include <sys/mman.h>
 #undef __MLIBC_ABI_ONLY
 
@@ -43,6 +44,8 @@ struct OpenFile {
 
 	bool isTerminal;
 	smarter::shared_ptr<Stream, LanePolicy> clientLane;
+	// The initrd node that backs this file, if any.
+	MfsNode *mfsNode = nullptr;
 };
 
 struct StdioFile : OpenFile {
@@ -148,7 +151,9 @@ namespace stdio {
 namespace initrd {
 	struct OpenRegular : OpenFile {
 		OpenRegular(MfsRegular *module)
-		: module(module), offset(0) { }
+		: module(module), offset(0) {
+			mfsNode = module;
+		}
 
 		MfsRegular *module;
 		size_t offset;
@@ -156,7 +161,9 @@ namespace initrd {
 
 	struct OpenDirectory : OpenFile {
 		OpenDirectory(MfsDirectory *node)
-		: node{node}, index(0) { }
+		: node{node}, index(0) {
+			mfsNode = node;
+		}
 
 		MfsDirectory *node;
 		size_t index;
@@ -763,9 +770,20 @@ namespace posix {
 					co_return;
 				}
 
-				auto module = resolveModule(req->path());
+				MfsNode *module = nullptr;
+				bool byFd = (req->flags() & AT_EMPTY_PATH) && req->path().empty();
+				if(byFd) {
+					if((size_t)req->fd() < openFiles.size() && openFiles[req->fd()])
+						module = openFiles[req->fd()]->mfsNode;
+				}else{
+					module = resolveModule(req->path());
+				}
 				if(!module || module->type != MfsType::regular) {
-					infoLogger() << "thor: cannot stat file " << req->path() << frg::endlog;
+					if(byFd) {
+						infoLogger() << "thor: cannot stat fd " << req->fd() << frg::endlog;
+					}else{
+						infoLogger() << "thor: cannot stat file " << req->path() << frg::endlog;
+					}
 					managarm::posix::FstatAtResponse resp(*kernelAlloc);
 					resp.set_error(managarm::posix::Errors::FILE_NOT_FOUND);
 
@@ -787,6 +805,7 @@ namespace posix {
 				resp.set_error(managarm::posix::Errors::SUCCESS);
 				resp.set_file_size(file->size());
 				resp.set_file_type(managarm::posix::FileType::FT_REGULAR);
+				resp.set_fs_inode(file->inodeNumber);
 
 				frg::string<KernelAlloc> ser(*kernelAlloc);
 				resp.SerializeToString(&ser);

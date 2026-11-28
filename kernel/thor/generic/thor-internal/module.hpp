@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <frg/string.hpp>
 #include <frg/vector.hpp>
 #include <thor-internal/address-space.hpp>
@@ -15,9 +16,14 @@ enum class MfsType {
 
 struct MfsNode {
 	MfsNode(MfsType type)
-	: type{type} { }
+	: type{type}, inodeNumber{nextInodeNumber_.fetch_add(1, std::memory_order_relaxed)} { }
 
 	const MfsType type;
+	// Lets clients such as ld.so tell files apart by st_ino.
+	const uint64_t inodeNumber;
+
+private:
+	static inline std::atomic<uint64_t> nextInodeNumber_{1};
 };
 
 struct MfsDirectory : MfsNode {
