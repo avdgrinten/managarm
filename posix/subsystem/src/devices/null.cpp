@@ -5,7 +5,9 @@
 #include "../common.hpp"
 #include "null.hpp"
 
+#include <atomic>
 #include <bitset>
+#include <print>
 
 namespace {
 
@@ -43,6 +45,33 @@ private:
 		co_return PollStatusResult{1, EPOLLIN | EPOLLOUT | EPOLLRDNORM | EPOLLWRNORM};
 	}
 
+	async::result<int> getFileFlags() override {
+		int flags = 0;
+
+		if(_nonBlock.load(std::memory_order_relaxed))
+			flags |= O_NONBLOCK;
+
+		if(_read && _write)
+			flags |= O_RDWR;
+		else if(_write)
+			flags |= O_WRONLY;
+		else
+			flags |= O_RDONLY;
+
+		co_return flags;
+	}
+
+	async::result<void> setFileFlags(int flags) override {
+		if(flags & ~O_NONBLOCK) {
+			std::println("posix: setFileFlags on \e[1;34m{}\e[0m called with unknown flags {:#x}",
+				structName(), flags & ~O_NONBLOCK);
+			co_return;
+		}
+
+		_nonBlock.store(flags & O_NONBLOCK, std::memory_order_relaxed);
+		co_return;
+	}
+
 	helix::BorrowedDescriptor getPassthroughLane() override {
 		return _passthrough;
 	}
@@ -54,6 +83,9 @@ private:
 
 	helix::UniqueLane _passthrough;
 	async::cancellation_event _cancelServe;
+	const bool _read;
+	const bool _write;
+	std::atomic<bool> _nonBlock{false};
 
 public:
 	static void serve(smarter::shared_ptr<NullFile> file) {
@@ -63,8 +95,11 @@ public:
 				file, &fileOperations, file->_cancelServe));
 	}
 
-	NullFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
-	: FileWithDefaults{FileKind::unknown,  StructName::get("null-file"), std::move(mount), std::move(link)} { }
+	NullFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link,
+			SemanticFlags semantic_flags)
+	: FileWithDefaults{FileKind::unknown,  StructName::get("null-file"), std::move(mount), std::move(link)},
+			_read{static_cast<bool>(semantic_flags & semanticRead)},
+			_write{static_cast<bool>(semantic_flags & semanticWrite)} { }
 };
 
 struct NullDevice final : UnixDevice {
@@ -88,7 +123,7 @@ struct NullDevice final : UnixDevice {
 			co_return Error::illegalArguments;
 		}
 
-		auto file = smarter::make_shared<NullFile>(std::move(mount), std::move(link));
+		auto file = smarter::make_shared<NullFile>(std::move(mount), std::move(link), semantic_flags);
 		file->setupWeakFile(file);
 		NullFile::serve(file);
 		co_return File::constructHandle(std::move(file));
