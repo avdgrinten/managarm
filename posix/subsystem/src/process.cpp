@@ -1400,7 +1400,8 @@ Process::Process(ThreadGroup *threadGroup, std::shared_ptr<PidHull> tidHull)
 // Processes are unlinked from procfs and the process graph by terminate() and
 // ThreadGroup::retireLocked_(), such that the last reference can be dropped on any thread.
 Process::~Process() {
-	std::cout << std::format("\e[33mposix: Process {} is destructed\e[39m", tid()) << std::endl;
+	if(logCleanup_)
+		std::cout << std::format("\e[33mposix: Process {} is destructed\e[39m", tid()) << std::endl;
 	assert(!procfsTaskLink_);
 }
 

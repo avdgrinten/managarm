@@ -410,9 +410,8 @@ async::result<std::string> ProcsNode::show() {
 	co_return stream.str();
 }
 
-async::result<void> ProcsNode::store(std::string string) {
+async::result<void> ProcsNode::store(std::string) {
 	// TODO: proper error reporting.
-	std::cout << "posix: writing to cgroup.procs with: " << string << std::endl;
 	co_return;
 }
 
@@ -425,9 +424,8 @@ async::result<std::string> ControllersNode::show() {
 	co_return stream.str();
 }
 
-async::result<void> ControllersNode::store(std::string string) {
+async::result<void> ControllersNode::store(std::string) {
 	// TODO: proper error reporting.
-	std::cout << "posix: writing to cgroup.procs with: " << string << std::endl;
 	co_return;
 }
 
