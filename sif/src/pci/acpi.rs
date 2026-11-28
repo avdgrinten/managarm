@@ -207,11 +207,13 @@ fn evaluate_prt(aml: Aml, node: NamespaceNode) -> Prt {
         let slot = ((entry.address >> 16) & 0xFFFF) as u8;
         match prt_route(aml, &entry) {
             Ok(route) => {
-                println!(
-                    "sif:     Route for slot {slot}, {}: GSI {}",
-                    route.index.name(),
-                    route.gsi
-                );
+                if crate::TRACE.load(Ordering::Relaxed) {
+                    println!(
+                        "sif:     Route for slot {slot}, {}: GSI {}",
+                        route.index.name(),
+                        route.gsi
+                    );
+                }
                 routes.push(route);
             }
             Err(err) => println!(

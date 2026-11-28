@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::{Result, bail};
 
 mod acpi;
@@ -21,6 +23,9 @@ pub(crate) fn leak<T>(value: T) -> &'static T {
 // Mutexes are only locked for the duration of operations that cannot panic.
 pub(crate) const EXPECT_LOCK: &str = "sif: mutex was poisoned";
 
+/// Set by the `sif.trace` kernel command line option.
+pub(crate) static TRACE: AtomicBool = AtomicBool::new(false);
+
 /// Logs the failure of a subsystem; sif keeps serving the others.
 fn degrade(what: &str, result: Result<()>) {
     if let Err(err) = result {
@@ -31,6 +36,12 @@ fn degrade(what: &str, result: Result<()>) {
 fn main() -> Result<()> {
     hel::block_on(async {
         let cmdline = managarm::kerncfg::get_cmdline().await?;
+        TRACE.store(
+            cmdline
+                .split_ascii_whitespace()
+                .any(|opt| opt == "sif.trace"),
+            Ordering::Relaxed,
+        );
         println!("sif: enabled");
 
         // Enumeration must know which hardware the kernel touches before it reconfigures anything.
