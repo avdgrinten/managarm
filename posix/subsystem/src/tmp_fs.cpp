@@ -326,6 +326,7 @@ public:
 		co_return Error::success;
 	}
 
+	async::result<frg::expected<Error, off_t>> seek(off_t offset, VfsSeek whence) override;
 	FutureMaybe<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>> readEntries() override;
 	helix::BorrowedDescriptor getPassthroughLane() override;
 
@@ -968,6 +969,47 @@ void DirectoryFile::handleClose() {
 DirectoryFile::DirectoryFile(std::shared_ptr<MountView> mount, smarter::shared_ptr<FsLink, LinkRc> link)
 : FileWithDefaults{FileKind::unknown,  StructName::get("tmpfs.dir"), std::move(mount), std::move(link)},
 		_node{static_cast<DirectoryNode *>(associatedLink()->getTarget().get())} { }
+
+async::result<frg::expected<Error, off_t>> DirectoryFile::seek(off_t offset, VfsSeek whence) {
+	std::lock_guard positionLock{_positionMutex};
+
+	// Positions count the entries returned so far, including '.' and '..'.
+	off_t current = 2 + _numEntries;
+	if(_dots == DotEntriesPhase::dot)
+		current = 0;
+	else if(_dots == DotEntriesPhase::dotDot)
+		current = 1;
+
+	off_t target;
+	if(whence == VfsSeek::absolute) {
+		target = offset;
+	}else if(whence == VfsSeek::relative) {
+		target = current + offset;
+	}else{
+		co_return Error::illegalArguments;
+	}
+	if(target < 0)
+		co_return Error::illegalArguments;
+	if(target == current)
+		co_return current;
+
+	// Rewind and skip over target entries, like Linux's dcache_dir_lseek().
+	_dots = target == 0 ? DotEntriesPhase::dot
+			: target == 1 ? DotEntriesPhase::dotDot : DotEntriesPhase::done;
+	_lastName.reset();
+	_numEntries = 0;
+	if(target > 2) {
+		std::shared_lock lock{_node->_dirMutex};
+		for(auto it = _node->_entries.begin();
+				it != _node->_entries.end() && _numEntries < static_cast<size_t>(target - 2); ++it) {
+			_lastName = (*it)->nameLocked();
+			_numEntries++;
+		}
+		// Like on Linux, the position may lie beyond the last entry.
+		_numEntries = target - 2;
+	}
+	co_return target;
+}
 
 async::result<std::expected<protocols::fs::ReadEntriesResult, managarm::fs::Errors>>
 DirectoryFile::readEntries() {
