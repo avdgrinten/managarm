@@ -178,18 +178,20 @@ struct DirectoryNode final : FsNode {
 			SemanticFlags semantic_flags) override;
 	async::result<frg::expected<Error, smarter::shared_ptr<FsLink, LinkRc>>> getLink(FsLink *parent, std::string name) override;
 	async::result<frg::expected<Error>> unlink(std::string name) override;
+	async::result<frg::expected<Error>> rmdir(std::string name) override;
 
 	async::result<Error> chmod(int) override {
 		co_return Error::success;
 	}
 
-	// Returns nullptr if the name already exists.
-	smarter::shared_ptr<Link, LinkRc> createCgroupDirectory(FsLink *parent, std::string name);
+	std::expected<smarter::shared_ptr<Link, LinkRc>, Error> createCgroupDirectory(FsLink *parent, std::string name);
 	void createCgroupFiles(FsLink *parent);
 
 private:
 	// Protected by treeMutex in cgroupfs.cpp.
 	std::set<smarter::shared_ptr<Link, LinkRc>, LinkCompare> _entries;
+	// Set by rmdir(). Protected by treeMutex in cgroupfs.cpp.
+	bool _dead = false;
 };
 
 struct ProcsNode final : RegularNode {

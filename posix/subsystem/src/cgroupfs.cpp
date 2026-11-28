@@ -293,8 +293,8 @@ smarter::shared_ptr<Link, LinkRc> DirectoryNode::directMkregular(FsLink *parent,
 async::result<std::variant<Error, smarter::shared_ptr<FsLink, LinkRc>>> DirectoryNode::mkdir(FsLink *parent, Process *, std::string name, mode_t) {
 	auto link = createCgroupDirectory(parent, std::move(name));
 	if(!link)
-		co_return Error::alreadyExists;
-	co_return link;
+		co_return link.error();
+	co_return smarter::shared_ptr<FsLink, LinkRc>{std::move(*link)};
 }
 
 smarter::shared_ptr<Link, LinkRc> DirectoryNode::directMknode(FsLink *parent, std::string name, smarter::shared_ptr<FsNode> node) {
@@ -375,7 +375,34 @@ async::result<frg::expected<Error>> DirectoryNode::unlink(std::string name) {
 	co_return frg::expected<Error>{};
 }
 
-smarter::shared_ptr<Link, LinkRc> DirectoryNode::createCgroupDirectory(FsLink *parent, std::string name) {
+async::result<frg::expected<Error>> DirectoryNode::rmdir(std::string name) {
+	// Dropped after unlocking. Dropping the files breaks their owner references to the directory.
+	decltype(_entries)::node_type entry;
+	decltype(_entries) files;
+	{
+		std::unique_lock lock{treeMutex};
+		auto it = _entries.find(name);
+		if(it == _entries.end())
+			co_return Error::noSuchFile;
+		auto target = (*it)->getTarget();
+		if(target->getType() != VfsType::directory)
+			co_return Error::notDirectory;
+
+		// Membership is not tracked, so only child cgroups keep a cgroup from being removed.
+		auto cgroup_dir = static_cast<DirectoryNode *>(target.get());
+		for(auto &child : cgroup_dir->_entries) {
+			if(child->getTarget()->getType() == VfsType::directory)
+				co_return Error::directoryNotEmpty;
+		}
+
+		files = std::move(cgroup_dir->_entries);
+		cgroup_dir->_dead = true;
+		entry = _entries.extract(it);
+	}
+	co_return frg::expected<Error>{};
+}
+
+std::expected<smarter::shared_ptr<Link, LinkRc>, Error> DirectoryNode::createCgroupDirectory(FsLink *parent, std::string name) {
 	auto node = makeFsShared<DirectoryNode>();
 	auto cgroup_dir = node.get();
 	auto link = makeFsShared<Link>(parent->sharedFromThis(), name, std::move(node));
@@ -388,9 +415,13 @@ smarter::shared_ptr<Link, LinkRc> DirectoryNode::createCgroupDirectory(FsLink *p
 	// They are dropped after unlocking.
 	decltype(_entries) orphans;
 	std::unique_lock lock{treeMutex};
+	if(_dead) {
+		orphans = std::move(cgroup_dir->_entries);
+		return std::unexpected{Error::noSuchFile};
+	}
 	if(_entries.find(name) != _entries.end()) {
 		orphans = std::move(cgroup_dir->_entries);
-		return nullptr;
+		return std::unexpected{Error::alreadyExists};
 	}
 	_entries.insert(link);
 	return link;
